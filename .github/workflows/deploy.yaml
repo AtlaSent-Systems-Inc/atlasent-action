@@ -19,36 +19,18 @@ on:
         type: boolean
         default: false
 
-# Grant permissions for GitHub Pages deployment
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-env:
-  ATLASENT_BASE_URL: https://ducfnmhveikymmgwpgcd.supabase.co/functions/v1
-  ATLASENT_ANON_KEY: ${{ vars.ATLASENT_ANON_KEY }}
-
 jobs:
-  # ──────────────────────────────────────────────────────────────────────────
-  # Gate: Evaluate and verify the deployment through AtlaSent
-  # ──────────────────────────────────────────────────────────────────────────
   gate:
     runs-on: ubuntu-latest
-    outputs:
-      decision: ${{ steps.atlasent.outputs.decision }}
-      verified: ${{ steps.atlasent.outputs.verified }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Set gate parameters
         id: params
         run: |
-          # Environment: from dispatch input, or default to prod
           ENV="${{ inputs.environment || 'prod' }}"
           echo "environment=$ENV" >> $GITHUB_OUTPUT
 
-          # Approvals and change window vary by environment
           if [ "${{ inputs.force_denial }}" = "true" ]; then
             echo "approvals=0" >> $GITHUB_OUTPUT
             echo "change_window=false" >> $GITHUB_OUTPUT
@@ -61,9 +43,7 @@ jobs:
             echo "change_window=true" >> $GITHUB_OUTPUT
           fi
 
-      # Use the reusable AtlaSent action from this repo
-      - name: AtlaSent Deploy Gate
-        id: atlasent
+      - name: AtlaSent Gate
         uses: ./
         with:
           api_key: ${{ secrets.ATLASENT_API_KEY }}
@@ -73,27 +53,5 @@ jobs:
           approvals: ${{ steps.params.outputs.approvals }}
           change_window: ${{ steps.params.outputs.change_window }}
 
-  # ──────────────────────────────────────────────────────────────────────────
-  # Deploy: Only runs if the gate job succeeded
-  # Deploys site/index.html to GitHub Pages
-  # ──────────────────────────────────────────────────────────────────────────
-  deploy:
-    needs: gate
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: './site'
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Deploy
+        run: echo "✅ Authorized. Replace with your real deploy command."

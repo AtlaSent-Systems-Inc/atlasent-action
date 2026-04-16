@@ -1,56 +1,63 @@
 ![AtlaSent Deploy Gate](https://github.com/AtlaSent-Systems-Inc/deploy-gate-demo/actions/workflows/deploy.yaml/badge.svg)
 
-# AtlaSent Deploy Gate Demo
+# AtlaSent Action
 
-A working example of execution-time authorization for production deployments using [AtlaSent](https://atlasent.io). Fork this repo, add your API key, push to `main`, and watch the gate work.
+Gate AI agent actions in regulated environments before they execute.
 
-This repo is also a **reusable GitHub Action** — add AtlaSent authorization to any workflow in 4 lines.
+AtlaSent is the execution-time authorization layer for AI agents in GxP-regulated life sciences. Before an agent writes to a validated system, modifies a batch record, or touches clinical trial data, AtlaSent evaluates the action against your policies — and blocks it if it doesn't pass.
 
-## What This Does
+This GitHub Action adds AtlaSent authorization to any CI/CD workflow.
 
-Every push to `main` triggers a GitHub Actions workflow that gates the deploy through AtlaSent:
+## Why This Exists
 
-1. **Evaluate** — Calls `POST /v1-evaluate` with the deployment context (who, what, where, how many approvals). AtlaSent returns an allow/deny decision and a single-use permit token.
-2. **Verify** — At execution time, calls `POST /v1-verify-permit` to confirm the permit is still valid, unmodified, and contextually correct.
-3. **Deploy** — Proceeds only if verification succeeds. Deploys a live page to GitHub Pages as proof.
+Your AI agent can write to a validated batch record, modify clinical trial data, or trigger a production process. FDA 21 CFR Part 11 and EU GMP Annex 11 require that every action on a computerized system is authorized, attributable, and auditable.
 
-```
-Push to main
-    ↓
-POST /v1-evaluate
-    → Decision: allow
-    → Permit token: ats_permit_a1b2c3...
-    ↓
-POST /v1-verify-permit
-    → Outcome: allow
-    → Valid: true
-    ↓
-Deploy to GitHub Pages
-    ↓
-Tamper-evident audit trail recorded
-```
+The problem: traditional approval workflows authorize at planning time. But between approval and execution, agent configurations change, artifacts get modified, and context diverges from what was reviewed.
 
-## Use as a Reusable Action
+AtlaSent closes that gap. Every action is evaluated against policy **and** verified at the moment of execution. Every decision is recorded in a tamper-evident audit trail.
 
-Add AtlaSent authorization to any GitHub Actions workflow:
+## Quick Start
 
 ```yaml
 steps:
   - uses: actions/checkout@v4
 
-  - name: AtlaSent Deploy Gate
-    uses: AtlaSent-Systems-Inc/deploy-gate-demo@main
+  - name: AtlaSent Gate
+    uses: AtlaSent-Systems-Inc/deploy-gate-demo@v1
     with:
       api_key: ${{ secrets.ATLASENT_API_KEY }}
       anon_key: ${{ vars.ATLASENT_ANON_KEY }}
+      action_type: 'agent.write_batch_record'
       environment: 'prod'
       approvals: '2'
 
-  - name: Deploy (only runs if authorized)
-    run: ./deploy.sh
+  - name: Execute (only runs if authorized)
+    run: ./run-agent.sh
 ```
 
-### Inputs
+That's it. If the action isn't authorized, the workflow fails before your agent runs.
+
+## How It Works
+
+```
+Agent action requested
+    ↓
+POST /v1-evaluate
+    → Checks policy, context, approvals
+    → Returns single-use permit token
+    ↓
+POST /v1-verify-permit
+    → Confirms permit at execution time
+    → Blocks if context changed or permit expired
+    ↓
+Agent executes (or doesn't)
+    ↓
+Tamper-evident audit trail recorded
+```
+
+Both steps are **fail-closed** — any error (network failure, unexpected response, missing fields) blocks the action. No silent failures.
+
+## Inputs
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -62,83 +69,103 @@ steps:
 | `approvals` | No | `2` | Number of approvals obtained |
 | `change_window` | No | `true` | Whether action is within an approved change window |
 
-### Outputs
+## Outputs
 
 | Output | Description |
 |--------|-------------|
 | `decision` | The evaluate decision (`allow` or `deny`) |
 | `permit_token` | The single-use permit token (if allowed) |
-| `verified` | Whether the permit was verified (`true`/`false`) |
+| `verified` | Whether the permit was verified at execution time (`true`/`false`) |
 
-## Try the Demo
+## Examples
+
+### Gate an AI agent writing to a validated system
+
+```yaml
+- name: Authorize batch record write
+  uses: AtlaSent-Systems-Inc/deploy-gate-demo@v1
+  with:
+    api_key: ${{ secrets.ATLASENT_API_KEY }}
+    anon_key: ${{ vars.ATLASENT_ANON_KEY }}
+    action_type: 'agent.write_batch_record'
+    environment: 'prod'
+    approvals: '2'
+```
+
+### Gate a production deployment
+
+```yaml
+- name: Authorize production deploy
+  uses: AtlaSent-Systems-Inc/deploy-gate-demo@v1
+  with:
+    api_key: ${{ secrets.ATLASENT_API_KEY }}
+    anon_key: ${{ vars.ATLASENT_ANON_KEY }}
+    action_type: 'production.deploy'
+    environment: 'prod'
+    approvals: '2'
+```
+
+### Gate a staging deployment with lower threshold
+
+```yaml
+- name: Authorize staging deploy
+  uses: AtlaSent-Systems-Inc/deploy-gate-demo@v1
+  with:
+    api_key: ${{ secrets.ATLASENT_API_KEY }}
+    anon_key: ${{ vars.ATLASENT_ANON_KEY }}
+    action_type: 'staging.deploy'
+    environment: 'staging'
+    approvals: '1'
+```
+
+## Try the Demo Workflow
+
+This repo includes a working workflow that uses the action to gate itself.
 
 ### 1. Fork this repo
 
 ### 2. Add your credentials
 
-In your fork's Settings → Secrets and variables → Actions:
+Settings → Secrets and variables → Actions:
 
 - **Secret:** `ATLASENT_API_KEY` — your AtlaSent API key
 - **Variable:** `ATLASENT_ANON_KEY` — your AtlaSent public anon key
 
-Don't have credentials yet? [Get a sandbox key at atlasent.io](https://atlasent.io)
+Don't have credentials yet? **[Get a sandbox key at atlasent.io](https://atlasent.io)**
 
-### 3. Enable GitHub Pages
+### 3. Push to main or use manual dispatch
 
-Settings → Pages → Source: **GitHub Actions**
+The Actions tab will show the gate step evaluating and verifying, then the deploy step executing only if authorized.
 
-### 4. Push to main
+### Test a denial
 
-```bash
-git clone https://github.com/YOUR_ORG/deploy-gate-demo.git
-cd deploy-gate-demo
-echo "trigger" >> trigger.txt
-git add trigger.txt && git commit -m "Test deploy gate"
-git push origin main
-```
-
-### 5. Watch the Actions tab
-
-You'll see two jobs:
-- **gate** — AtlaSent evaluate + verify
-- **deploy** — GitHub Pages deployment (only if gate passes)
-
-## Multi-Environment Support
-
-The workflow supports different policy thresholds per environment:
-
-| Environment | Approvals Required | Change Window |
-|-------------|-------------------|---------------|
-| **prod** | 2 | Required |
-| **staging** | 1 | Required |
-
-Use the manual dispatch to select an environment: Actions → AtlaSent Deploy Gate → Run workflow → choose `prod` or `staging`.
-
-## Testing a Denial
-
-Use the manual workflow dispatch to trigger a deliberate denial. Go to Actions → AtlaSent Deploy Gate → Run workflow, and check **"Force a denial"**.
-
-This sets `approvals: 0` and `change_window: false`, which violates the policy. You'll see:
+Run the workflow manually and check **"Force a denial"**. This sends `approvals: 0` and `change_window: false`, which violates the policy. The workflow blocks:
 
 ```
-Decision: deny
-Reason:   insufficient approvals and outside change window
+BLOCKED — decision=deny code=POLICY_VIOLATION
+  reason=insufficient approvals and outside change window
 ```
-
-The deploy job won't run. This is the expected behavior — AtlaSent blocks actions that don't meet policy requirements.
 
 ## Sample API Responses
 
-See the [`docs/`](./docs/) directory for captured examples of every API response:
+See [`docs/`](./docs/) for captured examples:
 
-- [`docs/evaluate-allow.json`](./docs/evaluate-allow.json) — Successful evaluation (action allowed)
-- [`docs/evaluate-deny.json`](./docs/evaluate-deny.json) — Evaluation denied (policy violation)
-- [`docs/verify-allow.json`](./docs/verify-allow.json) — Permit verified at execution time
+- [`evaluate-allow.json`](./docs/evaluate-allow.json) — Action authorized, permit issued
+- [`evaluate-deny.json`](./docs/evaluate-deny.json) — Action denied with violation details
+- [`verify-allow.json`](./docs/verify-allow.json) — Permit verified at execution time
 
-## More Resources
+## Regulatory Alignment
 
-- **[AtlaSent GxP Starter](https://github.com/AtlaSent-Systems-Inc/atlasent-gxp-starter)** — Full quickstart kit with policy templates for 21 CFR Part 11, EU Annex 11, ICH E6 GCP, and integration examples for Python, LangChain, and more.
-- **[atlasent.io](https://atlasent.io)** — Book a demo or get sandbox credentials.
+Designed for organizations operating under:
+
+- **FDA 21 CFR Part 11** — Electronic records, electronic signatures, audit trails
+- **EU GMP Annex 11** — Computerized systems validation, data integrity (ALCOA+)
+- **ICH E6(R2) GCP** — Good Clinical Practice, clinical trial data governance
+- **General GxP** — Any regulated life sciences environment deploying AI agents
+
+## Get Started
+
+**[Book a demo at atlasent.io](https://atlasent.io)** — We work directly with compliance teams to configure policies that match your regulatory obligations.
 
 ## License
 

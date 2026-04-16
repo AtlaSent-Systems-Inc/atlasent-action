@@ -1,5 +1,5 @@
-name: 'AtlaSent Deploy Gate'
-description: 'Execution-time authorization for deployments. Evaluate and verify every deploy action through AtlaSent before it runs.'
+name: 'AtlaSent Action'
+description: 'Gate AI agent actions in regulated environments. Evaluate and verify every action through AtlaSent before it executes.'
 author: 'AtlaSent Systems, Inc.'
 
 branding:

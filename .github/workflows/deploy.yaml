@@ -1,237 +1,99 @@
 name: AtlaSent Deploy Gate
 
-# Triggers:
-#   - Automatically on every push to main
-#   - Manually via workflow_dispatch (with optional "force denial" toggle)
 on:
   push:
     branches: [main]
   workflow_dispatch:
     inputs:
+      environment:
+        description: 'Target environment'
+        required: false
+        type: choice
+        options:
+          - prod
+          - staging
+        default: 'prod'
       force_denial:
         description: 'Force a denial (sets approvals=0, change_window=false)'
         required: false
         type: boolean
         default: false
 
+# Grant permissions for GitHub Pages deployment
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 env:
   ATLASENT_BASE_URL: https://ducfnmhveikymmgwpgcd.supabase.co/functions/v1
   ATLASENT_ANON_KEY: ${{ vars.ATLASENT_ANON_KEY }}
 
 jobs:
-  atlasent-deploy-gate:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Gate: Evaluate and verify the deployment through AtlaSent
+  # ──────────────────────────────────────────────────────────────────────────
+  gate:
     runs-on: ubuntu-latest
-
+    outputs:
+      decision: ${{ steps.atlasent.outputs.decision }}
+      verified: ${{ steps.atlasent.outputs.verified }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install jq (required)
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      # ────────────────────────────────────────────────────────────────────────
-      # Step 1: EVALUATE
-      # Ask AtlaSent: "Should this deployment be allowed?"
-      # Sends the action type, actor, and full deployment context.
-      # Returns a single-use permit token if allowed, or a denial with reason.
-      # ────────────────────────────────────────────────────────────────────────
-      - name: 'Step 1: Evaluate — request authorization'
-        id: eval
-        env:
-          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
-          FORCE_DENIAL: ${{ inputs.force_denial || 'false' }}
+      - name: Set gate parameters
+        id: params
         run: |
-          set -euo pipefail
-          : "${ATLASENT_API_KEY:?Missing secret ATLASENT_API_KEY}"
-          : "${ATLASENT_ANON_KEY:?Missing variable ATLASENT_ANON_KEY (public anon key)}"
+          # Environment: from dispatch input, or default to prod
+          ENV="${{ inputs.environment || 'prod' }}"
+          echo "environment=$ENV" >> $GITHUB_OUTPUT
 
-          REQUEST_ID="github-eval-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-
-          # When force_denial is true, set context values that violate the policy
-          if [ "$FORCE_DENIAL" = "true" ]; then
-            echo "::notice::Force denial enabled — sending approvals=0, change_window=false"
-            APPROVALS=0
-            CHANGE_WINDOW=false
+          # Approvals and change window vary by environment
+          if [ "${{ inputs.force_denial }}" = "true" ]; then
+            echo "approvals=0" >> $GITHUB_OUTPUT
+            echo "change_window=false" >> $GITHUB_OUTPUT
+            echo "::notice::Force denial enabled"
+          elif [ "$ENV" = "staging" ]; then
+            echo "approvals=1" >> $GITHUB_OUTPUT
+            echo "change_window=true" >> $GITHUB_OUTPUT
           else
-            APPROVALS=2
-            CHANGE_WINDOW=true
+            echo "approvals=2" >> $GITHUB_OUTPUT
+            echo "change_window=true" >> $GITHUB_OUTPUT
           fi
 
-          # Build the evaluate request
-          BODY=$(jq -nc \
-            --arg action_type "production.deploy" \
-            --arg actor_id "github:${GITHUB_ACTOR}" \
-            --arg request_id "$REQUEST_ID" \
-            --arg env "prod" \
-            --arg repo "${GITHUB_REPOSITORY}" \
-            --arg sha "${GITHUB_SHA}" \
-            --arg ref "${GITHUB_REF}" \
-            --arg run_id "${GITHUB_RUN_ID}" \
-            --argjson approvals "$APPROVALS" \
-            --argjson change_window "$CHANGE_WINDOW" \
-            '{
-              action_type: $action_type,
-              actor_id: $actor_id,
-              request_id: $request_id,
-              context: {
-                environment: $env,
-                approvals: $approvals,
-                change_window: $change_window,
-                repo: $repo,
-                sha: $sha,
-                ref: $ref,
-                run_id: $run_id
-              }
-            }')
+      # Use the reusable AtlaSent action from this repo
+      - name: AtlaSent Deploy Gate
+        id: atlasent
+        uses: ./
+        with:
+          api_key: ${{ secrets.ATLASENT_API_KEY }}
+          anon_key: ${{ vars.ATLASENT_ANON_KEY }}
+          action_type: '${{ steps.params.outputs.environment }}.deploy'
+          environment: ${{ steps.params.outputs.environment }}
+          approvals: ${{ steps.params.outputs.approvals }}
+          change_window: ${{ steps.params.outputs.change_window }}
 
-          # Send to AtlaSent
-          RESP=$(curl -sS -i --max-time 30 \
-            -X POST "${ATLASENT_BASE_URL}/v1-evaluate" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${ATLASENT_API_KEY}" \
-            -H "apikey: ${ATLASENT_ANON_KEY}" \
-            -d "${BODY}")
+  # ──────────────────────────────────────────────────────────────────────────
+  # Deploy: Only runs if the gate job succeeded
+  # Deploys site/index.html to GitHub Pages
+  # ──────────────────────────────────────────────────────────────────────────
+  deploy:
+    needs: gate
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
 
-          echo "---- EVAL RAW RESPONSE ----"
-          echo "$RESP"
-          echo "---------------------------"
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
 
-          # Check HTTP status — fail-closed on any non-success code
-          HTTP_CODE=$(echo "$RESP" | head -n 1 | awk '{print $2}')
-          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "204" ]; then
-            echo "::error::Evaluate returned HTTP $HTTP_CODE — BLOCKED (fail-closed)"
-            exit 1
-          fi
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './site'
 
-          # Parse the JSON response body
-          JSON=$(echo "$RESP" | awk 'BEGIN{h=1} /^\r?$/{h=0; next} {if(!h) print}')
-          DECISION=$(echo "$JSON" | jq -r '.decision // empty')
-
-          if [ -z "$DECISION" ]; then
-            echo "::error::Evaluate missing decision — BLOCKED"
-            echo "$JSON" | jq . || true
-            exit 1
-          fi
-
-          # Deny — log the reason and block the deploy
-          if [ "$DECISION" != "allow" ]; then
-            CODE=$(echo "$JSON" | jq -r '.error_code // .deny_code // "unknown"')
-            REASON=$(echo "$JSON" | jq -r '.reason // .deny_reason // "no reason provided"')
-            echo "::error::BLOCKED by evaluate decision=$DECISION code=$CODE reason=$REASON"
-            exit 1
-          fi
-
-          # Allow — extract the single-use permit token
-          PERMIT_TOKEN=$(echo "$JSON" | jq -r '.permit_token // .permit // empty')
-          if [ -z "$PERMIT_TOKEN" ] || [ "$PERMIT_TOKEN" = "null" ]; then
-            echo "::error::Allowed but missing permit_token — BLOCKED"
-            exit 1
-          fi
-
-          echo "permit_token=$PERMIT_TOKEN" >> $GITHUB_OUTPUT
-          echo "request_id=$REQUEST_ID" >> $GITHUB_OUTPUT
-
-      # ────────────────────────────────────────────────────────────────────────
-      # Step 2: VERIFY
-      # At execution time, confirm the permit is still valid.
-      # This closes the gap between approval and execution — if the context
-      # changed, the permit was tampered with, or it expired, this fails.
-      # ────────────────────────────────────────────────────────────────────────
-      - name: 'Step 2: Verify — confirm permit at execution time'
-        env:
-          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
-          PERMIT_TOKEN: ${{ steps.eval.outputs.permit_token }}
-          EVAL_REQUEST_ID: ${{ steps.eval.outputs.request_id }}
-        run: |
-          set -euo pipefail
-          : "${ATLASENT_API_KEY:?Missing secret ATLASENT_API_KEY}"
-          : "${ATLASENT_ANON_KEY:?Missing variable ATLASENT_ANON_KEY}"
-          : "${PERMIT_TOKEN:?Missing permit token from evaluate}"
-
-          VERIFY_ID="verify-${EVAL_REQUEST_ID}"
-
-          # Build the verify request — same context as evaluate
-          BODY=$(jq -nc \
-            --arg permit_token "${PERMIT_TOKEN}" \
-            --arg action_type "production.deploy" \
-            --arg actor_id "github:${GITHUB_ACTOR}" \
-            --arg environment "prod" \
-            --arg request_id "${VERIFY_ID}" \
-            --arg env "prod" \
-            --arg repo "${GITHUB_REPOSITORY}" \
-            --arg sha "${GITHUB_SHA}" \
-            --arg ref "${GITHUB_REF}" \
-            --arg run_id "${GITHUB_RUN_ID}" \
-            --argjson approvals 2 \
-            --argjson change_window true \
-            '{
-              permit_token: $permit_token,
-              action_type: $action_type,
-              actor_id: $actor_id,
-              environment: $environment,
-              request_id: $request_id,
-              context: {
-                environment: $env,
-                approvals: $approvals,
-                change_window: $change_window,
-                repo: $repo,
-                sha: $sha,
-                ref: $ref,
-                run_id: $run_id
-              }
-            }')
-
-          # Send to AtlaSent
-          RESP=$(curl -sS -i --max-time 30 \
-            -X POST "${ATLASENT_BASE_URL}/v1-verify-permit" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${ATLASENT_API_KEY}" \
-            -H "apikey: ${ATLASENT_ANON_KEY}" \
-            -d "${BODY}")
-
-          echo "---- VERIFY RAW RESPONSE ----"
-          echo "$RESP"
-          echo "-----------------------------"
-
-          # Check HTTP status — fail-closed
-          HTTP_CODE=$(echo "$RESP" | head -n 1 | awk '{print $2}')
-          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "204" ]; then
-            echo "::error::Verify returned HTTP $HTTP_CODE — BLOCKED (fail-closed)"
-            exit 1
-          fi
-
-          # Parse response
-          JSON=$(echo "$RESP" | awk 'BEGIN{h=1} /^\r?$/{h=0; next} {if(!h) print}')
-          OUTCOME=$(echo "$JSON" | jq -r '.outcome // .decision // empty')
-          VALID=$(echo "$JSON" | jq -r '.valid // empty')
-
-          # Explicit invalid — permit was tampered with, expired, or context changed
-          if [ -n "$VALID" ] && [ "$VALID" != "true" ]; then
-            CODE=$(echo "$JSON" | jq -r '.verify_error_code // .deny_code // "unknown"')
-            REASON=$(echo "$JSON" | jq -r '.reason // .deny_reason // "unknown"')
-            echo "::error::Permit invalid — code=$CODE reason=$REASON"
-            exit 1
-          fi
-
-          if [ -z "$OUTCOME" ]; then
-            echo "::error::Verify missing outcome/decision — BLOCKED"
-            echo "$JSON" | jq . || true
-            exit 1
-          fi
-
-          if [ "$OUTCOME" != "allow" ]; then
-            CODE=$(echo "$JSON" | jq -r '.verify_error_code // .deny_code // "unknown"')
-            REASON=$(echo "$JSON" | jq -r '.reason // .deny_reason // "unknown"')
-            echo "::error::Permit verification FAILED — outcome=$OUTCOME code=$CODE reason=$REASON"
-            exit 1
-          fi
-
-          echo "✅ Permit verified — deploy may proceed"
-
-      # ────────────────────────────────────────────────────────────────────────
-      # Step 3: DEPLOY
-      # Only reached if both evaluate and verify succeeded.
-      # Replace with your real deployment command.
-      # ────────────────────────────────────────────────────────────────────────
-      - name: 'Step 3: Deploy to production'
-        run: |
-          echo "✅ Replace this with your real deploy command"
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

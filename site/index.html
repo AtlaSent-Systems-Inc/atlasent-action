@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AtlaSent Deploy Gate Demo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0e17;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .container {
+      max-width: 640px;
+      padding: 3rem 2rem;
+      text-align: center;
+    }
+    .shield {
+      font-size: 4rem;
+      margin-bottom: 1.5rem;
+    }
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+      color: #f8fafc;
+    }
+    .subtitle {
+      font-size: 1rem;
+      color: #94a3b8;
+      margin-bottom: 2.5rem;
+    }
+    .status {
+      background: #111827;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 2rem;
+      text-align: left;
+    }
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid #1e293b;
+    }
+    .status-row:last-child { border-bottom: none; }
+    .status-label { color: #94a3b8; }
+    .status-value { color: #22c55e; font-weight: 600; }
+    .status-value.denied { color: #ef4444; }
+    .flow {
+      background: #111827;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 2rem;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.85rem;
+      text-align: left;
+      line-height: 1.8;
+      color: #94a3b8;
+    }
+    .flow .allow { color: #22c55e; }
+    .flow .arrow { color: #3b82f6; }
+    .cta {
+      display: inline-block;
+      background: #3b82f6;
+      color: #fff;
+      text-decoration: none;
+      padding: 0.75rem 2rem;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 1rem;
+      transition: background 0.2s;
+    }
+    .cta:hover { background: #2563eb; }
+    .meta {
+      margin-top: 1.5rem;
+      font-size: 0.8rem;
+      color: #64748b;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="shield">&#x1F6E1;</div>
+    <h1>This deploy was authorized by AtlaSent</h1>
+    <p class="subtitle">Execution-time authorization for AI agents in regulated environments</p>
+
+    <div class="status">
+      <div class="status-row">
+        <span class="status-label">Evaluate</span>
+        <span class="status-value">allow</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Verify</span>
+        <span class="status-value">allow</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Deploy</span>
+        <span class="status-value">authorized</span>
+      </div>
+    </div>
+
+    <div class="flow">
+      <span class="arrow">POST</span> /v1-evaluate<br>
+      &nbsp;&nbsp;<span class="allow">&#x2713;</span> decision: allow<br>
+      &nbsp;&nbsp;<span class="allow">&#x2713;</span> permit_token: issued<br>
+      <br>
+      <span class="arrow">POST</span> /v1-verify-permit<br>
+      &nbsp;&nbsp;<span class="allow">&#x2713;</span> outcome: allow<br>
+      &nbsp;&nbsp;<span class="allow">&#x2713;</span> valid: true<br>
+      <br>
+      <span class="allow">&#x2713;</span> Deployed. Audit trail recorded.
+    </div>
+
+    <a href="https://atlasent.io" class="cta">Book a Demo</a>
+
+    <p class="meta">
+      AtlaSent Systems &mdash; Governance Before Execution
+    </p>
+  </div>
+</body>
+</html>

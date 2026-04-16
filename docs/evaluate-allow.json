@@ -12,7 +12,7 @@
     "environment": "prod",
     "approvals": 2,
     "change_window": true,
-    "repo": "AtlaSent-Systems-Inc/deploy-gate-demo",
+    "repo": "AtlaSent-Systems-Inc/atlasent-action",
     "ref": "refs/heads/main"
   }
 }

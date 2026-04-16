@@ -1,0 +1,20 @@
+{
+  "action_type": "computerised_system.write",
+  "actor_id": "agent:YOUR_AGENT_NAME",
+  "request_id": "unique-request-id",
+  "context": {
+    "environment": "production",
+    "regulation": "eu-annex-11",
+    "system_validation_status": "validated",
+    "approvals": 2,
+    "change_window": true,
+    "record_type": "gmp_record",
+    "action_category": "write",
+    "data_integrity_alcoa_plus": true,
+    "qualified_person_oversight": true,
+    "system_name": "YOUR_SYSTEM_NAME",
+    "data_classification": "gxp_critical",
+    "backup_verified": true,
+    "supplier_qualified": true
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "action_type": "gxp_system.write",
+  "actor_id": "agent:YOUR_AGENT_NAME",
+  "request_id": "unique-request-id",
+  "context": {
+    "environment": "production",
+    "regulation": "general-gxp",
+    "system_validation_status": "validated",
+    "approvals": 1,
+    "change_window": true,
+    "record_type": "gxp_record",
+    "action_category": "write",
+    "quality_system_scope": "production",
+    "deviation_open": false,
+    "capa_required": false,
+    "system_name": "YOUR_SYSTEM_NAME",
+    "data_classification": "gxp_regulated"
+  }
+}

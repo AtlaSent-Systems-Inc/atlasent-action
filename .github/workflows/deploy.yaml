@@ -1,9 +1,18 @@
 name: AtlaSent Deploy Gate
 
+# Triggers:
+#   - Automatically on every push to main
+#   - Manually via workflow_dispatch (with optional "force denial" toggle)
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force_denial:
+        description: 'Force a denial (sets approvals=0, change_window=false)'
+        required: false
+        type: boolean
+        default: false
 
 env:
   ATLASENT_BASE_URL: https://ducfnmhveikymmgwpgcd.supabase.co/functions/v1
@@ -19,10 +28,17 @@ jobs:
       - name: Install jq (required)
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Evaluate (gates deploy)
+      # ────────────────────────────────────────────────────────────────────────
+      # Step 1: EVALUATE
+      # Ask AtlaSent: "Should this deployment be allowed?"
+      # Sends the action type, actor, and full deployment context.
+      # Returns a single-use permit token if allowed, or a denial with reason.
+      # ────────────────────────────────────────────────────────────────────────
+      - name: 'Step 1: Evaluate — request authorization'
         id: eval
         env:
           ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          FORCE_DENIAL: ${{ inputs.force_denial || 'false' }}
         run: |
           set -euo pipefail
           : "${ATLASENT_API_KEY:?Missing secret ATLASENT_API_KEY}"
@@ -30,6 +46,17 @@ jobs:
 
           REQUEST_ID="github-eval-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
+          # When force_denial is true, set context values that violate the policy
+          if [ "$FORCE_DENIAL" = "true" ]; then
+            echo "::notice::Force denial enabled — sending approvals=0, change_window=false"
+            APPROVALS=0
+            CHANGE_WINDOW=false
+          else
+            APPROVALS=2
+            CHANGE_WINDOW=true
+          fi
+
+          # Build the evaluate request
           BODY=$(jq -nc \
             --arg action_type "production.deploy" \
             --arg actor_id "github:${GITHUB_ACTOR}" \
@@ -39,8 +66,8 @@ jobs:
             --arg sha "${GITHUB_SHA}" \
             --arg ref "${GITHUB_REF}" \
             --arg run_id "${GITHUB_RUN_ID}" \
-            --argjson approvals 2 \
-            --argjson change_window true \
+            --argjson approvals "$APPROVALS" \
+            --argjson change_window "$CHANGE_WINDOW" \
             '{
               action_type: $action_type,
               actor_id: $actor_id,
@@ -56,6 +83,7 @@ jobs:
               }
             }')
 
+          # Send to AtlaSent
           RESP=$(curl -sS -i --max-time 30 \
             -X POST "${ATLASENT_BASE_URL}/v1-evaluate" \
             -H "Content-Type: application/json" \
@@ -67,12 +95,14 @@ jobs:
           echo "$RESP"
           echo "---------------------------"
 
+          # Check HTTP status — fail-closed on any non-success code
           HTTP_CODE=$(echo "$RESP" | head -n 1 | awk '{print $2}')
           if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "204" ]; then
             echo "::error::Evaluate returned HTTP $HTTP_CODE — BLOCKED (fail-closed)"
             exit 1
           fi
 
+          # Parse the JSON response body
           JSON=$(echo "$RESP" | awk 'BEGIN{h=1} /^\r?$/{h=0; next} {if(!h) print}')
           DECISION=$(echo "$JSON" | jq -r '.decision // empty')
 
@@ -82,6 +112,7 @@ jobs:
             exit 1
           fi
 
+          # Deny — log the reason and block the deploy
           if [ "$DECISION" != "allow" ]; then
             CODE=$(echo "$JSON" | jq -r '.error_code // .deny_code // "unknown"')
             REASON=$(echo "$JSON" | jq -r '.reason // .deny_reason // "no reason provided"')
@@ -89,6 +120,7 @@ jobs:
             exit 1
           fi
 
+          # Allow — extract the single-use permit token
           PERMIT_TOKEN=$(echo "$JSON" | jq -r '.permit_token // .permit // empty')
           if [ -z "$PERMIT_TOKEN" ] || [ "$PERMIT_TOKEN" = "null" ]; then
             echo "::error::Allowed but missing permit_token — BLOCKED"
@@ -98,7 +130,13 @@ jobs:
           echo "permit_token=$PERMIT_TOKEN" >> $GITHUB_OUTPUT
           echo "request_id=$REQUEST_ID" >> $GITHUB_OUTPUT
 
-      - name: Verify permit (execution-time enforcement)
+      # ────────────────────────────────────────────────────────────────────────
+      # Step 2: VERIFY
+      # At execution time, confirm the permit is still valid.
+      # This closes the gap between approval and execution — if the context
+      # changed, the permit was tampered with, or it expired, this fails.
+      # ────────────────────────────────────────────────────────────────────────
+      - name: 'Step 2: Verify — confirm permit at execution time'
         env:
           ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
           PERMIT_TOKEN: ${{ steps.eval.outputs.permit_token }}
@@ -111,6 +149,7 @@ jobs:
 
           VERIFY_ID="verify-${EVAL_REQUEST_ID}"
 
+          # Build the verify request — same context as evaluate
           BODY=$(jq -nc \
             --arg permit_token "${PERMIT_TOKEN}" \
             --arg action_type "production.deploy" \
@@ -141,6 +180,7 @@ jobs:
               }
             }')
 
+          # Send to AtlaSent
           RESP=$(curl -sS -i --max-time 30 \
             -X POST "${ATLASENT_BASE_URL}/v1-verify-permit" \
             -H "Content-Type: application/json" \
@@ -152,17 +192,19 @@ jobs:
           echo "$RESP"
           echo "-----------------------------"
 
+          # Check HTTP status — fail-closed
           HTTP_CODE=$(echo "$RESP" | head -n 1 | awk '{print $2}')
           if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "204" ]; then
             echo "::error::Verify returned HTTP $HTTP_CODE — BLOCKED (fail-closed)"
             exit 1
           fi
 
+          # Parse response
           JSON=$(echo "$RESP" | awk 'BEGIN{h=1} /^\r?$/{h=0; next} {if(!h) print}')
           OUTCOME=$(echo "$JSON" | jq -r '.outcome // .decision // empty')
           VALID=$(echo "$JSON" | jq -r '.valid // empty')
 
-          # If API returns valid=false, treat as failure
+          # Explicit invalid — permit was tampered with, expired, or context changed
           if [ -n "$VALID" ] && [ "$VALID" != "true" ]; then
             CODE=$(echo "$JSON" | jq -r '.verify_error_code // .deny_code // "unknown"')
             REASON=$(echo "$JSON" | jq -r '.reason // .deny_reason // "unknown"')
@@ -185,6 +227,11 @@ jobs:
 
           echo "✅ Permit verified — deploy may proceed"
 
-      - name: Deploy to Production (placeholder)
+      # ────────────────────────────────────────────────────────────────────────
+      # Step 3: DEPLOY
+      # Only reached if both evaluate and verify succeeded.
+      # Replace with your real deployment command.
+      # ────────────────────────────────────────────────────────────────────────
+      - name: 'Step 3: Deploy to production'
         run: |
           echo "✅ Replace this with your real deploy command"

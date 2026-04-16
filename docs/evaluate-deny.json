@@ -1,0 +1,31 @@
+{
+  "decision": "deny",
+  "deny_code": "POLICY_VIOLATION",
+  "reason": "insufficient approvals and outside change window",
+  "request_id": "github-eval-12345678-1",
+  "evaluation_id": "eval_1a2b3c4d5e6f7890",
+  "policy_version": "2026-04-01",
+  "violations": [
+    {
+      "field": "context.approvals",
+      "rule": "minimum_approvals",
+      "expected": 2,
+      "actual": 0,
+      "message": "At least 2 approvals required for production deployment"
+    },
+    {
+      "field": "context.change_window",
+      "rule": "change_window_required",
+      "expected": true,
+      "actual": false,
+      "message": "Deployment must occur within an approved change window"
+    }
+  ],
+  "metadata": {
+    "action_type": "production.deploy",
+    "actor_id": "github:deploy-engineer",
+    "environment": "prod",
+    "approvals": 0,
+    "change_window": false
+  }
+}

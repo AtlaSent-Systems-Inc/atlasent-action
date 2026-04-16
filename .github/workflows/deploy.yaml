@@ -1,8 +1,7 @@
 name: AtlaSent Deploy Gate (Demo)
 
-# Demo workflow showing how to use AtlaSent Action to gate deployments.
-# This workflow uses the local action (uses: ./) for dogfooding.
-# In your own repo, replace with: uses: AtlaSent-Systems-Inc/atlasent-action@v1
+# Demo: gate deploys through AtlaSent before they execute.
+# In your repo, replace uses: ./ with: uses: AtlaSent-Systems-Inc/atlasent-action@v1
 
 on:
   push:
@@ -29,22 +28,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Gate the deployment through AtlaSent
       - name: AtlaSent authorization gate
         id: gate
         uses: ./
         with:
-          action_type: production.deploy
+          atlasent_api_key: ${{ secrets.ATLASENT_API_KEY }}
+          atlasent_anon_key: ${{ vars.ATLASENT_ANON_KEY }}
+          action: production-deploy
           environment: ${{ inputs.environment || 'prod' }}
           approvals: ${{ inputs.force_denial == true && '0' || '2' }}
           change_window: ${{ inputs.force_denial == true && 'false' || 'true' }}
-          atlasent_api_key: ${{ secrets.ATLASENT_API_KEY }}
-          atlasent_anon_key: ${{ vars.ATLASENT_ANON_KEY }}
 
-      # Only reached if AtlaSent allowed and verified the action
+      # Only reached if AtlaSent authorized the deploy
       - name: Deploy to ${{ inputs.environment || 'prod' }}
         run: |
-          echo "AtlaSent decision: ${{ steps.gate.outputs.decision }}"
-          echo "Permit verified:   ${{ steps.gate.outputs.verified }}"
+          echo "Decision:    ${{ steps.gate.outputs.decision }}"
+          echo "Decision ID: ${{ steps.gate.outputs.decision_id }}"
+          echo "Audit Hash:  ${{ steps.gate.outputs.audit_hash }}"
+          echo "Verified:    ${{ steps.gate.outputs.verified }}"
           echo ""
           echo "Replace this with your real deploy command."

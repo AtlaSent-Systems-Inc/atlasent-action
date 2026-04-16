@@ -1,9 +1,10 @@
 {
   "decision": "deny",
+  "decision_id": "eval_1a2b3c4d5e6f7890",
+  "audit_hash": "sha256:7d793037a0760186574b0282f2f435e7",
   "deny_code": "POLICY_VIOLATION",
   "reason": "insufficient approvals and outside change window",
-  "request_id": "github-eval-12345678-1",
-  "evaluation_id": "eval_1a2b3c4d5e6f7890",
+  "request_id": "gha-12345678-1",
   "policy_version": "2026-04-01",
   "violations": [
     {
@@ -22,8 +23,9 @@
     }
   ],
   "metadata": {
-    "action_type": "production.deploy",
-    "actor_id": "github:deploy-engineer",
+    "agent": "github-actions",
+    "action": "production-deploy",
+    "actor": "deploy-engineer",
     "environment": "prod",
     "approvals": 0,
     "change_window": false

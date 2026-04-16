@@ -1,5 +1,5 @@
 name: 'AtlaSent Action'
-description: 'Execution-time authorization for AI agent actions in GxP-regulated life sciences environments'
+description: 'Block production deploys unless AtlaSent authorizes them. Execution-time authorization for AI agent actions in GxP-regulated life sciences environments.'
 author: 'AtlaSent Systems, Inc.'
 
 branding:
@@ -7,38 +7,45 @@ branding:
   color: 'blue'
 
 inputs:
-  action_type:
-    description: 'The action type to evaluate (e.g., production.deploy, data.export)'
-    required: true
-  environment:
-    description: 'Target environment (e.g., prod, staging)'
-    required: true
-    default: 'prod'
-  approvals:
-    description: 'Number of approvals obtained for this action'
-    required: false
-    default: '0'
-  change_window:
-    description: 'Whether the action is within an approved change window'
-    required: false
-    default: 'false'
   atlasent_api_key:
     description: 'AtlaSent API key (use a GitHub secret)'
     required: true
   atlasent_anon_key:
     description: 'AtlaSent public anon key'
     required: true
+  action:
+    description: 'Action to authorize (e.g., production-deploy, staging-deploy)'
+    required: false
+    default: 'production-deploy'
+  environment:
+    description: 'Target environment'
+    required: false
+    default: 'prod'
+  approvals:
+    description: 'Number of approvals obtained'
+    required: false
+    default: '0'
+  change_window:
+    description: 'Whether within an approved change window (true/false)'
+    required: false
+    default: 'false'
   atlasent_base_url:
-    description: 'AtlaSent API base URL'
+    description: 'AtlaSent API base URL (override for self-hosted)'
     required: false
     default: 'https://ducfnmhveikymmgwpgcd.supabase.co/functions/v1'
 
 outputs:
   decision:
-    description: 'The evaluate decision (allow or deny)'
+    description: 'Authorization decision: allow or deny'
     value: ${{ steps.eval.outputs.decision }}
+  decision_id:
+    description: 'Unique evaluation ID for audit trail'
+    value: ${{ steps.eval.outputs.decision_id }}
+  audit_hash:
+    description: 'Tamper-evident hash of the evaluation context'
+    value: ${{ steps.eval.outputs.audit_hash }}
   permit_token:
-    description: 'Single-use permit token (only set when decision is allow)'
+    description: 'Single-use permit token (only set when allowed)'
     value: ${{ steps.eval.outputs.permit_token }}
   verified:
     description: 'Whether the permit was verified at execution time (true/false)'
@@ -54,14 +61,14 @@ runs:
           sudo apt-get update -qq && sudo apt-get install -y -qq jq
         fi
 
-    - name: 'Evaluate — request authorization'
+    - name: 'Evaluate — request authorization from AtlaSent'
       id: eval
       shell: bash
       env:
         ATLASENT_API_KEY: ${{ inputs.atlasent_api_key }}
         ATLASENT_ANON_KEY: ${{ inputs.atlasent_anon_key }}
         ATLASENT_BASE_URL: ${{ inputs.atlasent_base_url }}
-        INPUT_ACTION_TYPE: ${{ inputs.action_type }}
+        INPUT_ACTION: ${{ inputs.action }}
         INPUT_ENVIRONMENT: ${{ inputs.environment }}
         INPUT_APPROVALS: ${{ inputs.approvals }}
         INPUT_CHANGE_WINDOW: ${{ inputs.change_window }}
@@ -70,30 +77,32 @@ runs:
         : "${ATLASENT_API_KEY:?Missing input: atlasent_api_key}"
         : "${ATLASENT_ANON_KEY:?Missing input: atlasent_anon_key}"
 
-        REQUEST_ID="github-eval-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        REQUEST_ID="gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
         BODY=$(jq -nc \
-          --arg action_type "$INPUT_ACTION_TYPE" \
-          --arg actor_id "github:${GITHUB_ACTOR}" \
+          --arg agent "github-actions" \
+          --arg action "$INPUT_ACTION" \
           --arg request_id "$REQUEST_ID" \
-          --arg env "$INPUT_ENVIRONMENT" \
-          --arg repo "${GITHUB_REPOSITORY}" \
           --arg sha "${GITHUB_SHA}" \
-          --arg ref "${GITHUB_REF}" \
+          --arg branch "${GITHUB_REF}" \
+          --arg actor "${GITHUB_ACTOR}" \
+          --arg environment "$INPUT_ENVIRONMENT" \
+          --arg repo "${GITHUB_REPOSITORY}" \
           --arg run_id "${GITHUB_RUN_ID}" \
           --argjson approvals "$INPUT_APPROVALS" \
           --argjson change_window "$INPUT_CHANGE_WINDOW" \
           '{
-            action_type: $action_type,
-            actor_id: $actor_id,
+            agent: $agent,
+            action: $action,
             request_id: $request_id,
             context: {
-              environment: $env,
+              sha: $sha,
+              branch: $branch,
+              actor: $actor,
+              environment: $environment,
               approvals: $approvals,
               change_window: $change_window,
               repo: $repo,
-              sha: $sha,
-              ref: $ref,
               run_id: $run_id
             }
           }')
@@ -105,36 +114,57 @@ runs:
           -H "apikey: ${ATLASENT_ANON_KEY}" \
           -d "${BODY}")
 
-        # Check HTTP status — fail-closed on any non-success code
         HTTP_CODE=$(echo "$RESP" | head -n 1 | awk '{print $2}')
         if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "204" ]; then
           echo "::error::AtlaSent evaluate returned HTTP $HTTP_CODE — BLOCKED (fail-closed)"
           exit 1
         fi
 
-        # Parse the JSON response body
         JSON=$(echo "$RESP" | awk 'BEGIN{h=1} /^\r?$/{h=0; next} {if(!h) print}')
         DECISION=$(echo "$JSON" | jq -r '.decision // empty')
 
         if [ -z "$DECISION" ]; then
-          echo "::error::AtlaSent evaluate missing decision — BLOCKED"
-          echo "$JSON" | jq . || true
+          echo "::error::AtlaSent evaluate returned no decision — BLOCKED (fail-closed)"
           exit 1
         fi
 
+        DECISION_ID=$(echo "$JSON" | jq -r '.decision_id // .evaluation_id // "none"')
+        AUDIT_HASH=$(echo "$JSON" | jq -r '.audit_hash // .context_hash // "none"')
+        REASON=$(echo "$JSON" | jq -r '.reason // .deny_reason // ""')
+
         echo "decision=$DECISION" >> $GITHUB_OUTPUT
+        echo "decision_id=$DECISION_ID" >> $GITHUB_OUTPUT
+        echo "audit_hash=$AUDIT_HASH" >> $GITHUB_OUTPUT
         echo "request_id=$REQUEST_ID" >> $GITHUB_OUTPUT
+
+        # Write to GitHub Actions job summary
+        {
+          echo "## AtlaSent Authorization"
+          echo ""
+          echo "| Field | Value |"
+          echo "|---|---|"
+          echo "| **Decision** | \`$DECISION\` |"
+          echo "| **Decision ID** | \`$DECISION_ID\` |"
+          echo "| **Audit Hash** | \`$AUDIT_HASH\` |"
+          echo "| **Action** | \`$INPUT_ACTION\` |"
+          echo "| **Actor** | \`${GITHUB_ACTOR}\` |"
+          echo "| **SHA** | \`${GITHUB_SHA:0:12}\` |"
+          echo "| **Branch** | \`${GITHUB_REF}\` |"
+          if [ -n "$REASON" ]; then
+            echo "| **Reason** | $REASON |"
+          fi
+          echo ""
+        } >> $GITHUB_STEP_SUMMARY
 
         if [ "$DECISION" != "allow" ]; then
           CODE=$(echo "$JSON" | jq -r '.error_code // .deny_code // "unknown"')
-          REASON=$(echo "$JSON" | jq -r '.reason // .deny_reason // "no reason provided"')
           echo "::error::BLOCKED by AtlaSent — decision=$DECISION code=$CODE reason=$REASON"
           exit 1
         fi
 
         PERMIT_TOKEN=$(echo "$JSON" | jq -r '.permit_token // .permit // empty')
         if [ -z "$PERMIT_TOKEN" ] || [ "$PERMIT_TOKEN" = "null" ]; then
-          echo "::error::AtlaSent allowed but missing permit_token — BLOCKED"
+          echo "::error::AtlaSent allowed but no permit_token — BLOCKED (fail-closed)"
           exit 1
         fi
 
@@ -149,44 +179,42 @@ runs:
         ATLASENT_BASE_URL: ${{ inputs.atlasent_base_url }}
         PERMIT_TOKEN: ${{ steps.eval.outputs.permit_token }}
         EVAL_REQUEST_ID: ${{ steps.eval.outputs.request_id }}
-        INPUT_ACTION_TYPE: ${{ inputs.action_type }}
+        INPUT_ACTION: ${{ inputs.action }}
         INPUT_ENVIRONMENT: ${{ inputs.environment }}
         INPUT_APPROVALS: ${{ inputs.approvals }}
         INPUT_CHANGE_WINDOW: ${{ inputs.change_window }}
       run: |
         set -euo pipefail
-        : "${ATLASENT_API_KEY:?Missing input: atlasent_api_key}"
-        : "${ATLASENT_ANON_KEY:?Missing input: atlasent_anon_key}"
         : "${PERMIT_TOKEN:?Missing permit token from evaluate step}"
 
         VERIFY_ID="verify-${EVAL_REQUEST_ID}"
 
         BODY=$(jq -nc \
           --arg permit_token "${PERMIT_TOKEN}" \
-          --arg action_type "$INPUT_ACTION_TYPE" \
-          --arg actor_id "github:${GITHUB_ACTOR}" \
-          --arg environment "$INPUT_ENVIRONMENT" \
+          --arg agent "github-actions" \
+          --arg action "$INPUT_ACTION" \
           --arg request_id "${VERIFY_ID}" \
-          --arg env "$INPUT_ENVIRONMENT" \
-          --arg repo "${GITHUB_REPOSITORY}" \
           --arg sha "${GITHUB_SHA}" \
-          --arg ref "${GITHUB_REF}" \
+          --arg branch "${GITHUB_REF}" \
+          --arg actor "${GITHUB_ACTOR}" \
+          --arg environment "$INPUT_ENVIRONMENT" \
+          --arg repo "${GITHUB_REPOSITORY}" \
           --arg run_id "${GITHUB_RUN_ID}" \
           --argjson approvals "$INPUT_APPROVALS" \
           --argjson change_window "$INPUT_CHANGE_WINDOW" \
           '{
             permit_token: $permit_token,
-            action_type: $action_type,
-            actor_id: $actor_id,
-            environment: $environment,
+            agent: $agent,
+            action: $action,
             request_id: $request_id,
             context: {
-              environment: $env,
+              sha: $sha,
+              branch: $branch,
+              actor: $actor,
+              environment: $environment,
               approvals: $approvals,
               change_window: $change_window,
               repo: $repo,
-              sha: $sha,
-              ref: $ref,
               run_id: $run_id
             }
           }')
@@ -198,7 +226,6 @@ runs:
           -H "apikey: ${ATLASENT_ANON_KEY}" \
           -d "${BODY}")
 
-        # Check HTTP status — fail-closed
         HTTP_CODE=$(echo "$RESP" | head -n 1 | awk '{print $2}')
         if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "204" ]; then
           echo "::error::AtlaSent verify returned HTTP $HTTP_CODE — BLOCKED (fail-closed)"
@@ -206,32 +233,27 @@ runs:
           exit 1
         fi
 
-        # Parse response
         JSON=$(echo "$RESP" | awk 'BEGIN{h=1} /^\r?$/{h=0; next} {if(!h) print}')
         OUTCOME=$(echo "$JSON" | jq -r '.outcome // .decision // empty')
         VALID=$(echo "$JSON" | jq -r '.valid // empty')
 
         if [ -n "$VALID" ] && [ "$VALID" != "true" ]; then
-          CODE=$(echo "$JSON" | jq -r '.verify_error_code // .deny_code // "unknown"')
           REASON=$(echo "$JSON" | jq -r '.reason // .deny_reason // "unknown"')
-          echo "::error::AtlaSent permit invalid — code=$CODE reason=$REASON"
+          echo "::error::AtlaSent permit invalid — $REASON"
           echo "verified=false" >> $GITHUB_OUTPUT
           exit 1
         fi
 
-        if [ -z "$OUTCOME" ]; then
-          echo "::error::AtlaSent verify missing outcome — BLOCKED"
-          echo "$JSON" | jq . || true
-          echo "verified=false" >> $GITHUB_OUTPUT
-          exit 1
-        fi
-
-        if [ "$OUTCOME" != "allow" ]; then
-          CODE=$(echo "$JSON" | jq -r '.verify_error_code // .deny_code // "unknown"')
-          REASON=$(echo "$JSON" | jq -r '.reason // .deny_reason // "unknown"')
-          echo "::error::AtlaSent permit verification FAILED — outcome=$OUTCOME code=$CODE reason=$REASON"
+        if [ -z "$OUTCOME" ] || [ "$OUTCOME" != "allow" ]; then
+          REASON=$(echo "$JSON" | jq -r '.reason // .deny_reason // "verification failed"')
+          echo "::error::AtlaSent permit verification FAILED — $REASON"
           echo "verified=false" >> $GITHUB_OUTPUT
           exit 1
         fi
 
         echo "verified=true" >> $GITHUB_OUTPUT
+
+        # Append verification to summary
+        {
+          echo "| **Verified** | ✅ permit confirmed at execution time |"
+        } >> $GITHUB_STEP_SUMMARY

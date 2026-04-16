@@ -1,49 +1,36 @@
 # AtlaSent Action
 
-Official GitHub Action for [AtlaSent](https://atlasent.io) — execution-time authorization for AI agent actions in GxP-regulated life sciences environments.
-
-Add `uses: AtlaSent-Systems-Inc/atlasent-action@v1` to any workflow to gate agent actions through AtlaSent's evaluate/verify API before they execute. Fail-closed design: if anything goes wrong, the action is blocked.
-
-## How It Works
+Block production deploys unless AtlaSent authorizes them. Sits as a required status check so nothing reaches production without an evaluated, verified permit.
 
 ```
-Workflow step triggers
-    |
-    v
-POST /v1-evaluate
-    -> Decision: allow
-    -> Permit token: ats_permit_a1b2c3...
-    |
-    v
-POST /v1-verify-permit
-    -> Outcome: allow
-    -> Valid: true
-    |
-    v
-Next step proceeds (deploy, data export, etc.)
-    |
-    v
-Tamper-evident audit trail recorded
+Push to main → AtlaSent evaluates → permitted → deploy
+                                   → blocked  → fail with reason
 ```
 
-1. **Evaluate** — Sends the action type, actor, and context to AtlaSent. Returns an allow/deny decision and a single-use permit token.
-2. **Verify** — At execution time, confirms the permit is still valid, unmodified, and contextually correct.
-3. **Proceed or block** — Downstream steps only run if both evaluate and verify succeed.
+## Add to Any Repo in 3 Steps
 
-## Quick Start
+### Step 1: Add secrets
 
-### 1. Add your credentials
+In your repo's **Settings → Secrets and variables → Actions**:
 
-In your repo's Settings > Secrets and variables > Actions:
+| Type | Name | Value |
+|---|---|---|
+| Secret | `ATLASENT_API_KEY` | Your AtlaSent API key |
+| Variable | `ATLASENT_ANON_KEY` | Your AtlaSent public anon key |
 
-- **Secret:** `ATLASENT_API_KEY` — your AtlaSent API key
-- **Variable:** `ATLASENT_ANON_KEY` — your AtlaSent public anon key
+No credentials yet? → [atlasent.io](https://atlasent.io)
 
-Don't have credentials yet? [Get a sandbox key at atlasent.io](https://atlasent.io)
+### Step 2: Add the workflow
 
-### 2. Add the action to your workflow
+Create `.github/workflows/deploy.yaml`:
 
 ```yaml
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -54,77 +41,105 @@ jobs:
         id: gate
         uses: AtlaSent-Systems-Inc/atlasent-action@v1
         with:
-          action_type: production.deploy
-          environment: prod
-          approvals: 2
-          change_window: true
           atlasent_api_key: ${{ secrets.ATLASENT_API_KEY }}
           atlasent_anon_key: ${{ vars.ATLASENT_ANON_KEY }}
 
+      # This step only runs if AtlaSent authorized the deploy
       - name: Deploy
-        run: echo "Deploying — permit verified: ${{ steps.gate.outputs.verified }}"
+        run: ./deploy.sh
 ```
+
+### Step 3: Require the check
+
+In **Settings → Branches → Branch protection rules** for `main`:
+
+- Check **Require status checks to pass before merging**
+- Add **deploy** as a required check
+
+Done. Every push to `main` now requires AtlaSent authorization.
+
+## What a Blocked Deploy Looks Like
+
+When AtlaSent denies an action, the workflow fails immediately and the reason is surfaced in three places:
+
+**In the Actions log:**
+```
+Error: BLOCKED by AtlaSent — decision=deny code=POLICY_VIOLATION reason=insufficient approvals and outside change window
+```
+
+**In the job summary (visible on the Actions run page):**
+
+| Field | Value |
+|---|---|
+| **Decision** | `deny` |
+| **Decision ID** | `eval_1a2b3c4d5e6f7890` |
+| **Audit Hash** | `sha256:e3b0c44298fc1c14...` |
+| **Action** | `production-deploy` |
+| **Actor** | `deploy-engineer` |
+| **SHA** | `a1b2c3d4e5f6` |
+| **Branch** | `refs/heads/main` |
+| **Reason** | insufficient approvals and outside change window |
+
+**In the PR (when used as a required check):**
+
+The merge button is blocked with: _"Required status check — deploy — failing"_
 
 ## Inputs
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `action_type` | Yes | — | Action type to evaluate (e.g., `production.deploy`, `data.export`) |
-| `environment` | Yes | `prod` | Target environment (e.g., `prod`, `staging`) |
+| `atlasent_api_key` | **Yes** | — | AtlaSent API key (use a secret) |
+| `atlasent_anon_key` | **Yes** | — | AtlaSent public anon key |
+| `action` | No | `production-deploy` | Action to authorize |
+| `environment` | No | `prod` | Target environment |
 | `approvals` | No | `0` | Number of approvals obtained |
-| `change_window` | No | `false` | Whether the action is within an approved change window |
-| `atlasent_api_key` | Yes | — | AtlaSent API key (use a GitHub secret) |
-| `atlasent_anon_key` | Yes | — | AtlaSent public anon key |
-| `atlasent_base_url` | No | *(production)* | AtlaSent API base URL |
+| `change_window` | No | `false` | Within an approved change window? |
+| `atlasent_base_url` | No | *(production)* | API base URL override |
 
 ## Outputs
 
 | Output | Description |
 |---|---|
-| `decision` | The evaluate decision (`allow` or `deny`) |
-| `permit_token` | Single-use permit token (only set when decision is `allow`) |
-| `verified` | Whether the permit was verified at execution time (`true`/`false`) |
+| `decision` | `allow` or `deny` |
+| `decision_id` | Unique evaluation ID for audit trail |
+| `audit_hash` | Tamper-evident hash of the evaluation context |
+| `permit_token` | Single-use permit token (only when allowed) |
+| `verified` | Whether permit was verified at execution time |
 
-## Testing a Denial
+## How It Works
 
-Use the included demo workflow with `force_denial: true` to trigger a deliberate denial. Go to Actions > AtlaSent Deploy Gate (Demo) > Run workflow, and check "Force a denial".
+1. **Evaluate** — Calls `POST /v1-evaluate` with `agent="github-actions"`, `action="production-deploy"`, and context (SHA, branch, actor, environment, approvals, change window). Returns a decision and single-use permit token.
 
-This sets `approvals: 0` and `change_window: false`, which violates the policy:
+2. **Verify** — Calls `POST /v1-verify-permit` to confirm the permit hasn't been tampered with, expired, or had its context change between evaluation and execution.
 
-```
-Decision: deny
-Reason:   insufficient approvals and outside change window
-```
+3. **Proceed or block** — If both succeed, downstream steps run. If anything fails, the workflow is blocked (fail-closed). Decision ID and audit hash are logged to the job summary.
 
-## Multi-Environment Support
+## Customizing the Action
 
-Gate different environments with different contexts:
+Gate staging deploys, data exports, or any agent action:
 
 ```yaml
-- name: Gate staging deploy
-  uses: AtlaSent-Systems-Inc/atlasent-action@v1
+- uses: AtlaSent-Systems-Inc/atlasent-action@v1
   with:
-    action_type: staging.deploy
+    atlasent_api_key: ${{ secrets.ATLASENT_API_KEY }}
+    atlasent_anon_key: ${{ vars.ATLASENT_ANON_KEY }}
+    action: staging-deploy
     environment: staging
     approvals: 1
     change_window: true
-    atlasent_api_key: ${{ secrets.ATLASENT_API_KEY }}
-    atlasent_anon_key: ${{ vars.ATLASENT_ANON_KEY }}
 ```
+
+## Testing a Denial
+
+Use the [demo workflow](./.github/workflows/deploy.yaml) with manual dispatch. Check **"Force a denial"** to send `approvals=0, change_window=false`, which violates the policy and produces a denial you can inspect.
 
 ## Sample API Responses
 
-See the [`docs/`](./docs/) directory for captured examples of every API response:
-
-- [`docs/evaluate-allow.json`](./docs/evaluate-allow.json) — Successful evaluation (action allowed)
-- [`docs/evaluate-deny.json`](./docs/evaluate-deny.json) — Evaluation denied (policy violation)
-- [`docs/verify-allow.json`](./docs/verify-allow.json) — Permit verified at execution time
-
-## More Resources
-
-- **[AtlaSent GxP Starter](https://github.com/AtlaSent-Systems-Inc/atlasent-gxp-starter)** — Full quickstart kit with policy templates for 21 CFR Part 11, EU Annex 11, ICH E6 GCP, and integration examples for Python, LangChain, and more.
-- **[atlasent.io](https://atlasent.io)** — Book a demo or get sandbox credentials.
+See [`docs/`](./docs/) for examples of every API response:
+- [`evaluate-allow.json`](./docs/evaluate-allow.json) — allowed, permit token issued
+- [`evaluate-deny.json`](./docs/evaluate-deny.json) — denied, policy violation with reasons
+- [`verify-allow.json`](./docs/verify-allow.json) — permit verified at execution time
 
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE).

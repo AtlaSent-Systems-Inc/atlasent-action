@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-yaml:
+    name: Validate action.yml structure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate action.yml
+        run: |
+          python3 - <<'EOF'
+          import yaml, sys
+
+          with open("action.yml") as f:
+              action = yaml.safe_load(f)
+
+          assert "name" in action, "Missing: name"
+          assert "runs" in action, "Missing: runs"
+          assert action["runs"]["using"] == "composite", "runs.using must be 'composite'"
+          steps = action["runs"].get("steps", [])
+          assert len(steps) > 0, "No steps defined"
+          inputs = action.get("inputs", {})
+          outputs = action.get("outputs", {})
+
+          required_inputs = ["atlasent_api_key", "atlasent_anon_key"]
+          for inp in required_inputs:
+              assert inp in inputs, f"Missing required input: {inp}"
+
+          required_outputs = ["decision", "permit_token", "verified"]
+          for out in required_outputs:
+              assert out in outputs, f"Missing required output: {out}"
+
+          print(f"OK — {len(steps)} step(s), {len(inputs)} input(s), {len(outputs)} output(s)")
+          sys.exit(0)
+          EOF
+
+  shellcheck:
+    name: ShellCheck embedded scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck -qq
+
+      - name: Extract and check shell scripts from action.yml
+        run: |
+          python3 - <<'EOF'
+          import yaml, subprocess, sys
+
+          with open("action.yml") as f:
+              action = yaml.safe_load(f)
+
+          failures = 0
+          for i, step in enumerate(action["runs"]["steps"]):
+              if "run" not in step:
+                  continue
+              script = step["run"]
+              name = step.get("name", f"step-{i}")
+              result = subprocess.run(
+                  ["shellcheck", "--shell=bash", "--severity=warning", "-"],
+                  input=script,
+                  capture_output=True,
+                  text=True,
+              )
+              if result.returncode != 0:
+                  print(f"\u2717 {name}\n{result.stdout}")
+                  failures += 1
+              else:
+                  print(f"\u2713 {name}")
+
+          sys.exit(failures)
+          EOF
+
+  actionlint:
+    name: Lint GitHub Actions workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install actionlint
+        run: |
+          VERSION=$(curl -s https://api.github.com/repos/rhysd/actionlint/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | ltrim v || echo "1.7.7")
+          curl -sLo actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/latest/download/actionlint_${VERSION#v}_linux_amd64.tar.gz" 2>/dev/null ||
+          curl -sLo actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz"
+          tar xzf actionlint.tar.gz actionlint
+          sudo mv actionlint /usr/local/bin/
+
+      - name: Run actionlint on workflows
+        run: actionlint .github/workflows/*.yaml .github/workflows/*.yml 2>/dev/null || actionlint

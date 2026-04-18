@@ -110,8 +110,9 @@ runs:
         RESP=$(curl -sS -i --max-time 30 \
           -X POST "${ATLASENT_BASE_URL}/v1-evaluate" \
           -H "Content-Type: application/json" \
-          -H "Authorization: Bearer ${ATLASENT_API_KEY}" \
+          -H "Authorization: Bearer ${ATLASENT_ANON_KEY}" \
           -H "apikey: ${ATLASENT_ANON_KEY}" \
+          -H "x-atlasent-api-key: ${ATLASENT_API_KEY}" \
           -d "${BODY}")
 
         HTTP_CODE=$(echo "$RESP" | head -n 1 | awk '{print $2}')
@@ -222,8 +223,9 @@ runs:
         RESP=$(curl -sS -i --max-time 30 \
           -X POST "${ATLASENT_BASE_URL}/v1-verify-permit" \
           -H "Content-Type: application/json" \
-          -H "Authorization: Bearer ${ATLASENT_API_KEY}" \
+          -H "Authorization: Bearer ${ATLASENT_ANON_KEY}" \
           -H "apikey: ${ATLASENT_ANON_KEY}" \
+          -H "x-atlasent-api-key: ${ATLASENT_API_KEY}" \
           -d "${BODY}")
 
         HTTP_CODE=$(echo "$RESP" | head -n 1 | awk '{print $2}')

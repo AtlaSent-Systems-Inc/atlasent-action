@@ -1,5 +1,9 @@
 name: AtlaSent Policy Gate
-description: Evaluate an action request against AtlaSent policies before proceeding
+# Calls v1-evaluate then v1-verify-permit; enforces fail-closed semantics by default
+description: >-
+  Evaluate an action request against AtlaSent policies (v1-evaluate) and verify
+  the resulting permit (v1-verify-permit). Implements fail-closed pattern:
+  denied unless the policy explicitly allows the action.
 author: AtlaSent Systems Inc
 
 inputs:
@@ -24,7 +28,7 @@ inputs:
     required: false
     default: '{}'
   fail-on-deny:
-    description: Fail the step if decision is deny
+    description: "Fail the step if decision is deny (fail-closed: true by default)"
     required: false
     default: 'true'
 

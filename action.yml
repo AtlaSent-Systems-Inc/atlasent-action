@@ -12,6 +12,9 @@ inputs:
   action-id:
     description: Action identifier to evaluate (e.g. ci.production-deploy)
     required: true
+  target-id:
+    description: Target resource identifier (defaults to GITHUB_REPOSITORY)
+    required: false
   environment:
     description: Target environment
     required: false
@@ -35,6 +38,8 @@ outputs:
     description: Permit ID if decision is allow
   risk-level:
     description: low, medium, high, or critical
+  risk-score:
+    description: Numeric risk score 0-100
   evaluation-id:
     description: Evaluation ID for audit trail
 

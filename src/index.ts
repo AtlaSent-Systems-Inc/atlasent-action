@@ -29,10 +29,10 @@ async function run(): Promise<void> {
     });
     clearTimeout(timer);
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ message: res.statusText }));
+      const err = (await res.json().catch(() => ({ message: res.statusText }))) as { message?: string };
       throw new Error(`AtlaSent API error ${res.status}: ${err.message}`);
     }
-    result = await res.json();
+    result = (await res.json()) as typeof result;
   } catch (e) {
     clearTimeout(timer);
     core.setFailed(`AtlaSent evaluation failed: ${e instanceof Error ? e.message : String(e)}`);

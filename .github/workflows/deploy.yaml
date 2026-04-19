@@ -1,26 +1,26 @@
 name: AtlaSent Deploy Gate (Demo)
 
 # Demo: gate deploys through AtlaSent before they execute.
-# In your repo, replace uses: ./ with: uses: AtlaSent-Systems-Inc/atlasent-action@v1
+# In your repo, replace uses: ./ with: uses: AtlaSent-Systems-Inc/atlasent-action@v2
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
     inputs:
-      force_denial:
-        description: 'Force a denial (sets approvals=0, change_window=false)'
+      action_id:
+        description: 'Action identifier to evaluate'
         required: false
-        type: boolean
-        default: false
+        type: string
+        default: ci.production-deploy
       environment:
         description: 'Target environment'
         required: false
         type: choice
         options:
-          - prod
+          - production
           - staging
-        default: prod
+        default: production
 
 jobs:
   deploy:
@@ -32,19 +32,25 @@ jobs:
         id: gate
         uses: ./
         with:
-          atlasent_api_key: ${{ secrets.ATLASENT_API_KEY }}
-          atlasent_anon_key: ${{ vars.ATLASENT_ANON_KEY }}
-          action: production-deploy
-          environment: ${{ inputs.environment || 'prod' }}
-          approvals: ${{ inputs.force_denial == true && '0' || '2' }}
-          change_window: ${{ inputs.force_denial == true && 'false' || 'true' }}
+          atlasent-api-url: ${{ vars.ATLASENT_API_URL }}
+          atlasent-api-key: ${{ secrets.ATLASENT_API_KEY }}
+          action-id: ${{ inputs.action_id || 'ci.production-deploy' }}
+          environment: ${{ inputs.environment || 'production' }}
+          actor-id: ${{ github.actor }}
+          context: |
+            {
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}",
+              "workflow": "${{ github.workflow }}"
+            }
+          fail-on-deny: 'true'
 
       # Only reached if AtlaSent authorized the deploy
-      - name: Deploy to ${{ inputs.environment || 'prod' }}
+      - name: Deploy to ${{ inputs.environment || 'production' }}
         run: |
-          echo "Decision:    ${{ steps.gate.outputs.decision }}"
-          echo "Decision ID: ${{ steps.gate.outputs.decision_id }}"
-          echo "Audit Hash:  ${{ steps.gate.outputs.audit_hash }}"
-          echo "Verified:    ${{ steps.gate.outputs.verified }}"
+          echo "Decision:      ${{ steps.gate.outputs.decision }}"
+          echo "Evaluation ID: ${{ steps.gate.outputs.evaluation-id }}"
+          echo "Permit ID:     ${{ steps.gate.outputs.permit-id }}"
+          echo "Risk level:    ${{ steps.gate.outputs.risk-level }}"
           echo ""
           echo "Replace this with your real deploy command."

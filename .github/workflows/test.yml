@@ -13,27 +13,35 @@ jobs:
 
       - name: Validate action.yml
         run: |
-          # Verify action.yml is valid YAML
           python3 -c "
-import yaml, sys
-with open('action.yml') as f:
-    data = yaml.safe_load(f)
-required = ['name', 'description', 'inputs', 'outputs', 'runs']
-for key in required:
-    if key not in data:
-        print(f'Missing key: {key}', file=sys.stderr)
-        sys.exit(1)
-print('action.yml valid')
-"
+          import yaml, sys
+          with open('action.yml') as f:
+              data = yaml.safe_load(f)
+          required = ['name', 'description', 'inputs', 'outputs', 'runs']
+          for key in required:
+              if key not in data:
+                  print(f'Missing top-level key: {key}', file=sys.stderr)
+                  sys.exit(1)
+          expected_inputs = ['atlasent-api-url', 'atlasent-api-key', 'action-id']
+          for key in expected_inputs:
+              if key not in data['inputs']:
+                  print(f'Missing required input: {key}', file=sys.stderr)
+                  sys.exit(1)
+          expected_outputs = ['decision', 'permit-id', 'risk-level', 'evaluation-id']
+          for key in expected_outputs:
+              if key not in data['outputs']:
+                  print(f'Missing output: {key}', file=sys.stderr)
+                  sys.exit(1)
+          print('action.yml valid')
+          "
 
-      - name: Check evaluate step present
-        run: |
-          grep -q 'v1-evaluate' action.yml && echo 'evaluate step found'
-
-      - name: Check verify step present
-        run: |
-          grep -q 'v1-verify-permit' action.yml && echo 'verify step found'
-
-      - name: Check fail-closed logic
-        run: |
-          grep -q 'fail-closed' action.yml && echo 'fail-closed logic found'
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck

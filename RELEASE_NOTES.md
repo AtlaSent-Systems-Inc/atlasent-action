@@ -1,42 +1,52 @@
-# Release Notes — v1.0.0
+# Release Notes — v2.0.0
 
-**Release date:** 2026-04-17
+**Release date:** 2026-04-19
 
-## AtlaSent GitHub Actions Gate v1.0.0
+## AtlaSent GitHub Actions Gate v2.0.0
 
-First stable release. Use as a required status check to gate deployments behind an AtlaSent authorization decision.
+Major release. The action now calls `POST /v1/evaluate` on the AtlaSent API directly — policies live server-side, and the separate permit-verify round trip has been removed. Use as a required status check to gate deployments behind an AtlaSent decision.
 
 ### Usage
 
 ```yaml
-- uses: AtlaSent-Systems-Inc/atlasent-action@v1
+- uses: AtlaSent-Systems-Inc/atlasent-action@v2
   with:
-    atlasent_api_key: ${{ secrets.ATLASENT_API_KEY }}
-    atlasent_anon_key: ${{ vars.ATLASENT_ANON_KEY }}
-    agent: ${{ github.actor }}
-    action: deployment.production
+    atlasent-api-url: ${{ vars.ATLASENT_API_URL }}
+    atlasent-api-key: ${{ secrets.ATLASENT_API_KEY }}
+    action-id: ci.production-deploy
+    environment: production
+    actor-id: ${{ github.actor }}
 ```
 
 ### Inputs
 
 | Input | Required | Description |
 |---|---|---|
-| `atlasent_api_key` | Yes | Scoped API key (`evaluate` scope minimum) |
-| `atlasent_anon_key` | Yes | Supabase anonymous key |
-| `agent` | Yes | Agent identifier (typically `github.actor`) |
-| `action` | Yes | Action class being gated |
-| `context` | No | JSON object with additional context |
-| `fail_on_deny` | No | Default: `true`. Set to `false` for audit-only mode |
+| `atlasent-api-url` | Yes | Base URL of your AtlaSent API |
+| `atlasent-api-key` | Yes | Org-scoped API key with `evaluation:execute` scope |
+| `action-id` | Yes | Action identifier to evaluate (e.g. `ci.production-deploy`) |
+| `environment` | No | Target environment (default: `production`) |
+| `actor-id` | No | Actor identifier (default: `github.actor`) |
+| `context` | No | JSON string of additional context (default: `{}`) |
+| `fail-on-deny` | No | Fail the step if decision is `deny` (default: `true`) |
 
 ### Outputs
 
 | Output | Description |
 |---|---|
-| `decision` | `allow`, `deny`, or `hold` |
-| `decision_id` | UUID for the decision record |
-| `audit_hash` | SHA-256 hash of the audit chain row |
-| `permit_token` | Single-use permit token (only on `allow`) |
+| `decision` | `allow`, `deny`, or `require_approval` |
+| `permit-id` | Permit ID when decision is `allow` |
+| `risk-level` | `low`, `medium`, `high`, or `critical` |
+| `evaluation-id` | Evaluation ID for the audit trail |
+
+### Breaking changes from v1
+
+- Inputs renamed to kebab-case; `atlasent_anon_key`, `atlasent_base_url`, `approvals`, `change_window` removed
+- Outputs renamed; `audit_hash` and `verified` removed (permit-verify step is gone)
+- Consumers must migrate `@v1` → `@v2`
+
+See [`docs/v1-migration.md`](./docs/v1-migration.md) and [`docs/DESIGN_V2.md`](./docs/DESIGN_V2.md) for migration details.
 
 ### Stability guarantees
 
-The `@v1` tag is maintained. Patch updates are applied automatically. Pin to `@v1.0.0` for pinned reproducibility.
+The `@v2` tag is maintained and auto-advances to the latest v2.x patch. Pin to `@v2.0.0` for reproducibility.

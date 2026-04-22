@@ -1,42 +1,56 @@
-name: AtlaSent Policy Gate
-description: Evaluate an action request against AtlaSent policies before proceeding
+name: AtlaSent Deployment Gate
+description: Execution-time authorization gate. Calls AtlaSent /v1/evaluate before a protected step (e.g. production deploy) runs. Fails closed on deny, hold, or escalate.
 author: AtlaSent Systems Inc
+branding:
+  icon: shield
+  color: blue
 
 inputs:
-  atlasent-api-url:
-    description: Base URL of your AtlaSent API
-    required: true
-  atlasent-api-key:
-    description: Org-scoped API key with evaluation:execute scope
-    required: true
-  action-id:
-    description: Action identifier to evaluate (e.g. ci.production-deploy)
-    required: true
-  environment:
-    description: Target environment
+  api-url:
+    description: AtlaSent API base URL.
     required: false
-    default: production
+    default: https://api.atlasent.io
+  api-key:
+    description: AtlaSent API key (scope evaluation:execute). Store as a secret.
+    required: true
+  action-type:
+    description: Canonical action identifier being gated (e.g. production.deploy, release.publish).
+    required: true
   actor-id:
-    description: Actor identifier (defaults to github.actor)
+    description: Stable actor identifier. Defaults to gha:${{ github.actor }}.
     required: false
   context:
-    description: JSON string of additional context
+    description: JSON object with additional evaluation context. Merged under the `context` field of the request.
     required: false
     default: '{}'
   fail-on-deny:
-    description: Fail the step if decision is deny
+    description: Fail the step when the decision is not `allow`. Set to false for advisory mode.
     required: false
     default: 'true'
+  timeout-ms:
+    description: Evaluate request timeout in milliseconds.
+    required: false
+    default: '15000'
 
 outputs:
   decision:
-    description: allow, deny, or require_approval
-  permit-id:
-    description: Permit ID if decision is allow
-  risk-level:
-    description: low, medium, high, or critical
+    description: One of `allow`, `deny`, `hold`, `escalated`.
+  reason:
+    description: Human-readable reason for the decision.
   evaluation-id:
-    description: Evaluation ID for audit trail
+    description: Evaluation record ID (for audit trail correlation).
+  permit-id:
+    description: Permit ID issued when decision is `allow`.
+  permit-expires-at:
+    description: ISO-8601 expiry of the issued permit.
+  verified:
+    description: '`true` if the evaluator returned a verified proof record.'
+  audit-hash:
+    description: SHA-256 hash of the audit record (tamper-evident).
+  escalation-url:
+    description: Console URL to review/approve when decision is `hold` or `escalated`.
+  policy-version:
+    description: Policy version that produced this decision.
 
 runs:
   using: node20

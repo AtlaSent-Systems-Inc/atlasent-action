@@ -1,0 +1,6 @@
+node_modules/
+*.log
+.DS_Store
+
+# Keep dist/ checked in — GitHub Actions runs the pre-built bundle directly.
+!dist/

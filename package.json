@@ -1,21 +1,22 @@
 {
   "name": "atlasent-action",
   "version": "2.0.0",
-  "description": "AtlaSent GitHub Actions gate — calls /v1/evaluate to enforce policy on every workflow run",
   "private": true,
+  "description": "Execution-time deployment gate for GitHub Actions. Calls AtlaSent /v1/evaluate before a protected step runs.",
+  "main": "dist/index.js",
   "scripts": {
-    "build": "ncc build src/index.ts -o dist --source-map --license licenses.txt",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "build": "ncc build src/index.ts -o dist --source-map --license licenses.txt --minify",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@actions/core": "^1.10.1",
-    "@actions/github": "^6.0.0"
+    "@actions/core": "^1.10.1"
   },
   "devDependencies": {
     "@types/node": "^20.12.7",
     "@vercel/ncc": "^0.38.1",
-    "typescript": "^5.4.5",
-    "vitest": "^1.5.0"
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

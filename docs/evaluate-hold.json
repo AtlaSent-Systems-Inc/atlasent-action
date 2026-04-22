@@ -1,0 +1,10 @@
+{
+  "decision": "hold",
+  "evaluation_id": "eval_01HXAAGHOLDX8VP5N2Q7R1MHHH",
+  "reason": "outside approved change window; escalation required",
+  "policy_version": "2026-04-22.1",
+  "escalation": {
+    "url": "https://console.atlasent.io/requests/req_01HXAAGHOLDAPP",
+    "required_approvers": 2
+  }
+}

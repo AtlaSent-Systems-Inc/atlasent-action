@@ -1,0 +1,19 @@
+{
+  "action_type": "production.deploy",
+  "actor_id": "gha:octocat",
+  "context": {
+    "repository": "acme/checkout-api",
+    "ref": "refs/heads/main",
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "workflow": "Production Deploy (AtlaSent gated)",
+    "run_id": "8123456789",
+    "run_attempt": "1",
+    "event": "push",
+    "actor": "octocat",
+    "runner_os": "Linux",
+    "service": "checkout-api",
+    "environment": "production",
+    "approvals": 2,
+    "change_window": true
+  }
+}

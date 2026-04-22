@@ -1,50 +1,65 @@
-name: AtlaSent Deploy Gate (Demo)
+name: Production Deploy (AtlaSent gated)
 
-# Demo: gate deploys through AtlaSent before they execute.
-# In your repo, replace uses: ./ with: uses: AtlaSent-Systems-Inc/atlasent-action@v1
+# Demo workflow. Shows AtlaSent as an execution-time gate in front of a
+# production deploy step. The deploy step only runs if AtlaSent returns
+# decision=allow. Deny / hold / escalated all fail the job.
+#
+# In your repo, replace `uses: ./` with `uses: AtlaSent-Systems-Inc/atlasent-action@v2`.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
     inputs:
-      force_denial:
-        description: 'Force a denial (sets approvals=0, change_window=false)'
-        required: false
-        type: boolean
-        default: false
-      environment:
-        description: 'Target environment'
-        required: false
+      scenario:
+        description: Decision to exercise (drives context so AtlaSent evaluates as allow/deny/hold)
+        required: true
         type: choice
-        options:
-          - prod
-          - staging
-        default: prod
+        default: allow
+        options: [allow, deny, hold]
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    name: Deploy to production
     runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
-      - name: AtlaSent authorization gate
+      - name: AtlaSent execution gate
         id: gate
         uses: ./
         with:
-          atlasent_api_key: ${{ secrets.ATLASENT_API_KEY }}
-          atlasent_anon_key: ${{ vars.ATLASENT_ANON_KEY }}
-          action: production-deploy
-          environment: ${{ inputs.environment || 'prod' }}
-          approvals: ${{ inputs.force_denial == true && '0' || '2' }}
-          change_window: ${{ inputs.force_denial == true && 'false' || 'true' }}
+          api-url: ${{ vars.ATLASENT_API_URL }}
+          api-key: ${{ secrets.ATLASENT_API_KEY }}
+          action-type: production.deploy
+          actor-id: gha:${{ github.actor }}
+          context: |
+            {
+              "service": "checkout-api",
+              "environment": "production",
+              "approvals": ${{ (github.event.inputs.scenario == 'deny') && 0 || 2 }},
+              "change_window": ${{ (github.event.inputs.scenario == 'hold') && false || true }},
+              "commit_sha": "${{ github.sha }}",
+              "pull_request": "${{ github.event.pull_request.html_url }}"
+            }
 
-      # Only reached if AtlaSent authorized the deploy
-      - name: Deploy to ${{ inputs.environment || 'prod' }}
+      # Only runs when AtlaSent returned decision=allow.
+      # If the gate denies/holds/escalates, this job fails at the step above
+      # and the deploy step never executes.
+      - name: Deploy
         run: |
-          echo "Decision:    ${{ steps.gate.outputs.decision }}"
-          echo "Decision ID: ${{ steps.gate.outputs.decision_id }}"
-          echo "Audit Hash:  ${{ steps.gate.outputs.audit_hash }}"
-          echo "Verified:    ${{ steps.gate.outputs.verified }}"
-          echo ""
-          echo "Replace this with your real deploy command."
+          echo "AtlaSent permitted this deploy."
+          echo "  decision=${{ steps.gate.outputs.decision }}"
+          echo "  permit=${{ steps.gate.outputs.permit-id }}"
+          echo "  expires=${{ steps.gate.outputs.permit-expires-at }}"
+          echo "  audit_hash=${{ steps.gate.outputs.audit-hash }}"
+          echo "  evaluation=${{ steps.gate.outputs.evaluation-id }}"
+          # Replace with your real deploy command:
+          #   ./scripts/deploy.sh production

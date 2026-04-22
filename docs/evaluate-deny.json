@@ -1,33 +1,14 @@
 {
   "decision": "deny",
-  "decision_id": "eval_1a2b3c4d5e6f7890",
-  "audit_hash": "sha256:7d793037a0760186574b0282f2f435e7",
-  "deny_code": "POLICY_VIOLATION",
-  "reason": "insufficient approvals and outside change window",
-  "request_id": "gha-12345678-1",
-  "policy_version": "2026-04-01",
+  "evaluation_id": "eval_01HXAAGDENY3K8WV7B2R9C1MDD",
+  "reason": "missing 2 of 2 required approvals",
+  "policy_version": "2026-04-22.1",
   "violations": [
     {
+      "rule": "production.deploy.approvals",
       "field": "context.approvals",
-      "rule": "minimum_approvals",
       "expected": 2,
-      "actual": 0,
-      "message": "At least 2 approvals required for production deployment"
-    },
-    {
-      "field": "context.change_window",
-      "rule": "change_window_required",
-      "expected": true,
-      "actual": false,
-      "message": "Deployment must occur within an approved change window"
+      "actual": 0
     }
-  ],
-  "metadata": {
-    "agent": "github-actions",
-    "action": "production-deploy",
-    "actor": "deploy-engineer",
-    "environment": "prod",
-    "approvals": 0,
-    "change_window": false
-  }
+  ]
 }

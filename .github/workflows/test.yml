@@ -1,4 +1,4 @@
-name: Test Action
+name: Build & verify
 
 on:
   push:
@@ -6,34 +6,108 @@ on:
   pull_request:
 
 jobs:
-  test-action-syntax:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+
+      - name: Assert dist/ is up to date
+        run: |
+          if ! git diff --quiet --exit-code dist/; then
+            echo "::error::dist/ is out of date — run 'npm run build' and commit the result"
+            git --no-pager diff dist/ | head -80
+            exit 1
+          fi
+
       - name: Validate action.yml
         run: |
-          # Verify action.yml is valid YAML
-          python3 -c "
-import yaml, sys
-with open('action.yml') as f:
-    data = yaml.safe_load(f)
-required = ['name', 'description', 'inputs', 'outputs', 'runs']
-for key in required:
-    if key not in data:
-        print(f'Missing key: {key}', file=sys.stderr)
-        sys.exit(1)
-print('action.yml valid')
-"
+          python3 - <<'PY'
+          import sys, yaml
+          with open('action.yml') as f: data = yaml.safe_load(f)
+          required = {'name','description','inputs','outputs','runs'}
+          missing = required - set(data)
+          if missing:
+              print(f'missing top-level keys: {missing}', file=sys.stderr); sys.exit(1)
+          for i in ('api-key','action-type'):
+              if i not in data['inputs'] or not data['inputs'][i].get('required'):
+                  print(f'input {i} must be required', file=sys.stderr); sys.exit(1)
+          for o in ('decision','reason','evaluation-id','permit-id'):
+              if o not in data['outputs']:
+                  print(f'missing output: {o}', file=sys.stderr); sys.exit(1)
+          assert data['runs']['using'] == 'node20'
+          assert data['runs']['main'] == 'dist/index.js'
+          print('action.yml OK')
+          PY
 
-      - name: Check evaluate step present
-        run: |
-          grep -q 'v1-evaluate' action.yml && echo 'evaluate step found'
+  live-gate:
+    name: Live evaluate against mock API
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Check verify step present
+      - name: Start mock AtlaSent API
         run: |
-          grep -q 'v1-verify-permit' action.yml && echo 'verify step found'
+          cat > /tmp/mock.js <<'JS'
+          const http = require('http');
+          const scenario = process.env.SCENARIO || 'allow';
+          http.createServer((req, res) => {
+            let b = ''; req.on('data', c => b += c); req.on('end', () => {
+              res.setHeader('Content-Type', 'application/json');
+              if (scenario === 'allow') return res.end(JSON.stringify({
+                decision: 'allow', evaluation_id: 'eval_test_allow',
+                reason: 'ok', policy_version: 'test',
+                permit: { id: 'permit_test', token: 'secret', expires_at: '2099-01-01T00:00:00Z' },
+                verification: { verified: true, audit_hash: 'sha256:test' }}));
+              if (scenario === 'deny') return res.end(JSON.stringify({
+                decision: 'deny', evaluation_id: 'eval_test_deny',
+                reason: 'policy violation', policy_version: 'test' }));
+            });
+          }).listen(8765, () => console.log('mock up'));
+          JS
+          SCENARIO=allow node /tmp/mock.js &
+          sleep 1
 
-      - name: Check fail-closed logic
+      - name: Gate (allow path)
+        id: allow
+        uses: ./
+        with:
+          api-url: http://127.0.0.1:8765
+          api-key: test-key
+          action-type: production.deploy
+
+      - name: Assert allow
         run: |
-          grep -q 'fail-closed' action.yml && echo 'fail-closed logic found'
+          test "${{ steps.allow.outputs.decision }}" = "allow"
+          test -n "${{ steps.allow.outputs.permit-id }}"
+          test -n "${{ steps.allow.outputs.evaluation-id }}"
+
+      - name: Restart mock in deny mode
+        run: |
+          pkill -f /tmp/mock.js || true
+          sleep 1
+          SCENARIO=deny node /tmp/mock.js &
+          sleep 1
+
+      - name: Gate (deny path, advisory)
+        id: deny
+        uses: ./
+        with:
+          api-url: http://127.0.0.1:8765
+          api-key: test-key
+          action-type: production.deploy
+          fail-on-deny: 'false'
+
+      - name: Assert deny
+        run: |
+          test "${{ steps.deny.outputs.decision }}" = "deny"
+          test -n "${{ steps.deny.outputs.reason }}"

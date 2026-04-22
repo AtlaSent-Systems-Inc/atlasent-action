@@ -1,144 +1,175 @@
-# AtlaSent Action
+# AtlaSent Deployment Gate
 
-Block production deploys unless AtlaSent authorizes them. Sits as a required status check so nothing reaches production without an evaluated, verified permit.
+> Execution-time authorization for CI/CD. A protected step (production deploy,
+> release publish, infra apply) calls AtlaSent **before** it runs. AtlaSent
+> decides `allow` / `deny` / `hold` / `escalated`. The step only executes on
+> `allow`.
 
 ```
-Push to main → AtlaSent evaluates → permitted → deploy
-                                   → blocked  → fail with reason
+push to main ─▶ AtlaSent /v1/evaluate ─▶ allow     ─▶ deploy runs
+                                      └▶ deny      ─▶ job fails, reason surfaced
+                                      └▶ hold      ─▶ job fails, escalation URL surfaced
+                                      └▶ escalated ─▶ job fails, awaiting approver
 ```
 
-## Add to Any Repo in 3 Steps
+This is not an approval workflow bolted onto `on: pull_request`. The decision
+is made **at the moment of execution**, against live policy, with a
+tamper-evident audit record. A stale approval, a drifted commit, or a request
+outside the change window will be denied even if CI was green a minute ago.
 
-### Step 1: Add secrets
+## Why this is different from approval-only CI controls
 
-In your repo's **Settings → Secrets and variables → Actions**:
+| Approval-only (CODEOWNERS, environments) | AtlaSent gate |
+|---|---|
+| Check runs at PR merge or manual approval | Check runs at the moment the protected step executes |
+| Approval is a single boolean on a PR | Decision is policy-driven over live context (actor, SHA, window, risk) |
+| No cryptographic proof | Signed permit + audit hash per execution |
+| Can't represent `hold`/`escalated` | Four-state decision; escalations route to on-call |
+| Logs are GitHub-only | Decision is logged to AtlaSent with evaluation_id for audit |
 
-| Type | Name | Value |
-|---|---|---|
-| Secret | `ATLASENT_API_KEY` | Your AtlaSent API key |
-| Variable | `ATLASENT_ANON_KEY` | Your AtlaSent public anon key |
-
-No credentials yet? → [atlasent.io](https://atlasent.io)
-
-### Step 2: Add the workflow
-
-Create `.github/workflows/deploy.yaml`:
+## Minimal usage
 
 ```yaml
-name: Deploy
-
+# .github/workflows/deploy.yml
+name: Production Deploy
 on:
-  push:
-    branches: [main]
+  push: { branches: [main] }
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - uses: actions/checkout@v4
 
-      - name: AtlaSent authorization gate
+      - name: AtlaSent execution gate
         id: gate
-        uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        uses: AtlaSent-Systems-Inc/atlasent-action@v2
         with:
-          atlasent_api_key: ${{ secrets.ATLASENT_API_KEY }}
-          atlasent_anon_key: ${{ vars.ATLASENT_ANON_KEY }}
+          api-url:     ${{ vars.ATLASENT_API_URL }}
+          api-key:     ${{ secrets.ATLASENT_API_KEY }}
+          action-type: production.deploy
+          context: |
+            {
+              "service": "checkout-api",
+              "environment": "production",
+              "approvals": 2,
+              "change_window": true
+            }
 
-      # This step only runs if AtlaSent authorized the deploy
-      - name: Deploy
-        run: ./deploy.sh
+      # Only reached on decision=allow.
+      - run: ./scripts/deploy.sh production
 ```
 
-### Step 3: Require the check
-
-In **Settings → Branches → Branch protection rules** for `main`:
-
-- Check **Require status checks to pass before merging**
-- Add **deploy** as a required check
-
-Done. Every push to `main` now requires AtlaSent authorization.
-
-## What a Blocked Deploy Looks Like
-
-When AtlaSent denies an action, the workflow fails immediately and the reason is surfaced in three places:
-
-**In the Actions log:**
-```
-Error: BLOCKED by AtlaSent — decision=deny code=POLICY_VIOLATION reason=insufficient approvals and outside change window
-```
-
-**In the job summary (visible on the Actions run page):**
-
-| Field | Value |
-|---|---|
-| **Decision** | `deny` |
-| **Decision ID** | `eval_1a2b3c4d5e6f7890` |
-| **Audit Hash** | `sha256:e3b0c44298fc1c14...` |
-| **Action** | `production-deploy` |
-| **Actor** | `deploy-engineer` |
-| **SHA** | `a1b2c3d4e5f6` |
-| **Branch** | `refs/heads/main` |
-| **Reason** | insufficient approvals and outside change window |
-
-**In the PR (when used as a required check):**
-
-The merge button is blocked with: _"Required status check — deploy — failing"_
+Set `ATLASENT_API_URL` (repo variable) and `ATLASENT_API_KEY` (repo secret,
+scope `evaluation:execute`). No other setup.
 
 ## Inputs
 
-| Input | Required | Default | Description |
-|---|---|---|---|
-| `atlasent_api_key` | **Yes** | — | AtlaSent API key (use a secret) |
-| `atlasent_anon_key` | **Yes** | — | AtlaSent public anon key |
-| `action` | No | `production-deploy` | Action to authorize |
-| `environment` | No | `prod` | Target environment |
-| `approvals` | No | `0` | Number of approvals obtained |
-| `change_window` | No | `false` | Within an approved change window? |
-| `atlasent_base_url` | No | *(production)* | API base URL override |
+| Input          | Required | Default                    | Description |
+|----------------|----------|----------------------------|-------------|
+| `api-key`      | yes      | —                          | AtlaSent API key (store as a secret). |
+| `action-type`  | yes      | —                          | Canonical action being gated, e.g. `production.deploy`, `release.publish`. |
+| `api-url`      | no       | `https://api.atlasent.io`  | API base URL. |
+| `actor-id`     | no       | `gha:${{ github.actor }}`  | Stable actor identifier. |
+| `context`      | no       | `{}`                       | JSON object merged under the request's `context` field. |
+| `fail-on-deny` | no       | `true`                     | Fail the step on anything other than `allow`. Set `false` for advisory/dry-run. |
+| `timeout-ms`   | no       | `15000`                    | Request timeout. |
 
 ## Outputs
 
-| Output | Description |
-|---|---|
-| `decision` | `allow` or `deny` |
-| `decision_id` | Unique evaluation ID for audit trail |
-| `audit_hash` | Tamper-evident hash of the evaluation context |
-| `permit_token` | Single-use permit token (only when allowed) |
-| `verified` | Whether permit was verified at execution time |
+| Output              | Description |
+|---------------------|-------------|
+| `decision`          | `allow` \| `deny` \| `hold` \| `escalated` |
+| `reason`            | Human-readable reason from the evaluator. |
+| `evaluation-id`     | Evaluation record ID (audit correlation). |
+| `permit-id`         | Permit ID, present on `allow`. |
+| `permit-expires-at` | ISO-8601 permit expiry. |
+| `verified`          | `true` if the evaluator returned a verified proof. |
+| `audit-hash`        | SHA-256 of the audit record. |
+| `escalation-url`    | Console URL to review `hold` / `escalated` decisions. |
+| `policy-version`    | Policy version that produced the decision. |
 
-## How It Works
+The permit token itself is registered as a masked secret in the runner and is
+**not** exposed as an output. Pass `permit-id` around instead.
 
-1. **Evaluate** — Calls `POST /v1-evaluate` with `agent="github-actions"`, `action="production-deploy"`, and context (SHA, branch, actor, environment, approvals, change window). Returns a decision and single-use permit token.
+## Request contract
 
-2. **Verify** — Calls `POST /v1-verify-permit` to confirm the permit hasn't been tampered with, expired, or had its context change between evaluation and execution.
+`POST {api-url}/v1/evaluate` with `Authorization: Bearer <api-key>`:
 
-3. **Proceed or block** — If both succeed, downstream steps run. If anything fails, the workflow is blocked (fail-closed). Decision ID and audit hash are logged to the job summary.
-
-## Customizing the Action
-
-Gate staging deploys, data exports, or any agent action:
-
-```yaml
-- uses: AtlaSent-Systems-Inc/atlasent-action@v1
-  with:
-    atlasent_api_key: ${{ secrets.ATLASENT_API_KEY }}
-    atlasent_anon_key: ${{ vars.ATLASENT_ANON_KEY }}
-    action: staging-deploy
-    environment: staging
-    approvals: 1
-    change_window: true
+```json
+{
+  "action_type": "production.deploy",
+  "actor_id": "gha:octocat",
+  "context": {
+    "repository": "acme/checkout-api",
+    "ref": "refs/heads/main",
+    "sha": "0123...",
+    "workflow": "Production Deploy",
+    "run_id": "8123456789",
+    "event": "push",
+    "environment": "production",
+    "approvals": 2,
+    "change_window": true
+  }
+}
 ```
 
-## Testing a Denial
+The action always merges GitHub runtime context (repo, ref, sha, workflow, run
+id, event, actor, runner os) into `context` before the caller's `context` is
+applied. Caller keys win on conflict.
 
-Use the [demo workflow](./.github/workflows/deploy.yaml) with manual dispatch. Check **"Force a denial"** to send `approvals=0, change_window=false`, which violates the policy and produces a denial you can inspect.
+See sample responses under [`docs/`](./docs/):
+[`evaluate-request.json`](./docs/evaluate-request.json),
+[`evaluate-allow.json`](./docs/evaluate-allow.json),
+[`evaluate-deny.json`](./docs/evaluate-deny.json),
+[`evaluate-hold.json`](./docs/evaluate-hold.json).
 
-## Sample API Responses
+## What a blocked deploy looks like
 
-See [`docs/`](./docs/) for examples of every API response:
-- [`evaluate-allow.json`](./docs/evaluate-allow.json) — allowed, permit token issued
-- [`evaluate-deny.json`](./docs/evaluate-deny.json) — denied, policy violation with reasons
-- [`verify-allow.json`](./docs/verify-allow.json) — permit verified at execution time
+The step fails with a single, parseable error line:
+
+```
+Error: AtlaSent DENY — action_type=production.deploy
+  reason="missing 2 of 2 required approvals"
+  evaluation_id=eval_01HXAAGDENY3K8WV7B2R9C1MDD
+```
+
+The job summary renders a table with decision, actor, action, reason, permit,
+audit hash, and (for `hold`/`escalated`) a link to the approval request in the
+AtlaSent console. The protected step never runs. Branch-protection rules
+treating this job as a required check will also block the merge.
+
+## Demo
+
+[`.github/workflows/deploy.yaml`](./.github/workflows/deploy.yaml) is a
+runnable demo. Dispatch it from the Actions tab with the `scenario` input set
+to `allow`, `deny`, or `hold`. Each scenario drives a different `context`, so
+a single policy produces all four decision states end-to-end. Use this to show
+a prospect an execution-time block in under a minute.
+
+## Fail-closed guarantees
+
+Any of the following fail the workflow step:
+
+- Non-2xx from `/v1/evaluate`
+- Network error or timeout
+- Malformed response (missing `decision` or `evaluation_id`)
+- Decision is `deny`, `hold`, or `escalated` (unless `fail-on-deny: false`)
+
+There is no implicit allow. If AtlaSent is unreachable, the deploy does not
+run.
+
+## Building from source
+
+```
+npm ci
+npm run typecheck
+npm run build      # emits dist/
+```
+
+`dist/` is checked in because GitHub Actions runs the pre-built bundle
+directly. CI enforces that `dist/` is up to date with `src/`.
 
 ## License
 

@@ -1,19 +1,34 @@
 import * as core from '@actions/core';
 
-async function run(): Promise<void> {
+export async function run(): Promise<void> {
   const apiUrl = core.getInput('atlasent-api-url', { required: true });
   const apiKey = core.getInput('atlasent-api-key', { required: true });
   const actionId = core.getInput('action-id', { required: true });
   const actorId = core.getInput('actor-id') || process.env.GITHUB_ACTOR || 'unknown';
   const targetId = core.getInput('target-id') || process.env.GITHUB_REPOSITORY || 'unknown';
+  const environment = core.getInput('environment') || 'production';
   const failOnDeny = core.getBooleanInput('fail-on-deny');
 
-  core.info(`AtlaSent: evaluating action "${actionId}" for actor "${actorId}"`);
+  let context: Record<string, unknown> = {};
+  const contextInput = core.getInput('context');
+  if (contextInput && contextInput !== '{}') {
+    try {
+      context = JSON.parse(contextInput);
+    } catch {
+      core.warning(`AtlaSent: context input is not valid JSON — ignoring`);
+    }
+  }
+
+  core.info(`AtlaSent: evaluating action "${actionId}" for actor "${actorId}" in ${environment}`);
 
   const payload = {
-    actor: { id: actorId, type: 'service', metadata: { workflow: process.env.GITHUB_WORKFLOW, run_id: process.env.GITHUB_RUN_ID } },
+    actor: {
+      id: actorId,
+      type: 'service',
+      metadata: { workflow: process.env.GITHUB_WORKFLOW, run_id: process.env.GITHUB_RUN_ID },
+    },
     action: { id: crypto.randomUUID(), type: actionId },
-    target: { id: targetId, type: 'repository', environment: process.env.GITHUB_REF?.includes('main') ? 'production' : 'staging' },
+    target: { id: targetId, type: 'repository', environment, context },
   };
 
   const controller = new AbortController();
@@ -58,4 +73,7 @@ async function run(): Promise<void> {
   }
 }
 
-run();
+// Skipped when running under vitest so tests can import run() cleanly
+if (!process.env.VITEST) {
+  run();
+}

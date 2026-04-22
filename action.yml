@@ -19,8 +19,11 @@ inputs:
   actor-id:
     description: Actor identifier (defaults to github.actor)
     required: false
+  target-id:
+    description: Target identifier (defaults to github.repository)
+    required: false
   context:
-    description: JSON string of additional context
+    description: JSON string of additional context passed to the evaluator
     required: false
     default: '{}'
   fail-on-deny:
@@ -35,6 +38,8 @@ outputs:
     description: Permit ID if decision is allow
   risk-level:
     description: low, medium, high, or critical
+  risk-score:
+    description: Numeric risk score 0–100
   evaluation-id:
     description: Evaluation ID for audit trail
 

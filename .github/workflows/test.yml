@@ -1,4 +1,4 @@
-name: Test Action
+name: Test
 
 on:
   push:
@@ -6,14 +6,13 @@ on:
   pull_request:
 
 jobs:
-  test-action-syntax:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Validate action.yml
         run: |
-          # Verify action.yml is valid YAML
           python3 -c "
 import yaml, sys
 with open('action.yml') as f:
@@ -26,14 +25,15 @@ for key in required:
 print('action.yml valid')
 "
 
-      - name: Check evaluate step present
-        run: |
-          grep -q 'v1-evaluate' action.yml && echo 'evaluate step found'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
 
-      - name: Check verify step present
-        run: |
-          grep -q 'v1-verify-permit' action.yml && echo 'verify step found'
+      - run: npm ci
 
-      - name: Check fail-closed logic
-        run: |
-          grep -q 'fail-closed' action.yml && echo 'fail-closed logic found'
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - run: npm run build

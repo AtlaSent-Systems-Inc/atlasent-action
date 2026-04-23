@@ -120,7 +120,7 @@ function getGitHubContext(): GitHubContext {
     run_number: process.env["GITHUB_RUN_NUMBER"] ?? "",
     workflow: process.env["GITHUB_WORKFLOW"] ?? "",
     event_name: process.env["GITHUB_EVENT_NAME"] ?? "",
-    pr_number: process.env["GITHUB_REF"]?.match(/^refs\/pull\/(\d+)\//)?.[1],
+    pr_number: process.env["GITHUB_REF"]?.match(/^\/pull\/(\d+)\//)?.[1],
     server_url: process.env["GITHUB_SERVER_URL"] ?? "https://github.com",
   };
 }
@@ -149,6 +149,7 @@ async function run(): Promise<void> {
   const actionType = getInput("action", true);
   const actor = getInput("actor") || "unknown";
   const explicitEnv = getInput("environment");
+  const targetIdInput = getInput("target-id");
   const apiUrl = getInput("api-url") || "https://ihghhasvxtltlbizvkqy.supabase.co/functions/v1";
   const failOnDeny = getInput("fail-on-deny") !== "false";
   let extraContext: Record<string, unknown> = {};
@@ -164,10 +165,12 @@ async function run(): Promise<void> {
   // 2. Build context
   const gh = getGitHubContext();
   const environment = resolveEnvironment(explicitEnv, gh.ref, apiKey);
+  const targetId = targetIdInput || gh.repository;
 
   const payload = {
     action_type: actionType,
     actor_id: `github:${actor}`,
+    target_id: targetId,
     context: {
       environment,
       source: "github-action",
@@ -258,6 +261,7 @@ async function run(): Promise<void> {
     proof_hash?: string;
     deny_reason?: string;
     hold_reason?: string;
+    risk_score?: number;
   };
 
   try {
@@ -271,6 +275,7 @@ async function run(): Promise<void> {
   const permitToken = result.permit_token ?? "";
   const evaluationId = result.evaluation_id ?? "";
   const proofHash = result.proof_hash ?? "";
+  const riskScore = result.risk_score !== undefined ? String(result.risk_score) : "";
 
   // Mask the permit token + proof hash so they don't appear verbatim
   // in action logs. The API key already gets masked at line 162;
@@ -286,6 +291,7 @@ async function run(): Promise<void> {
   setOutput("permit-token", permitToken);
   setOutput("evaluation-id", evaluationId);
   setOutput("proof-hash", proofHash);
+  setOutput("risk-score", riskScore);
 
   // 6. Handle decision
   switch (decision) {
@@ -294,6 +300,7 @@ async function run(): Promise<void> {
       info(`  Permit token: (set as 'permit-token' output, masked in logs)`);
       info(`  Proof hash:   (set as 'proof-hash' output, masked in logs)`);
       info(`  Evaluation:   ${evaluationId}`);
+      info(`  Risk score:   ${riskScore || 'n/a'}`);
       break;
 
     case "deny":

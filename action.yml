@@ -1,43 +1,43 @@
-name: AtlaSent Policy Gate
-description: Evaluate an action request against AtlaSent policies before proceeding
-author: AtlaSent Systems Inc
-
+name: 'AtlaSent Gate'
+description: 'Enforce real-time authorization gates on deployments and critical CI/CD actions with cryptographic audit trails'
+branding:
+  icon: 'shield'
+  color: 'green'
 inputs:
-  atlasent-api-url:
-    description: Base URL of your AtlaSent API
+  api-key:
+    description: 'AtlaSent API key (ask_live_* or ask_test_*)'
     required: true
-  atlasent-api-key:
-    description: Org-scoped API key with evaluation:execute scope
+  action:
+    description: 'Action type to evaluate (e.g., production_deploy)'
     required: true
-  action-id:
-    description: Action identifier to evaluate (e.g. ci.production-deploy)
-    required: true
+  actor:
+    description: 'Actor identity (defaults to github.actor)'
+    required: false
+    default: '${{ github.actor }}'
   environment:
-    description: Target environment
+    description: 'Environment (defaults to live for main branch, test otherwise)'
     required: false
-    default: production
-  actor-id:
-    description: Actor identifier (defaults to github.actor)
+  api-url:
+    description: 'AtlaSent API URL (defaults to production)'
     required: false
-  context:
-    description: JSON string of additional context
-    required: false
-    default: '{}'
+    default: 'https://ihghhasvxtltlbizvkqy.supabase.co/functions/v1'
   fail-on-deny:
-    description: Fail the step if decision is deny
+    description: 'Fail the workflow step if the action is denied (default: true)'
     required: false
     default: 'true'
-
+  context:
+    description: 'JSON context to include in the evaluation (optional)'
+    required: false
+    default: '{}'
 outputs:
   decision:
-    description: allow, deny, or require_approval
-  permit-id:
-    description: Permit ID if decision is allow
-  risk-level:
-    description: low, medium, high, or critical
+    description: 'The evaluation decision (allow/deny/hold/escalate)'
+  permit-token:
+    description: 'The permit token (if allowed)'
   evaluation-id:
-    description: Evaluation ID for audit trail
-
+    description: 'The evaluation ID for audit trail'
+  proof-hash:
+    description: 'The cryptographic proof hash'
 runs:
-  using: node20
-  main: dist/index.js
+  using: 'node20'
+  main: 'dist/index.js'

@@ -186,7 +186,13 @@ async function run(): Promise<void> {
 
   info(`AtlaSent Gate: evaluating "${actionType}" for actor "${actor}" in ${environment} environment`);
 
-  // 3. Call the evaluate endpoint
+  // 3. Call the evaluate endpoint.
+  // Infrastructure errors (network, timeout, 5xx, 401/403, 429) are
+  // distinct from policy decisions. `fail-on-deny` governs whether a
+  // legitimate deny/hold/escalate fails the job; it does NOT mean
+  // "fail open on missing authorization." A security gate that
+  // silently lets deploys through when its authority source is
+  // unreachable is worse than no gate.
   let response: HttpResponse;
   try {
     response = await post(`${apiUrl}/v1-evaluate`, JSON.stringify(payload), {
@@ -194,22 +200,55 @@ async function run(): Promise<void> {
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    warning(`AtlaSent API request failed: ${message}`);
-    warning("Network error — failing open. The deployment will proceed without authorization.");
     setOutput("decision", "error");
+    setFailed(
+      `AtlaSent API unreachable: ${message}. The deploy is blocked because ` +
+        `the authorization gate could not confirm a policy decision. ` +
+        `Set ATLASENT_ALLOW_INFRA_BYPASS=1 to deliberately fail-open on ` +
+        `transport errors (not recommended for production gates).`,
+    );
     return;
   }
 
-  // 4. Parse response
+  // 4. Classify the HTTP status. Only 2xx is a policy decision; every
+  // other class is an infrastructure state we must not confuse with
+  // a decision.
+  if (response.status >= 500) {
+    setOutput("decision", "error");
+    setFailed(
+      `AtlaSent API returned HTTP ${response.status} — infrastructure failure, ` +
+        `not a policy decision. Deploy blocked. Body: ${response.body.slice(0, 300)}`,
+    );
+    return;
+  }
+  if (response.status === 401 || response.status === 403) {
+    setOutput("decision", "error");
+    setFailed(
+      `AtlaSent API auth failed (HTTP ${response.status}). Check your ` +
+        `ATLASENT_API_KEY and the key's scopes. Body: ${response.body.slice(0, 300)}`,
+    );
+    return;
+  }
+  if (response.status === 429) {
+    // Rate-limited — transient, but safer to block than silently
+    // allow. Retries should be a caller-controlled workflow decision,
+    // not an action-level fail-open.
+    setOutput("decision", "error");
+    setFailed(
+      `AtlaSent API rate-limited this gate (HTTP 429). Deploy blocked. ` +
+        `Retry the job or raise the key's rate_limit_per_minute.`,
+    );
+    return;
+  }
   if (response.status < 200 || response.status >= 300) {
-    const msg = `AtlaSent API returned HTTP ${response.status}: ${response.body}`;
+    const msg = `AtlaSent API returned HTTP ${response.status}: ${response.body.slice(0, 300)}`;
     if (failOnDeny) {
       setFailed(msg);
-    } else {
-      warning(msg);
-      setOutput("decision", "error");
       return;
     }
+    warning(msg);
+    setOutput("decision", "error");
+    return;
   }
 
   let result: {
@@ -224,15 +263,25 @@ async function run(): Promise<void> {
   try {
     result = JSON.parse(response.body);
   } catch {
-    setFailed(`Failed to parse AtlaSent response: ${response.body}`);
+    setFailed(`Failed to parse AtlaSent response: ${response.body.slice(0, 300)}`);
+    return;
   }
 
-  const decision = result!.decision ?? "unknown";
-  const permitToken = result!.permit_token ?? "";
-  const evaluationId = result!.evaluation_id ?? "";
-  const proofHash = result!.proof_hash ?? "";
+  const decision = result.decision ?? "unknown";
+  const permitToken = result.permit_token ?? "";
+  const evaluationId = result.evaluation_id ?? "";
+  const proofHash = result.proof_hash ?? "";
 
-  // 5. Set outputs
+  // Mask the permit token + proof hash so they don't appear verbatim
+  // in action logs. The API key already gets masked at line 162;
+  // extend the same treatment to derived secrets. Permit tokens are
+  // short-lived and single-use but customer CI log retention can be
+  // long — treat as sensitive at rest.
+  if (permitToken) maskValue(permitToken);
+  if (proofHash) maskValue(proofHash);
+
+  // 5. Set outputs (GitHub masks them in console echoes because of
+  // the maskValue() calls above).
   setOutput("decision", decision);
   setOutput("permit-token", permitToken);
   setOutput("evaluation-id", evaluationId);
@@ -242,8 +291,8 @@ async function run(): Promise<void> {
   switch (decision) {
     case "allow":
       info(`Authorization GRANTED`);
-      info(`  Permit token: ${permitToken}`);
-      info(`  Proof hash:   ${proofHash}`);
+      info(`  Permit token: (set as 'permit-token' output, masked in logs)`);
+      info(`  Proof hash:   (set as 'proof-hash' output, masked in logs)`);
       info(`  Evaluation:   ${evaluationId}`);
       break;
 

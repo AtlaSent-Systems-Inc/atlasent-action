@@ -55,10 +55,10 @@ The action sets several outputs you can reference in subsequent steps:
 
 | Output          | Description                                                       |
 |-----------------|-------------------------------------------------------------------|
-| `decision`      | The evaluation result: `allow`, `deny`, `hold`, or `escalate`     |
-| `permit-token`  | The permit token for authorized actions (`pt_*` prefix)           |
+| `decision`      | The evaluation result: `allow`, `deny`, `hold`, `escalate`, or `error` |
+| `permit-token`  | The permit token for authorized actions (`pt_*` prefix, masked in logs) |
 | `evaluation-id` | Unique evaluation ID for the audit trail                          |
-| `proof-hash`    | Cryptographic proof hash for tamper detection                     |
+| `proof-hash`    | Cryptographic proof hash for tamper detection (masked in logs)    |
 
 ## Inputs
 
@@ -87,11 +87,22 @@ Add the action as a required check:
 2. Wire the step into `.github/workflows/deploy.yaml`
 3. Enable **Settings → Branches → Branch protection rules** and mark the workflow as required
 
-## Fail-open on network error (by design)
+## Fail-closed on infrastructure errors
 
-If the action cannot reach the AtlaSent API (DNS, timeout, 5xx), it emits a `::warning::` and lets the workflow proceed. This is **intentional** — an outage at AtlaSent should not block every production deploy across every customer.
+If the action cannot confirm a policy decision, the step fails and the deploy is blocked. A gate that silently lets deploys through when its authority source is offline is worse than no gate.
 
-If you want strict fail-closed behaviour on network errors, set `fail-on-deny: true` and wrap the step so a `decision=error` output also fails the job. See the FAQ in the AtlaSent docs.
+This applies to:
+
+- Network errors (DNS, timeout) reaching the AtlaSent API
+- `5xx` responses from the API
+- `429` rate-limit responses
+- `401` / `403` auth failures (bad or revoked key)
+
+In each of these cases `decision` is set to `error` so downstream steps can distinguish infrastructure failures from policy denials.
+
+Policy decisions (`deny`, `hold`, `escalate`) remain governed by `fail-on-deny`: default `true` fails the step, `false` demotes to `::warning::`.
+
+The permit token and proof hash are registered with `::add-mask::` before being emitted as outputs, so they do not appear in workflow logs in cleartext.
 
 ## Documentation
 

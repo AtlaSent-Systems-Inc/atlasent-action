@@ -11,29 +11,53 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate action.yml
+      - name: Validate action.yml top-level shape
         run: |
-          # Verify action.yml is valid YAML
           python3 -c "
-import yaml, sys
-with open('action.yml') as f:
-    data = yaml.safe_load(f)
-required = ['name', 'description', 'inputs', 'outputs', 'runs']
-for key in required:
-    if key not in data:
-        print(f'Missing key: {key}', file=sys.stderr)
-        sys.exit(1)
-print('action.yml valid')
-"
+          import yaml, sys
+          with open('action.yml') as f:
+              data = yaml.safe_load(f)
+          required = ['name', 'description', 'inputs', 'outputs', 'runs']
+          for key in required:
+              if key not in data:
+                  print(f'Missing key: {key}', file=sys.stderr)
+                  sys.exit(1)
+          print('action.yml valid')
+          "
 
-      - name: Check evaluate step present
+      - name: Check required inputs declared
         run: |
-          grep -q 'v1-evaluate' action.yml && echo 'evaluate step found'
+          python3 -c "
+          import yaml
+          with open('action.yml') as f:
+              data = yaml.safe_load(f)
+          for k in ('api-key', 'action'):
+              assert k in data['inputs'], f'missing input: {k}'
+          print('required inputs present')
+          "
 
-      - name: Check verify step present
+      - name: Check documented outputs declared
         run: |
-          grep -q 'v1-verify-permit' action.yml && echo 'verify step found'
+          python3 -c "
+          import yaml
+          with open('action.yml') as f:
+              data = yaml.safe_load(f)
+          for k in ('decision', 'permit-token', 'evaluation-id', 'proof-hash'):
+              assert k in data['outputs'], f'missing output: {k}'
+          print('documented outputs present')
+          "
 
-      - name: Check fail-closed logic
+      - name: Check action uses node20 runtime with committed dist
         run: |
-          grep -q 'fail-closed' action.yml && echo 'fail-closed logic found'
+          python3 -c "
+          import yaml
+          with open('action.yml') as f:
+              data = yaml.safe_load(f)
+          assert data['runs']['using'] == 'node20', 'expected node20 runtime'
+          assert data['runs']['main'] == 'dist/index.js', 'expected dist/index.js as main'
+          print('node20 runtime with dist/index.js')
+          "
+
+      - name: Check dist/index.js is committed
+        run: |
+          test -s dist/index.js && echo "dist/index.js present ($(wc -c < dist/index.js) bytes)"

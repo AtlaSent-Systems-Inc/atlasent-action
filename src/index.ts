@@ -140,6 +140,30 @@ function resolveEnvironment(explicit: string, ref: string, apiKey: string): stri
 }
 
 // ---------------------------------------------------------------------------
+// Risk-score extraction
+// ---------------------------------------------------------------------------
+
+// The v1-evaluate response carries risk in two shapes depending on how
+// the rule engine was wired:
+//   - Canonical (per atlasent-api openapi `Decision.risk`):
+//       { risk: { level, score, reasons, ... } }
+//   - Flat (older / minimal evaluator):
+//       { risk_score: number }
+// Try canonical first, fall back to flat. Returns "" when neither is
+// present so the GitHub output is still set (callers can branch on
+// empty string).
+function extractRiskScore(result: Record<string, unknown>): string {
+  const risk = result["risk"];
+  if (risk && typeof risk === "object" && "score" in risk) {
+    const score = (risk as { score?: unknown }).score;
+    if (typeof score === "number") return String(score);
+  }
+  const flat = result["risk_score"];
+  if (typeof flat === "number") return String(flat);
+  return "";
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -148,6 +172,7 @@ async function run(): Promise<void> {
   const apiKey = getInput("api-key", true);
   const actionType = getInput("action", true);
   const actor = getInput("actor") || "unknown";
+  const targetId = getInput("target-id");
   const explicitEnv = getInput("environment");
   const apiUrl = getInput("api-url") || "https://ihghhasvxtltlbizvkqy.supabase.co/functions/v1";
   const failOnDeny = getInput("fail-on-deny") !== "false";
@@ -165,7 +190,7 @@ async function run(): Promise<void> {
   const gh = getGitHubContext();
   const environment = resolveEnvironment(explicitEnv, gh.ref, apiKey);
 
-  const payload = {
+  const payload: Record<string, unknown> = {
     action_type: actionType,
     actor_id: `github:${actor}`,
     context: {
@@ -180,11 +205,20 @@ async function run(): Promise<void> {
       event_name: gh.event_name,
       pr_number: gh.pr_number ?? null,
       run_url: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+      // target_id is also threaded into context so policies that read
+      // context.target_id (rather than the top-level target_id) match.
+      ...(targetId ? { target_id: targetId } : {}),
       ...extraContext,
     },
   };
 
-  info(`AtlaSent Gate: evaluating "${actionType}" for actor "${actor}" in ${environment} environment`);
+  // Top-level target_id matches the canonical EvaluationParams shape
+  // used by `@atlasent/sdk` and atlasent-console. Older evaluators
+  // that only inspect context will still see it via the context
+  // mirror above.
+  if (targetId) payload["target_id"] = targetId;
+
+  info(`AtlaSent Gate: evaluating "${actionType}" for actor "${actor}" in ${environment} environment${targetId ? ` (target=${targetId})` : ""}`);
 
   // 3. Call the evaluate endpoint.
   // Infrastructure errors (network, timeout, 5xx, 401/403, 429) are
@@ -271,6 +305,7 @@ async function run(): Promise<void> {
   const permitToken = result.permit_token ?? "";
   const evaluationId = result.evaluation_id ?? "";
   const proofHash = result.proof_hash ?? "";
+  const riskScore = extractRiskScore(result as Record<string, unknown>);
 
   // Mask the permit token + proof hash so they don't appear verbatim
   // in action logs. The API key already gets masked at line 162;
@@ -286,6 +321,7 @@ async function run(): Promise<void> {
   setOutput("permit-token", permitToken);
   setOutput("evaluation-id", evaluationId);
   setOutput("proof-hash", proofHash);
+  setOutput("risk-score", riskScore);
 
   // 6. Handle decision
   switch (decision) {
@@ -294,6 +330,7 @@ async function run(): Promise<void> {
       info(`  Permit token: (set as 'permit-token' output, masked in logs)`);
       info(`  Proof hash:   (set as 'proof-hash' output, masked in logs)`);
       info(`  Evaluation:   ${evaluationId}`);
+      if (riskScore) info(`  Risk score:   ${riskScore}`);
       break;
 
     case "deny":

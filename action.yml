@@ -29,6 +29,9 @@ inputs:
     description: 'JSON context to include in the evaluation (optional)'
     required: false
     default: '{}'
+  target-id:
+    description: 'Target resource identifier (defaults to GITHUB_REPOSITORY)'
+    required: false
 outputs:
   decision:
     description: 'The evaluation decision (allow/deny/hold/escalate)'
@@ -38,6 +41,8 @@ outputs:
     description: 'The evaluation ID for audit trail'
   proof-hash:
     description: 'The cryptographic proof hash'
+  risk-score:
+    description: 'Numeric risk score 0-100 (empty string if the engine did not score this evaluation)'
 runs:
   using: 'node20'
   main: 'dist/index.js'

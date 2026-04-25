@@ -4,19 +4,12 @@ GitHub Action that gates CI deploys on an AtlaSent `allow` decision. Distributed
 
 ## GA (v1) — must ship
 
-1. **`target-id` input** — `src/index.ts` already reads `core.getInput('target-id')` with a `GITHUB_REPOSITORY` fallback, but `action.yml` never declared it. This is the content of the now-closed PR #10 and must be re-landed:
-   ```yaml
-   inputs:
-     target-id:
-       description: Target resource identifier (defaults to GITHUB_REPOSITORY)
-       required: false
-   outputs:
-     risk-score:
-       description: Numeric risk score 0-100
-   ```
-2. **Four-value `decision` output** — align with `atlasent-api`'s enum: `allow | deny | hold | escalate`. The existing `action.yml` mentions only `allow`.
-3. **Marketplace listing polish** — icon, color, branding in `action.yml`; README with a one-paragraph quickstart; LICENSE.
-4. **Pinned SDK version** — the action bundles `@atlasent/sdk` at build time; pin to the v1 release once `atlasent-sdk` cuts its tag.
+Status snapshot (2026-04-25):
+
+1. **`target-id` input + `risk-score` output** — ✅ DONE in this branch. Runtime in `src/index.ts` now reads `target-id` (with `GITHUB_REPOSITORY` fallback) and emits `risk-score` from `response.risk.score`. Declared in `action.yml` and documented in README.
+2. **Four-value `decision` output** — ✅ DONE. README + action.yml outputs table both document `allow|deny|hold|escalate`.
+3. **Marketplace listing polish** — ✅ DONE. Icon (shield), color (green), README quickstart, LICENSE all present.
+4. **Pinned SDK version** — 🚫 BLOCKED on `atlasent-sdk` v1.0.0 publish (which is itself blocked on `NPM_TOKEN`). Today the action vendors the SDK via the build, not via a `package.json` dep on `@atlasent/sdk`.
 
 ## Post-GA — ordered by impact
 

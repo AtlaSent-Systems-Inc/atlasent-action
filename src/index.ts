@@ -164,6 +164,7 @@ async function run(): Promise<void> {
   // 2. Build context
   const gh = getGitHubContext();
   const environment = resolveEnvironment(explicitEnv, gh.ref, apiKey);
+  const targetId = getInput("target-id") || gh.repository;
 
   const payload = {
     action_type: actionType,
@@ -171,6 +172,7 @@ async function run(): Promise<void> {
     context: {
       environment,
       source: "github-action",
+      target_id: targetId,
       repository: gh.repository,
       ref: gh.ref,
       sha: gh.sha,
@@ -258,6 +260,7 @@ async function run(): Promise<void> {
     proof_hash?: string;
     deny_reason?: string;
     hold_reason?: string;
+    risk?: { level?: string; score?: number; reasons?: string[] };
   };
 
   try {
@@ -271,6 +274,7 @@ async function run(): Promise<void> {
   const permitToken = result.permit_token ?? "";
   const evaluationId = result.evaluation_id ?? "";
   const proofHash = result.proof_hash ?? "";
+  const riskScore = result.risk?.score ?? null;
 
   // Mask the permit token + proof hash so they don't appear verbatim
   // in action logs. The API key already gets masked at line 162;
@@ -286,6 +290,7 @@ async function run(): Promise<void> {
   setOutput("permit-token", permitToken);
   setOutput("evaluation-id", evaluationId);
   setOutput("proof-hash", proofHash);
+  setOutput("risk-score", riskScore !== null ? String(riskScore) : "");
 
   // 6. Handle decision
   switch (decision) {
@@ -294,6 +299,7 @@ async function run(): Promise<void> {
       info(`  Permit token: (set as 'permit-token' output, masked in logs)`);
       info(`  Proof hash:   (set as 'proof-hash' output, masked in logs)`);
       info(`  Evaluation:   ${evaluationId}`);
+      info(`  Risk score:   ${riskScore ?? "n/a"}`);
       break;
 
     case "deny":

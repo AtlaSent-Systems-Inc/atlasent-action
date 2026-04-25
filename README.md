@@ -27,6 +27,7 @@ Push to main → AtlaSent evaluates → permit issued → deploy
     action: production_deploy
     actor: ${{ github.actor }}
     environment: live
+    target-id: ${{ github.repository }}
     fail-on-deny: 'true'
     context: '{"team": "platform", "service": "api"}'
 ```
@@ -37,18 +38,28 @@ The action sets several outputs you can reference in subsequent steps:
 
 ```yaml
 - name: Authorization Gate
-  id: gate
+  id: atlasent
   uses: AtlaSent-Systems-Inc/atlasent-action@v1
   with:
     api-key: ${{ secrets.ATLASENT_API_KEY }}
     action: production_deploy
+    target-id: my-org/my-service
+
+- name: Show risk
+  run: echo "Risk score from AtlaSent= ${{ steps.atlasent.outputs.risk-score }}"
+
+- name: Block on high risk
+  if: steps.atlasent.outputs.risk-score != '' && steps.atlasent.outputs.risk-score > 80
+  run: |
+    echo "::error::Risk score ${{ steps.atlasent.outputs.risk-score }} exceeds threshold of 80"
+    exit 1
 
 - name: Deploy
-  if: steps.gate.outputs.decision == 'allow'
+  if: steps.atlasent.outputs.decision == 'allow'
   run: |
-    echo "Deploying with permit: ${{ steps.gate.outputs.permit-token }}"
-    echo "Proof hash: ${{ steps.gate.outputs.proof-hash }}"
-    ./deploy.sh --permit "${{ steps.gate.outputs.permit-token }}"
+    echo "Deploying with permit: ${{ steps.atlasent.outputs.permit-token }}"
+    echo "Proof hash: ${{ steps.atlasent.outputs.proof-hash }}"
+    ./deploy.sh --permit "${{ steps.atlasent.outputs.permit-token }}"
 ```
 
 ### Outputs
@@ -59,6 +70,7 @@ The action sets several outputs you can reference in subsequent steps:
 | `permit-token`  | The permit token for authorized actions (`pt_*` prefix)           |
 | `evaluation-id` | Unique evaluation ID for the audit trail                          |
 | `proof-hash`    | Cryptographic proof hash for tamper detection                     |
+| `risk-score`    | Numeric risk score `0`-`100` (empty if the engine did not score)  |
 
 ## Inputs
 
@@ -71,6 +83,7 @@ The action sets several outputs you can reference in subsequent steps:
 | `api-url`      | No       | Production URL         | AtlaSent API endpoint                                   |
 | `fail-on-deny` | No       | `true`                 | Fail the step if denied                                 |
 | `context`      | No       | `{}`                   | Additional JSON context for evaluation                  |
+| `target-id`    | No       | `$GITHUB_REPOSITORY`   | Target resource identifier                              |
 
 ## How It Works
 

@@ -14,6 +14,7 @@ Push to main → AtlaSent evaluates → permit issued → deploy
   with:
     api-key: ${{ secrets.ATLASENT_API_KEY }}
     action: production_deploy
+    target-id: ${{ github.repository }}
 ```
 
 ## Full Configuration
@@ -26,6 +27,7 @@ Push to main → AtlaSent evaluates → permit issued → deploy
     api-key: ${{ secrets.ATLASENT_API_KEY }}
     action: production_deploy
     actor: ${{ github.actor }}
+    target-id: api-service
     environment: live
     fail-on-deny: 'true'
     context: '{"team": "platform", "service": "api"}'
@@ -42,12 +44,14 @@ The action sets several outputs you can reference in subsequent steps:
   with:
     api-key: ${{ secrets.ATLASENT_API_KEY }}
     action: production_deploy
+    target-id: api-service
 
 - name: Deploy
   if: steps.gate.outputs.decision == 'allow'
   run: |
     echo "Deploying with permit: ${{ steps.gate.outputs.permit-token }}"
     echo "Proof hash: ${{ steps.gate.outputs.proof-hash }}"
+    echo "Risk score: ${{ steps.gate.outputs.risk-score }}"
     ./deploy.sh --permit "${{ steps.gate.outputs.permit-token }}"
 ```
 
@@ -59,6 +63,7 @@ The action sets several outputs you can reference in subsequent steps:
 | `permit-token`  | The permit token for authorized actions (`pt_*` prefix)           |
 | `evaluation-id` | Unique evaluation ID for the audit trail                          |
 | `proof-hash`    | Cryptographic proof hash for tamper detection                     |
+| `risk-score`    | Numeric risk score 0–100; empty string when not assessed          |
 
 ## Inputs
 
@@ -67,6 +72,7 @@ The action sets several outputs you can reference in subsequent steps:
 | `api-key`      | Yes      | —                      | AtlaSent API key (`ask_live_*` or `ask_test_*`)         |
 | `action`       | Yes      | —                      | Action type to evaluate (e.g. `production_deploy`)      |
 | `actor`        | No       | `${{ github.actor }}`  | Actor identity                                          |
+| `target-id`    | No       | `GITHUB_REPOSITORY`    | Target resource being acted on (service, artifact, etc) |
 | `environment`  | No       | Auto-detected          | `live` for `main`/`master`, `test` otherwise            |
 | `api-url`      | No       | Production URL         | AtlaSent API endpoint                                   |
 | `fail-on-deny` | No       | `true`                 | Fail the step if denied                                 |
@@ -74,8 +80,8 @@ The action sets several outputs you can reference in subsequent steps:
 
 ## How It Works
 
-1. **Evaluate** — POST `/v1-evaluate` with `action_type`, `actor_id`, and a context object populated from GitHub workflow metadata (repo, ref, sha, workflow, run id, PR number, optional user-supplied `context`).
-2. **Decide** — Server returns `allow` / `deny` / `hold` / `escalate` plus a single-use `permit_token` (only when `allow`).
+1. **Evaluate** — POST `/v1-evaluate` with `action_type`, `actor_id`, `target_id`, and a context object populated from GitHub workflow metadata (repo, ref, sha, workflow, run id, PR number, optional user-supplied `context`).
+2. **Decide** — Server returns `allow` / `deny` / `hold` / `escalate` plus a single-use `permit_token` (only when `allow`) and an optional `risk-score`.
 3. **Proceed or block** — `fail-on-deny: true` (default) surfaces deny/hold/escalate as a failing step. `false` demotes them to a workflow `::warning`.
 4. **Audit** — Every evaluation writes to the AtlaSent append-only, hash-chained audit log. The `evaluation-id` and `proof-hash` outputs reference the record.
 
@@ -87,11 +93,11 @@ Add the action as a required check:
 2. Wire the step into `.github/workflows/deploy.yaml`
 3. Enable **Settings → Branches → Branch protection rules** and mark the workflow as required
 
-## Fail-open on network error (by design)
+## Fail-closed on infrastructure errors
 
-If the action cannot reach the AtlaSent API (DNS, timeout, 5xx), it emits a `::warning::` and lets the workflow proceed. This is **intentional** — an outage at AtlaSent should not block every production deploy across every customer.
+If the action cannot reach the AtlaSent API (DNS, timeout, 5xx, 401/403, 429), it fails the step with `decision=error`. A security gate that silently lets deploys through when its authority source is unreachable is worse than no gate, so this is the default and recommended behaviour.
 
-If you want strict fail-closed behaviour on network errors, set `fail-on-deny: true` and wrap the step so a `decision=error` output also fails the job. See the FAQ in the AtlaSent docs.
+This is distinct from `fail-on-deny`, which controls only how *policy* decisions (`deny` / `hold` / `escalate`) are surfaced. Infrastructure failures are not policy decisions and always fail closed.
 
 ## Documentation
 

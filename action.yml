@@ -14,6 +14,9 @@ inputs:
     description: 'Actor identity (defaults to github.actor)'
     required: false
     default: '${{ github.actor }}'
+  target-id:
+    description: 'Target resource being acted on (service name, artifact id, etc). Threaded into both top-level target_id and context.target_id so policies can gate on what is being deployed, not just who is deploying.'
+    required: false
   environment:
     description: 'Environment (defaults to live for main branch, test otherwise)'
     required: false
@@ -38,6 +41,8 @@ outputs:
     description: 'The evaluation ID for audit trail'
   proof-hash:
     description: 'The cryptographic proof hash'
+  risk-score:
+    description: 'The numeric risk score from the Decision response. Empty string when the evaluator did not return a risk assessment.'
 runs:
   using: 'node20'
   main: 'dist/index.js'

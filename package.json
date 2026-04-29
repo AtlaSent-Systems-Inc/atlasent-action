@@ -3,6 +3,7 @@
   "version": "1.2.0",
   "description": "GitHub Action for AtlaSent authorization gates — require a permit before critical CI/CD actions execute",
   "main": "dist/index.js",
+  "workspaces": ["packages/*"],
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=dist/index.js",
     "typecheck": "tsc --noEmit"

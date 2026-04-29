@@ -32,6 +32,16 @@ inputs:
     description: 'JSON context to include in the evaluation (optional)'
     required: false
     default: '{}'
+  evaluations:
+    description: 'JSON array of evaluation requests for batch fan-out. Takes precedence over action: when both are set.'
+    required: false
+  wait-for-id:
+    description: 'Evaluation ID to block on when the decision is hold/escalate (streaming-wait).'
+    required: false
+  wait-timeout-ms:
+    description: 'Max milliseconds to wait for a terminal decision when using wait-for-id (default: 10 min).'
+    required: false
+    default: '600000'
 outputs:
   decision:
     description: 'The evaluation decision (allow/deny/hold/escalate)'
@@ -43,6 +53,8 @@ outputs:
     description: 'The cryptographic proof hash'
   risk-score:
     description: 'The numeric risk score from the Decision response. Empty string when the evaluator did not return a risk assessment.'
+  decisions-json:
+    description: 'JSON array of all evaluation decisions (batch path only).'
 runs:
   using: 'node20'
   main: 'dist/index.js'

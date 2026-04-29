@@ -1,4 +1,8 @@
 import { evaluate, EnforceError } from "@atlasent/enforce";
+import type { Decision as EnforceDecision } from "@atlasent/enforce";
+import { evaluateMany } from "./batch";
+import { waitForTerminalDecision } from "./stream";
+import type { Decision as LocalDecision, EvaluateRequest } from "./types";
 
 // ---------------------------------------------------------------------------
 // GitHub Actions helpers
@@ -73,17 +77,121 @@ function resolveEnvironment(explicit: string, ref: string, apiKey: string): stri
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// Unified gate result — bridges @atlasent/enforce and ./types shapes
 // ---------------------------------------------------------------------------
 
-async function run(): Promise<void> {
-  const apiKey = getInput("api-key", true);
+interface GateResult {
+  decision: string;
+  evaluationId: string;
+  permitToken: string;
+  proofHash: string;
+  riskScore: string;
+  denyReason?: string;
+  holdReason?: string;
+}
+
+function fromEnforceDecision(d: EnforceDecision): GateResult {
+  return {
+    decision: d.decision,
+    evaluationId: d.evaluationId ?? "",
+    permitToken: d.permitToken ?? "",
+    proofHash: d.proofHash ?? "",
+    riskScore: d.riskScore !== undefined ? String(d.riskScore) : "",
+    denyReason: d.denyReason,
+    holdReason: d.holdReason,
+  };
+}
+
+function fromLocalDecision(d: LocalDecision): GateResult {
+  return {
+    decision: d.decision,
+    evaluationId: d.id ?? "",
+    permitToken: d.permitToken ?? "",
+    proofHash: d.proofHash ?? "",
+    riskScore: "",
+    denyReason: d.reasons?.[0],
+    holdReason: d.reasons?.[0],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Output + logging for a single gate result
+// ---------------------------------------------------------------------------
+
+function applyResult(result: GateResult, failOnDeny: boolean): void {
+  const { decision, evaluationId, permitToken, proofHash, riskScore } = result;
+
+  if (permitToken) maskValue(permitToken);
+  if (proofHash) maskValue(proofHash);
+
+  setOutput("decision", decision);
+  setOutput("permit-token", permitToken);
+  setOutput("evaluation-id", evaluationId);
+  setOutput("proof-hash", proofHash);
+  setOutput("risk-score", riskScore);
+
+  switch (decision) {
+    case "allow":
+      info("Authorization GRANTED");
+      info("  Permit token: (set as 'permit-token' output, masked in logs)");
+      info("  Proof hash:   (set as 'proof-hash' output, masked in logs)");
+      info(`  Evaluation:   ${evaluationId}`);
+      if (riskScore) info(`  Risk score:   ${riskScore}`);
+      break;
+    case "deny":
+      if (failOnDeny) {
+        setFailed(`Authorization DENIED: ${result.denyReason ?? "no reason provided"}`);
+      } else {
+        warning(`Authorization DENIED: ${result.denyReason ?? "no reason provided"}`);
+      }
+      break;
+    case "hold":
+      if (failOnDeny) {
+        setFailed(`Authorization on HOLD: ${result.holdReason ?? "awaiting approval"}`);
+      } else {
+        warning(`Authorization on HOLD: ${result.holdReason ?? "awaiting approval"}`);
+      }
+      break;
+    case "escalate":
+      if (failOnDeny) {
+        setFailed("Authorization ESCALATED — manual review required");
+      } else {
+        warning("Authorization ESCALATED — manual review required");
+      }
+      break;
+    default:
+      warning(`Unexpected decision: ${decision}`);
+      if (failOnDeny) setFailed(`Unexpected decision from AtlaSent: ${decision}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Aggregate decision across a batch
+// ---------------------------------------------------------------------------
+
+function aggregateDecision(decisions: LocalDecision[]): string {
+  if (decisions.some((d) => d.decision === "deny")) return "deny";
+  if (decisions.some((d) => d.decision === "hold")) return "hold";
+  if (decisions.some((d) => d.decision === "escalate")) return "escalate";
+  return "allow";
+}
+
+// ---------------------------------------------------------------------------
+// Single-eval path (Alpha — evaluate one action via @atlasent/enforce)
+// ---------------------------------------------------------------------------
+
+async function runSingle(opts: {
+  apiKey: string;
+  apiUrl: string;
+  failOnDeny: boolean;
+  waitForId: string | undefined;
+  waitTimeoutMs: number;
+  v2Streaming: boolean;
+}): Promise<void> {
   const actionType = getInput("action", true);
   const actor = getInput("actor") || "unknown";
   const targetId = getInput("target-id") || undefined;
   const explicitEnv = getInput("environment");
-  const apiUrl = getInput("api-url") || "https://api.atlasent.io";
-  const failOnDeny = getInput("fail-on-deny") !== "false";
 
   let extraContext: Record<string, unknown> = {};
   try {
@@ -92,21 +200,19 @@ async function run(): Promise<void> {
     warning("Could not parse 'context' input as JSON — ignoring");
   }
 
-  maskValue(apiKey);
-
   const gh = getGitHubContext();
-  const environment = resolveEnvironment(explicitEnv, gh.ref, apiKey);
+  const environment = resolveEnvironment(explicitEnv, gh.ref, opts.apiKey);
 
   info(
     `AtlaSent Gate: evaluating "${actionType}" for actor "${actor}" in ${environment} environment` +
       (targetId ? ` (target=${targetId})` : ""),
   );
 
-  let decision;
+  let enforceDecision: EnforceDecision;
   try {
-    decision = await evaluate({
-      apiKey,
-      apiUrl,
+    enforceDecision = await evaluate({
+      apiKey: opts.apiKey,
+      apiUrl: opts.apiUrl,
       action: actionType,
       actor: `github:${actor}`,
       environment,
@@ -130,58 +236,124 @@ async function run(): Promise<void> {
     setFailed(err instanceof EnforceError ? err.message : String(err));
   }
 
-  const permitToken = decision.permitToken ?? "";
-  const evaluationId = decision.evaluationId ?? "";
-  const proofHash = decision.proofHash ?? "";
-  const riskScore = decision.riskScore !== undefined ? String(decision.riskScore) : "";
+  // Streaming-wait: if hold/escalate and this evaluation is the one to wait on
+  if (
+    opts.waitForId &&
+    enforceDecision.evaluationId === opts.waitForId &&
+    (enforceDecision.decision === "hold" || enforceDecision.decision === "escalate")
+  ) {
+    info(`Waiting for terminal decision on evaluation ${opts.waitForId}...`);
+    const terminal = await waitForTerminalDecision({
+      apiUrl: opts.apiUrl,
+      apiKey: opts.apiKey,
+      evaluationId: opts.waitForId,
+      timeoutMs: opts.waitTimeoutMs,
+      v2Streaming: opts.v2Streaming,
+    });
+    applyResult(fromLocalDecision(terminal), opts.failOnDeny);
+    return;
+  }
 
-  if (permitToken) maskValue(permitToken);
-  if (proofHash) maskValue(proofHash);
+  applyResult(fromEnforceDecision(enforceDecision), opts.failOnDeny);
+}
 
-  setOutput("decision", decision.decision);
-  setOutput("permit-token", permitToken);
-  setOutput("evaluation-id", evaluationId);
-  setOutput("proof-hash", proofHash);
-  setOutput("risk-score", riskScore);
+// ---------------------------------------------------------------------------
+// Batch path (Beta — fan out via evaluateMany)
+// ---------------------------------------------------------------------------
 
-  switch (decision.decision) {
-    case "allow":
-      info("Authorization GRANTED");
-      info("  Permit token: (set as 'permit-token' output, masked in logs)");
-      info("  Proof hash:   (set as 'proof-hash' output, masked in logs)");
-      info(`  Evaluation:   ${evaluationId}`);
-      if (riskScore) info(`  Risk score:   ${riskScore}`);
-      break;
+async function runBatch(opts: {
+  apiKey: string;
+  apiUrl: string;
+  failOnDeny: boolean;
+  evaluationsRaw: string;
+  waitForId: string | undefined;
+  waitTimeoutMs: number;
+  v2Batch: boolean;
+  v2Streaming: boolean;
+}): Promise<void> {
+  let items: EvaluateRequest[];
+  try {
+    const parsed: unknown = JSON.parse(opts.evaluationsRaw);
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      throw new Error("must be a non-empty JSON array");
+    }
+    items = parsed as EvaluateRequest[];
+  } catch (err) {
+    setOutput("decision", "error");
+    setFailed(
+      `Invalid 'evaluations' input: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 
-    case "deny":
-      if (failOnDeny) {
-        setFailed(`Authorization DENIED: ${decision.denyReason ?? "no reason provided"}`);
-      } else {
-        warning(`Authorization DENIED: ${decision.denyReason ?? "no reason provided"}`);
-      }
-      break;
+  info(`AtlaSent Gate: evaluating ${items.length} action(s) in batch`);
 
-    case "hold":
-      if (failOnDeny) {
-        setFailed(`Authorization on HOLD: ${decision.holdReason ?? "awaiting approval"}`);
-      } else {
-        warning(`Authorization on HOLD: ${decision.holdReason ?? "awaiting approval"}`);
-      }
-      break;
+  let { decisions } = await evaluateMany(opts.apiUrl, opts.apiKey, items, opts.v2Batch);
 
-    case "escalate":
-      if (failOnDeny) {
-        setFailed("Authorization ESCALATED — manual review required");
-      } else {
-        warning("Authorization ESCALATED — manual review required");
-      }
-      break;
+  // Streaming-wait: find the matching hold/escalate and wait for it
+  if (opts.waitForId) {
+    const idx = decisions.findIndex(
+      (d) =>
+        d.id === opts.waitForId &&
+        (d.decision === "hold" || d.decision === "escalate"),
+    );
+    if (idx >= 0) {
+      info(`Waiting for terminal decision on evaluation ${opts.waitForId}...`);
+      const terminal = await waitForTerminalDecision({
+        apiUrl: opts.apiUrl,
+        apiKey: opts.apiKey,
+        evaluationId: opts.waitForId,
+        timeoutMs: opts.waitTimeoutMs,
+        v2Streaming: opts.v2Streaming,
+      });
+      decisions = [...decisions];
+      decisions[idx] = terminal;
+    }
+  }
 
-    default:
-      warning(`Unexpected decision: ${String(decision.decision)}`);
-      if (failOnDeny) {
-        setFailed(`Unexpected decision from AtlaSent: ${String(decision.decision)}`);
-      }
+  const agg = aggregateDecision(decisions);
+  setOutput("decision", agg);
+  setOutput("decisions-json", JSON.stringify(decisions));
+
+  if (agg === "allow") {
+    info(`Authorization GRANTED for all ${decisions.length} evaluation(s)`);
+  } else {
+    const counts = decisions.reduce<Record<string, number>>((acc, d) => {
+      acc[d.decision] = (acc[d.decision] ?? 0) + 1;
+      return acc;
+    }, {});
+    const summary = Object.entries(counts)
+      .map(([k, v]) => `${v} ${k}`)
+      .join(", ");
+    if (opts.failOnDeny) {
+      setFailed(`Batch gate not fully authorized: ${summary}`);
+    } else {
+      warning(`Batch gate not fully authorized: ${summary}`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+async function run(): Promise<void> {
+  const apiKey = getInput("api-key", true);
+  const apiUrl = getInput("api-url") || "https://api.atlasent.io";
+  const failOnDeny = getInput("fail-on-deny") !== "false";
+  const evaluationsRaw = getInput("evaluations");
+  const waitForId = getInput("wait-for-id") || undefined;
+  const waitTimeoutMs = parseInt(getInput("wait-timeout-ms") || "600000", 10);
+
+  // Tenant flags — defaults to fallback path until control-plane integration lands
+  const v2Batch = process.env["ATLASENT_V2_BATCH"] === "true";
+  const v2Streaming = process.env["ATLASENT_V2_STREAMING"] === "true";
+
+  maskValue(apiKey);
+
+  if (evaluationsRaw.trim()) {
+    await runBatch({ apiKey, apiUrl, failOnDeny, evaluationsRaw, waitForId, waitTimeoutMs, v2Batch, v2Streaming });
+  } else {
+    await runSingle({ apiKey, apiUrl, failOnDeny, waitForId, waitTimeoutMs, v2Streaming });
   }
 }
 

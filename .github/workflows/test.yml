@@ -28,12 +28,18 @@ print('action.yml valid')
 
       - name: Check evaluate step present
         run: |
-          grep -q 'v1-evaluate' action.yml && echo 'evaluate step found'
+          grep -q 'v1-evaluate' src/index.ts && echo 'evaluate step found'
 
       - name: Check verify step present
         run: |
-          grep -q 'v1-verify-permit' action.yml && echo 'verify step found'
+          grep -q 'v1-verify-permit' src/index.ts && echo 'verify step found'
 
       - name: Check fail-closed logic
         run: |
-          grep -q 'fail-closed' action.yml && echo 'fail-closed logic found'
+          grep -q 'fail-closed' src/index.ts && echo 'fail-closed logic found'
+
+      - name: Build and typecheck
+        run: |
+          npm install
+          npm run typecheck
+          npm run build

@@ -36,13 +36,15 @@ outputs:
   decision:
     description: 'The evaluation decision (allow/deny/hold/escalate)'
   permit-token:
-    description: 'The permit token (if allowed)'
+    description: 'The permit token consumed by the gate (audit reference; single-use, already consumed by verify)'
   evaluation-id:
     description: 'The evaluation ID for audit trail'
   proof-hash:
     description: 'The cryptographic proof hash'
   risk-score:
     description: 'The numeric risk score from the Decision response. Empty string when the evaluator did not return a risk assessment.'
+  verified:
+    description: 'true if evaluate=allow AND verify-permit succeeded; false otherwise'
 runs:
   using: 'node20'
   main: 'dist/index.js'

@@ -325,15 +325,86 @@ async function run(): Promise<void> {
 
   // 6. Handle decision
   switch (decision) {
-    case "allow":
-      info(`Authorization GRANTED`);
+    case "allow": {
+      // Verify the permit before declaring the gate green. Without
+      // this round-trip the action is evaluate-only: a tampered or
+      // replayed token would still surface decision=allow. Calling
+      // verify makes the gate fail-closed end-to-end and matches the
+      // SDK's withPermit / with_permit contract — the permit is
+      // consumed here, so downstream steps must treat permit-token
+      // as an audit reference, not a re-verifiable artifact.
+      if (!permitToken) {
+        setOutput("verified", "false");
+        setFailed(
+          `AtlaSent returned decision=allow but no permit_token — refusing ` +
+            `to gate-open without a verifiable permit. Evaluation: ${evaluationId}`,
+        );
+        return;
+      }
+
+      let verifyResp: HttpResponse;
+      try {
+        verifyResp = await post(
+          `${apiUrl}/v1-verify-permit`,
+          JSON.stringify({
+            permit_token: permitToken,
+            action_type: actionType,
+            actor_id: `github:${actor}`,
+          }),
+          { Authorization: `Bearer ${apiKey}` },
+        );
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        setOutput("verified", "false");
+        setFailed(
+          `AtlaSent verify-permit unreachable: ${message}. Deploy blocked — ` +
+            `the gate cannot confirm the permit was authorized for use here.`,
+        );
+        return;
+      }
+
+      if (verifyResp.status < 200 || verifyResp.status >= 300) {
+        setOutput("verified", "false");
+        setFailed(
+          `AtlaSent verify-permit returned HTTP ${verifyResp.status}. Deploy ` +
+            `blocked. Body: ${verifyResp.body.slice(0, 300)}`,
+        );
+        return;
+      }
+
+      let verify: { verified?: boolean; outcome?: string };
+      try {
+        verify = JSON.parse(verifyResp.body);
+      } catch {
+        setOutput("verified", "false");
+        setFailed(`Failed to parse verify-permit response: ${verifyResp.body.slice(0, 300)}`);
+        return;
+      }
+
+      if (verify.verified !== true) {
+        // outcome=permit_consumed (replay), permit_expired, etc.
+        // Same fail-closed taxonomy as the SDK's withPermit.
+        setOutput("verified", "false");
+        setFailed(
+          `Permit verification failed (outcome=${verify.outcome ?? "unknown"}). ` +
+            `Deploy blocked. This typically means the permit was already ` +
+            `consumed by an earlier verify, or it expired.`,
+        );
+        return;
+      }
+
+      setOutput("verified", "true");
+      info(`Authorization GRANTED (evaluate + verify)`);
       info(`  Permit token: (set as 'permit-token' output, masked in logs)`);
       info(`  Proof hash:   (set as 'proof-hash' output, masked in logs)`);
       info(`  Evaluation:   ${evaluationId}`);
+      info(`  Verify:       ${verify.outcome ?? "verified"}`);
       if (riskScore) info(`  Risk score:   ${riskScore}`);
       break;
+    }
 
     case "deny":
+      setOutput("verified", "false");
       if (failOnDeny) {
         setFailed(`Authorization DENIED: ${result!.deny_reason ?? "no reason provided"}`);
       } else {
@@ -342,6 +413,7 @@ async function run(): Promise<void> {
       break;
 
     case "hold":
+      setOutput("verified", "false");
       if (failOnDeny) {
         setFailed(`Authorization on HOLD: ${result!.hold_reason ?? "awaiting approval"}`);
       } else {
@@ -350,6 +422,7 @@ async function run(): Promise<void> {
       break;
 
     case "escalate":
+      setOutput("verified", "false");
       if (failOnDeny) {
         setFailed("Authorization ESCALATED — manual review required");
       } else {
@@ -358,6 +431,7 @@ async function run(): Promise<void> {
       break;
 
     default:
+      setOutput("verified", "false");
       warning(`Unexpected decision: ${decision}`);
       if (failOnDeny) {
         setFailed(`Unexpected decision from AtlaSent: ${decision}`);

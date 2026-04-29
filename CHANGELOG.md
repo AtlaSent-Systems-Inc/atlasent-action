@@ -2,6 +2,29 @@
 
 All notable changes to `atlasent-action` are documented here.
 
+## [1.3.0] — Unreleased
+
+### Added
+- `verified` output: `"true"` only when both `/v1-evaluate` returned
+  decision=allow AND `/v1-verify-permit` succeeded; `"false"` otherwise.
+- End-to-end fail-closed gating: the action now consumes the permit it
+  issues by calling `/v1-verify-permit` after `/v1-evaluate`. This
+  matches the SDK's `withPermit` (TS) and `with_permit` (Python)
+  contract — a tampered or replayed permit token can no longer surface
+  decision=allow, and the gate is fail-closed end-to-end.
+
+### Changed
+- The `permit-token` output is now an **audit reference**, not a
+  re-verifiable artifact. The token is single-use and is consumed by
+  the action's own verify call, so downstream steps must not attempt
+  to re-verify it (the v1 server returns `outcome=permit_consumed`).
+  This closes the B5 finding from `LAST_20_EXECUTION_PLAN`: prior
+  versions emitted permit-token without ever verifying it.
+
+### Security
+- A replayed or expired permit_token now fails the action with a
+  `verified=false` output rather than passing through as decision=allow.
+
 ## [1.2.0] — 2026-04-25
 
 ### Added
@@ -20,6 +43,16 @@ All notable changes to `atlasent-action` are documented here.
 - Source-only release. `dist/index.js` must be rebuilt
   (`npm run build`) before tagging — release engineering tracks the
   rebuild step.
+
+## [1.1.0] — 2026-04-22
+
+### Fixed
+- Fail closed on infrastructure errors (network timeout, 5xx, 401,
+  403, 429) — previously some edge cases could surface as warnings
+  instead of blocking. Same taxonomy now mirrors the SDK.
+- Mask `permit-token` and `proof-hash` outputs in logs via
+  `::add-mask::`. Customer CI log retention can be long; treat
+  derived secrets the same as the API key.
 
 ## [1.0.0] — 2026-04-17
 

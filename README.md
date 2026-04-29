@@ -10,6 +10,14 @@ Push to main → AtlaSent evaluates → permit issued → deploy
 ## Quick Start
 
 ```yaml
+# Recommended: keyless auth via GitHub OIDC (v2)
+- uses: AtlaSent-Systems-Inc/atlasent-action@v2
+  with:
+    auth-mode: oidc
+    action: production_deploy
+    target-id: ${{ github.repository }}
+
+# Alternative: API key auth (v1)
 - uses: AtlaSent-Systems-Inc/atlasent-action@v1
   with:
     api-key: ${{ secrets.ATLASENT_API_KEY }}
@@ -22,9 +30,9 @@ Push to main → AtlaSent evaluates → permit issued → deploy
 ```yaml
 - name: Authorization Gate
   id: gate
-  uses: AtlaSent-Systems-Inc/atlasent-action@v1
+  uses: AtlaSent-Systems-Inc/atlasent-action@v2
   with:
-    api-key: ${{ secrets.ATLASENT_API_KEY }}
+    auth-mode: oidc
     action: production_deploy
     actor: ${{ github.actor }}
     target-id: api-service
@@ -80,7 +88,7 @@ The action sets several outputs you can reference in subsequent steps:
 
 ## How It Works
 
-1. **Evaluate** — POST `/v1-evaluate` with `action_type`, `actor_id`, `target_id`, and a context object populated from GitHub workflow metadata (repo, ref, sha, workflow, run id, PR number, optional user-supplied `context`).
+1. **Evaluate** — POST `/v1/evaluate` with `action_type`, `actor_id`, `target_id`, and a context object populated from GitHub workflow metadata (repo, ref, sha, workflow, run id, PR number, optional user-supplied `context`).
 2. **Decide** — Server returns `allow` / `deny` / `hold` / `escalate` plus a single-use `permit_token` (only when `allow`) and an optional `risk-score`.
 3. **Proceed or block** — `fail-on-deny: true` (default) surfaces deny/hold/escalate as a failing step. `false` demotes them to a workflow `::warning`.
 4. **Audit** — Every evaluation writes to the AtlaSent append-only, hash-chained audit log. The `evaluation-id` and `proof-hash` outputs reference the record.

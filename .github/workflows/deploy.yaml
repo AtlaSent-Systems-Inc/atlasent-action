@@ -35,7 +35,7 @@ jobs:
           api-key: ${{ secrets.ATLASENT_API_KEY }}
           action: production-deploy
           environment: ${{ inputs.environment || 'prod' }}
-          fail-on-deny: ${{ inputs.force_denial == true && 'true' || 'true' }}
+          fail-on-deny: 'true'
 
       # Only reached if AtlaSent authorized the deploy
       - name: Deploy to ${{ inputs.environment || 'prod' }}

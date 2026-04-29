@@ -12,9 +12,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Validate action.yml
-        run: |
-          # Verify action.yml is valid YAML and has required keys
-          python3 -c "import yaml,sys; d=yaml.safe_load(open('action.yml')); missing=[k for k in ['name','description','inputs','outputs','runs'] if k not in d]; [print('Missing key: '+k,file=sys.stderr) for k in missing]; sys.exit(1) if missing else print('action.yml valid')"
+        run: python3 .github/scripts/validate_action.py
 
       - name: Check api-key input present
         run: |

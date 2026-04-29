@@ -41,14 +41,10 @@ describe("evaluateMany", () => {
   });
 
   it("loops /v1/evaluate when v2Batch=false", async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          decision: "allow",
-          evaluatedAt: "2026-04-25T00:00:00Z",
-        }),
-      ),
-    );
+    const body = JSON.stringify({ decision: "allow", evaluatedAt: "2026-04-25T00:00:00Z" });
+    // Each call needs a fresh Response — the body stream can only be consumed once
+    fetchMock.mockResolvedValue(undefined);
+    fetchMock.mockImplementation(() => Promise.resolve(new Response(body)));
     const out = await evaluateMany(
       "https://api.test",
       "k",

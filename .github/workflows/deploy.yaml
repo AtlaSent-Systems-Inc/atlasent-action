@@ -32,19 +32,17 @@ jobs:
         id: gate
         uses: ./
         with:
-          atlasent_api_key: ${{ secrets.ATLASENT_API_KEY }}
-          atlasent_anon_key: ${{ vars.ATLASENT_ANON_KEY }}
+          api-key: ${{ secrets.ATLASENT_API_KEY }}
           action: production-deploy
           environment: ${{ inputs.environment || 'prod' }}
-          approvals: ${{ inputs.force_denial == true && '0' || '2' }}
-          change_window: ${{ inputs.force_denial == true && 'false' || 'true' }}
+          fail-on-deny: ${{ inputs.force_denial == true && 'true' || 'true' }}
 
       # Only reached if AtlaSent authorized the deploy
       - name: Deploy to ${{ inputs.environment || 'prod' }}
         run: |
-          echo "Decision:    ${{ steps.gate.outputs.decision }}"
-          echo "Decision ID: ${{ steps.gate.outputs.decision_id }}"
-          echo "Audit Hash:  ${{ steps.gate.outputs.audit_hash }}"
-          echo "Verified:    ${{ steps.gate.outputs.verified }}"
+          echo "Decision:      ${{ steps.gate.outputs.decision }}"
+          echo "Evaluation ID: ${{ steps.gate.outputs.evaluation-id }}"
+          echo "Proof Hash:    ${{ steps.gate.outputs.proof-hash }}"
+          echo "Risk Score:    ${{ steps.gate.outputs.risk-score }}"
           echo ""
           echo "Replace this with your real deploy command."

@@ -13,27 +13,17 @@ jobs:
 
       - name: Validate action.yml
         run: |
-          # Verify action.yml is valid YAML
-          python3 -c "
-import yaml, sys
-with open('action.yml') as f:
-    data = yaml.safe_load(f)
-required = ['name', 'description', 'inputs', 'outputs', 'runs']
-for key in required:
-    if key not in data:
-        print(f'Missing key: {key}', file=sys.stderr)
-        sys.exit(1)
-print('action.yml valid')
-"
+          # Verify action.yml is valid YAML and has required keys
+          python3 -c "import yaml,sys; d=yaml.safe_load(open('action.yml')); missing=[k for k in ['name','description','inputs','outputs','runs'] if k not in d]; [print('Missing key: '+k,file=sys.stderr) for k in missing]; sys.exit(1) if missing else print('action.yml valid')"
 
-      - name: Check evaluate step present
+      - name: Check api-key input present
         run: |
-          grep -q 'v1-evaluate' action.yml && echo 'evaluate step found'
+          grep -q 'api-key' action.yml && echo 'api-key input found'
 
-      - name: Check verify step present
+      - name: Check fail-on-deny input present
         run: |
-          grep -q 'v1-verify-permit' action.yml && echo 'verify step found'
+          grep -q 'fail-on-deny' action.yml && echo 'fail-on-deny input found'
 
-      - name: Check fail-closed logic
+      - name: Check dist entrypoint declared
         run: |
-          grep -q 'fail-closed' action.yml && echo 'fail-closed logic found'
+          grep -q 'dist/index.js' action.yml && echo 'dist/index.js entrypoint found'

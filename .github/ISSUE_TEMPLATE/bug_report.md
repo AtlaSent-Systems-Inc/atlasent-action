@@ -1,20 +1,29 @@
 ---
 name: Bug report
-about: Report a bug or unexpected behavior
+about: Report a bug or unexpected behavior in the GitHub Action
 labels: bug
 ---
 
-## What happened
+**Describe the bug**
+A clear, concise description of what the bug is.
+
+**Workflow snippet**
+
+```yaml
+# paste the relevant step(s) here
+```
+
+**Expected behavior**
 
 
-## What you expected
+**Actual behavior / error output**
 
+```
+paste error here
+```
 
-## Steps to reproduce
+**Environment**
+- Action version / ref: 
+- Runner OS: 
 
-Share the relevant workflow snippet if possible.
-
-## Environment
-- Runner OS (ubuntu-latest / macos-latest / windows-latest):
-- atlasent-action version / tag:
-- Link to a failing Actions run (if public):
+**Additional context**

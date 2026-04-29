@@ -2,6 +2,39 @@
 
 All notable changes to `atlasent-action` are documented here.
 
+## [2.1.0-beta] — 2026-04-29
+
+### Added
+- **`@atlasent/enforce` package** (`packages/enforce`) — standalone npm package
+  implementing the fail-closed `evaluate → verify → execute` contract. The
+  action's single-eval path now delegates HTTP transport and infra-error
+  classification to `@atlasent/enforce`'s `evaluate()`.
+- **Batch fan-out** — new `evaluations` input accepts a JSON array of evaluation
+  requests. Fans out via `POST /v1/evaluate/batch` (when `ATLASENT_V2_BATCH=true`)
+  or per-item loop fallback. Aggregate decision follows `deny > hold > escalate > allow`.
+- **`decisions-json` output** — full JSON array of per-evaluation decisions for
+  downstream matrix jobs (batch path only).
+- **Streaming wait** — new `wait-for-id` and `wait-timeout-ms` inputs block the
+  step on a `hold`/`escalate` decision until an approver issues a terminal
+  decision. Uses SSE (`ATLASENT_V2_STREAMING=true`) or 5-second polling fallback.
+- **Tenant-flag model** — `ATLASENT_V2_BATCH` and `ATLASENT_V2_STREAMING` env
+  vars gate the new code paths; both default to the safe fallback so existing
+  workflows are unaffected.
+- **53 tests** — `@atlasent/enforce` (30) + action modules (23) covering both
+  polling and SSE paths, batch fan-out, input parsing, and contract invariants.
+
+### Changed
+- Default `api-url` updated from the Supabase edge URL to `https://api.atlasent.io`.
+  Evaluate endpoint changed from `/v1-evaluate` to `/v1/evaluate`.
+- Single-eval path inline HTTP transport (~100 lines) replaced by
+  `@atlasent/enforce`'s `evaluate()`; `EnforceError(phase="evaluate")` now owns
+  all infra-error classification.
+
+### Fixed
+- Infra errors (transport failure, 5xx, 401/403, 429) now always fail closed
+  regardless of `fail-on-deny`. Previously they were routed through the
+  `fail-on-deny` branch, which could silently pass the gate when `fail-on-deny: false`.
+
 ## [1.2.0] — 2026-04-25
 
 ### Added

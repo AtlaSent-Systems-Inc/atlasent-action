@@ -1,6 +1,6 @@
 {
   "name": "atlasent-action",
-  "version": "1.2.0",
+  "version": "2.1.0-beta",
   "description": "GitHub Action for AtlaSent authorization gates — require a permit before critical CI/CD actions execute",
   "main": "dist/index.js",
   "workspaces": ["packages/*"],

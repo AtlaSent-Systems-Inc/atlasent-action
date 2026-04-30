@@ -46,6 +46,22 @@ All notable changes to `atlasent-action` are documented here.
   mock both evaluate and verify-permit calls (78 total).
 - Built `packages/enforce/dist/` (`index.js`, `index.d.ts`).
 
+### Action — enforce unification
+- Single-eval path now uses `@atlasent/enforce` as the canonical
+  enforcement wrapper; `runGate()` (parallel fetch-based implementation)
+  removed from production code. `src/gate.ts` now only exports
+  `verifyOne()` and `GateInfraError` for the v2.1 batch path.
+- `@atlasent/enforce` added as a workspace dependency; esbuild bundles
+  it into `dist/index.js`.
+- Default `api-url` changed from the Supabase function base to
+  `https://api.atlasent.io` to match the enforce package's default and
+  the current REST API.
+- `fail-on-deny=false` behaviour preserved: only `phase="verify"` errors
+  (policy decisions) respect the flag; all other phases remain
+  fail-closed.
+- Gate SIM tests retargeted: 18 `runGate()` tests replaced with 9
+  focused `verifyOne()` tests (`src/__tests__/gate.test.ts`).
+
 ### Workflows
 - `deploy.yaml`: fixed stale inputs (`atlasent_api_key` → `api-key`,
   removed `atlasent_anon_key`/`approvals`/`change_window`) and stale

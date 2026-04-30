@@ -1,6 +1,6 @@
 # atlasent-action — V2 Rollout
 
-**Status:** plan · **Wave:** B (action SDK pin + batch + streaming-wait) · **Updated:** 2026-04-26
+**Status:** shipped · **Wave:** B (action SDK pin + batch + streaming-wait) · **Updated:** 2026-04-30
 
 Action-side cut of the [umbrella v2 rollout](https://github.com/AtlaSent-Systems-Inc/atlasent/blob/claude/plan-v2-rollout-5IPGF/V2_ROLLOUT.md). The action already shipped v2.0.0 (OIDC keyless). v2.1 adds batch fan-out, streaming-wait, and SDK 2.x pin.
 
@@ -10,13 +10,13 @@ The action is a *bundled* gate — it doesn't runtime-import `@atlasent/sdk`. v2
 
 ## v2.1 deliverables
 
-| ID | Item | Path | Notes |
+| ID | Item | Path | Status |
 |---|---|---|---|
-| B.AC1 | Pin `@atlasent/sdk@^2` for the new code paths | `package.json`, build pipeline | Stays bundled. |
-| B.AC2 | New `evaluations` list input — fan out via `evaluateMany` | `action.yml`, `src/inputs.ts`, `src/batch.ts` | Single `action.yml` input parser auto-detects single (`action:`) vs list (`evaluations:`). List wins when both. |
-| B.AC3 | Streaming-wait for `change_window` approvals | `src/stream.ts` | Consumes `/v1/evaluate/stream` SSE; falls back to 5s polling when `v2_streaming` flag is off. |
-| B.AC4 | Wire B.AC1–3 into `src/index.ts` main flow + `action.yml` inputs | `src/index.ts`, `action.yml` | Last; depends on input-shape sign-off in plan PR #15. |
-| B.AC5 | Default `auth-mode: oidc` in README example | `README.md` | Backward-compatible (`api-key` remains the default *input* value). |
+| B.AC1 | Pin `@atlasent/enforce` for new code paths | `packages/enforce/`, build pipeline | ✅ shipped v1.3.0 — workspace package bundled via esbuild |
+| B.AC2 | New `evaluations` list input — fan out via `evaluateMany` | `action.yml`, `src/inputs.ts`, `src/batch.ts` | ✅ shipped v1.3.0 — auto-detect single (`action:`) vs list (`evaluations:`) |
+| B.AC3 | Streaming-wait for `change_window` approvals | `src/stream.ts` | ✅ shipped v1.3.0 — SSE consumer + 5s polling fallback; 8 SIM tests |
+| B.AC4 | Wire B.AC1–3 into `src/index.ts` main flow + `action.yml` inputs | `src/index.ts`, `action.yml`, `src/v21.ts` | ✅ shipped v1.3.0 — PR #23 merged 2026-04-30 |
+| B.AC5 | Default `auth-mode: oidc` in README example | `README.md` | pending |
 
 Each item ships with a fallback path so the v2.0 code stays byte-identical until the matching tenant flag flips.
 

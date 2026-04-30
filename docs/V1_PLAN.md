@@ -12,19 +12,16 @@ every production deploy was pre-authorized by a named approver — the
 ## V1 gates
 
 - [ ] Published to GitHub Marketplace under `atlasent-systems-inc/atlasent-action@v1`.
-- [ ] Uses the TypeScript SDK from `atlasent-sdk` instead of raw `fetch`.
-- [ ] Honors `ATLASENT_API_KEY` + `ATLASENT_ENV` inputs; fails closed
-      if either is missing.
+- ✅ Uses `@atlasent/enforce` (workspace package, bundled) instead of raw `fetch`; evaluate → verify → verifyPermit enforced. _(v1.3.0)_
+- ✅ Honors `api-key` + `api-url` inputs (renamed from `ATLASENT_API_KEY`/`ATLASENT_ENV`); fails closed if `api-key` missing. _(v1.0.0+)_
 - [ ] Writes a GitHub Actions job summary with the evaluation result,
       permit token, and a link to the console's proof page.
-- [ ] Test mode (`mode: advisory`) logs the decision without blocking;
-      enforced mode blocks on `deny` / `hold`.
-- [ ] README has a 3-line copy-paste for a production-deploy gate.
+- ✅ Advisory mode: `fail-on-deny: false` logs decision without blocking; default enforced mode blocks on `deny` / `hold` / `escalate`. _(v1.0.0+)_
+- ✅ README has quickstart copy-paste for production-deploy gate (single-eval and batch modes). _(v1.3.0)_
 - [ ] E2E test: the action runs against a staging atlasent-api org on
       every PR.
-- [ ] Tag-based release: `v1.0.0`, plus a moving `v1` major tag.
-- [ ] SECURITY.md describes the threat model (action tampering via
-      PR from fork, secret exfiltration via log injection).
+- [ ] Tag-based release: `v1.0.0`, plus a moving `v1` major tag. _(version 1.3.0 on main; git tags not yet pushed)_
+- ✅ SECURITY.md describes the threat model (action tampering via PR from fork, secret exfiltration via log injection).
 
 ## Sequencing
 

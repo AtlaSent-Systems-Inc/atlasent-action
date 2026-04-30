@@ -74,18 +74,24 @@ async function waitViaStream(opts: WaitOptions): Promise<Decision> {
 async function waitViaPolling(opts: WaitOptions): Promise<Decision> {
   const deadline = Date.now() + opts.timeoutMs;
   while (Date.now() < deadline) {
-    const r = await fetch(
-      `${opts.apiUrl}/v1/evaluate/${encodeURIComponent(opts.evaluationId)}`,
-      {
-        headers: { authorization: `Bearer ${opts.apiKey}` },
-        signal: opts.signal,
-      },
-    );
-    if (r.ok) {
-      const decision = (await r.json()) as Decision;
-      if (decision.decision === "allow" || decision.decision === "deny") {
-        return decision;
+    try {
+      const r = await fetch(
+        `${opts.apiUrl}/v1/evaluate/${encodeURIComponent(opts.evaluationId)}`,
+        {
+          headers: { authorization: `Bearer ${opts.apiKey}` },
+          signal: opts.signal,
+        },
+      );
+      if (r.ok) {
+        const decision = (await r.json()) as Decision;
+        if (decision.decision === "allow" || decision.decision === "deny") {
+          return decision;
+        }
       }
+    } catch (err) {
+      // Re-throw AbortError (caller cancelled); swallow transient network /
+      // parse errors and let the next poll attempt handle them.
+      if (err instanceof Error && err.name === "AbortError") throw err;
     }
     await new Promise((res) => setTimeout(res, POLL_INTERVAL_MS));
   }

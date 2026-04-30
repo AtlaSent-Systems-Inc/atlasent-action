@@ -82,6 +82,22 @@ describe("waitForTerminalDecision", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("polling: retries after transient network error instead of throwing immediately", async () => {
+    let callCount = 0;
+    fetchMock.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) return Promise.reject(new Error("ECONNREFUSED"));
+      return Promise.resolve(pollResp("allow"));
+    });
+
+    const p = waitForTerminalDecision(BASE_OPTS);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await p;
+
+    expect(result.decision).toBe("allow");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("polling: throws after timeout without a terminal decision", async () => {
     fetchMock.mockImplementation(() => Promise.resolve(pollResp("hold")));
 

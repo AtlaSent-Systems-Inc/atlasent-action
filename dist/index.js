@@ -420,18 +420,23 @@ async function waitViaStream(opts) {
 async function waitViaPolling(opts) {
   const deadline = Date.now() + opts.timeoutMs;
   while (Date.now() < deadline) {
-    const r = await fetch(
-      `${opts.apiUrl}/v1/evaluate/${encodeURIComponent(opts.evaluationId)}`,
-      {
-        headers: { authorization: `Bearer ${opts.apiKey}` },
-        signal: opts.signal
+    try {
+      const r = await fetch(
+        `${opts.apiUrl}/v1/evaluate/${encodeURIComponent(opts.evaluationId)}`,
+        {
+          headers: { authorization: `Bearer ${opts.apiKey}` },
+          signal: opts.signal
+        }
+      );
+      if (r.ok) {
+        const decision = await r.json();
+        if (decision.decision === "allow" || decision.decision === "deny") {
+          return decision;
+        }
       }
-    );
-    if (r.ok) {
-      const decision = await r.json();
-      if (decision.decision === "allow" || decision.decision === "deny") {
-        return decision;
-      }
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError")
+        throw err;
     }
     await new Promise((res) => setTimeout(res, POLL_INTERVAL_MS));
   }

@@ -2,36 +2,57 @@
 
 All notable changes to `atlasent-action` are documented here.
 
-## [Unreleased] — verify-permit wiring (A5 end-to-end)
+## [Unreleased]
 
-### Added
+### Action — v1-verify-permit wiring (A5 end-to-end)
 - `verified` output: `"true"` only when `/v1-evaluate` returned
   `decision=allow` AND `/v1-verify-permit` confirmed `verified=true`;
-  `"false"` in every other case. Downstream steps should branch on
+  `"false"` in every other case. Downstream steps must branch on
   `verified`, not re-derive from `decision`.
-- `src/gate.ts`: testable fetch-based core that encapsulates the
-  evaluate → verify-permit flow. `src/index.ts` delegates all HTTP to
-  this module; GH Actions I/O stays in `src/index.ts`.
-- SIM tests (`src/__tests__/gate.test.ts`) covering all 12 paths in
-  the decision matrix (happy path, replay, expired, no permit_token,
-  policy deny/hold/escalate, and infra errors on both sides).
+- `src/gate.ts`: fetch-based core (`runGate`, `verifyOne`) encapsulating
+  the evaluate → verify-permit flow with `GateInfraError` for all
+  infrastructure failures (network, 5xx, 401, 429, no permit_token).
+- 18 SIM tests (`src/__tests__/gate.test.ts`) covering all paths in
+  the decision matrix.
+- `permit-token` output is now an audit reference (single-use, already
+  consumed by the action's own verify call).
+- Replay protection: stale or consumed `permit_token` → `verified=false`.
 
-### Changed
-- The `permit-token` output is now an **audit reference**, not a
-  re-verifiable artifact. The token is single-use and is consumed by
-  the action's own verify call; downstream steps that re-verify would
-  get `outcome=permit_consumed`.
-- `src/index.ts` refactored to import `runGate` from `src/gate.ts`
-  (removes the inline Node `https` HTTP helper; gate uses `fetch`
-  which is available natively in the node20 runner).
+### Action — v2.1 batch entry point (B.AC4)
+- `evaluations` input: JSON array of evaluation requests for batch
+  mode. When set, `action` / `actor` / `context` are ignored and the
+  v2.1 path (`runV21` → `evaluateMany` → per-decision `verifyOne`) is
+  used instead of the single-eval path.
+- `wait-for-id`, `wait-timeout-ms` inputs: block on a hold/escalate
+  decision until the upstream approver flips it (SSE stream or polling).
+- `v2-batch`, `v2-streaming` flags: opt in to `/v1/evaluate/batch` and
+  SSE streaming respectively.
+- `decisions` output: JSON array of per-item results for the batch path.
+- `batch-id` output: server-assigned batch ID (or `loop-<ts>` for the
+  sequential fallback).
+- `verified` on the batch path: `"true"` only when every allow decision
+  verified; `"false"` otherwise.
+- 6 batch SIM tests (`src/__tests__/batch.test.ts`).
 
-### Security
-- Replay protection: a stale or already-consumed `permit_token` now
-  produces `verified=false` and blocks the deploy, instead of passing
-  through as `decision=allow`.
-- Fail-closed end-to-end: all infrastructure errors (network timeout,
-  5xx, 401, 429, no permit_token) throw `GateInfraError` and are
-  never confused with a policy decision.
+### `@atlasent/enforce` — verifyPermit step
+- `verifyPermit(config, decision)`: calls POST `/v1/verify-permit`;
+  throws `EnforceError(phase="verify-permit")` for replay, expired
+  tokens, no permit_token, network errors, and `!2xx` responses.
+- `enforce()` updated: `evaluate → verify → verifyPermit → execute`.
+  `fn` never runs unless all three gates pass. Return gains
+  `verifyOutcome`.
+- New `EnforcePhase` value: `"verify-permit"`.
+- 14 SIM tests (`verify-permit.test.ts`); `enforce.test.ts` updated to
+  mock both evaluate and verify-permit calls (78 total).
+- Built `packages/enforce/dist/` (`index.js`, `index.d.ts`).
+
+### Workflows
+- `deploy.yaml`: fixed stale inputs (`atlasent_api_key` → `api-key`,
+  removed `atlasent_anon_key`/`approvals`/`change_window`) and stale
+  outputs (`decision_id` → `evaluation-id`, `audit_hash` →
+  `proof-hash`) to match current `action.yml`.
+- `test.yml`: grep targets corrected to `src/gate.ts`; build,
+  typecheck, and test steps added to CI.
 
 ## [1.2.0] — 2026-04-25
 

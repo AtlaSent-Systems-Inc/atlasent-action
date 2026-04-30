@@ -8,11 +8,11 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      force_denial:
-        description: 'Force a denial (sets approvals=0, change_window=false)'
+      fail_on_deny:
+        description: 'Fail the job if the gate denies the deploy (default: true)'
         required: false
         type: boolean
-        default: false
+        default: true
       environment:
         description: 'Target environment'
         required: false
@@ -32,19 +32,19 @@ jobs:
         id: gate
         uses: ./
         with:
-          atlasent_api_key: ${{ secrets.ATLASENT_API_KEY }}
-          atlasent_anon_key: ${{ vars.ATLASENT_ANON_KEY }}
-          action: production-deploy
+          api-key: ${{ secrets.ATLASENT_API_KEY }}
+          action: production_deploy
+          actor: ${{ github.actor }}
           environment: ${{ inputs.environment || 'prod' }}
-          approvals: ${{ inputs.force_denial == true && '0' || '2' }}
-          change_window: ${{ inputs.force_denial == true && 'false' || 'true' }}
+          fail-on-deny: ${{ inputs.fail_on_deny == false && 'false' || 'true' }}
 
-      # Only reached if AtlaSent authorized the deploy
+      # Only reached if AtlaSent authorized the deploy (verified=true)
       - name: Deploy to ${{ inputs.environment || 'prod' }}
         run: |
-          echo "Decision:    ${{ steps.gate.outputs.decision }}"
-          echo "Decision ID: ${{ steps.gate.outputs.decision_id }}"
-          echo "Audit Hash:  ${{ steps.gate.outputs.audit_hash }}"
-          echo "Verified:    ${{ steps.gate.outputs.verified }}"
+          echo "Decision:     ${{ steps.gate.outputs.decision }}"
+          echo "Verified:     ${{ steps.gate.outputs.verified }}"
+          echo "Evaluation:   ${{ steps.gate.outputs.evaluation-id }}"
+          echo "Proof hash:   ${{ steps.gate.outputs.proof-hash }}"
+          echo "Risk score:   ${{ steps.gate.outputs.risk-score }}"
           echo ""
           echo "Replace this with your real deploy command."

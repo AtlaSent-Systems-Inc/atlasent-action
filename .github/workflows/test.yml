@@ -28,12 +28,26 @@ print('action.yml valid')
 
       - name: Check evaluate step present
         run: |
-          grep -q 'v1-evaluate' action.yml && echo 'evaluate step found'
+          grep -q 'v1-evaluate' src/gate.ts && echo 'evaluate step found'
 
       - name: Check verify step present
         run: |
-          grep -q 'v1-verify-permit' action.yml && echo 'verify step found'
+          grep -q 'v1-verify-permit' src/gate.ts && echo 'verify step found'
 
       - name: Check fail-closed logic
         run: |
-          grep -q 'fail-closed' action.yml && echo 'fail-closed logic found'
+          grep -q 'fail-closed' src/gate.ts && echo 'fail-closed logic found'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build and typecheck
+        run: |
+          npm install
+          npm run typecheck
+          npm run build
+
+      - name: Run SIM tests
+        run: npm test

@@ -2,6 +2,37 @@
 
 All notable changes to `atlasent-action` are documented here.
 
+## [Unreleased] — verify-permit wiring (A5 end-to-end)
+
+### Added
+- `verified` output: `"true"` only when `/v1-evaluate` returned
+  `decision=allow` AND `/v1-verify-permit` confirmed `verified=true`;
+  `"false"` in every other case. Downstream steps should branch on
+  `verified`, not re-derive from `decision`.
+- `src/gate.ts`: testable fetch-based core that encapsulates the
+  evaluate → verify-permit flow. `src/index.ts` delegates all HTTP to
+  this module; GH Actions I/O stays in `src/index.ts`.
+- SIM tests (`src/__tests__/gate.test.ts`) covering all 12 paths in
+  the decision matrix (happy path, replay, expired, no permit_token,
+  policy deny/hold/escalate, and infra errors on both sides).
+
+### Changed
+- The `permit-token` output is now an **audit reference**, not a
+  re-verifiable artifact. The token is single-use and is consumed by
+  the action's own verify call; downstream steps that re-verify would
+  get `outcome=permit_consumed`.
+- `src/index.ts` refactored to import `runGate` from `src/gate.ts`
+  (removes the inline Node `https` HTTP helper; gate uses `fetch`
+  which is available natively in the node20 runner).
+
+### Security
+- Replay protection: a stale or already-consumed `permit_token` now
+  produces `verified=false` and blocks the deploy, instead of passing
+  through as `decision=allow`.
+- Fail-closed end-to-end: all infrastructure errors (network timeout,
+  5xx, 401, 429, no permit_token) throw `GateInfraError` and are
+  never confused with a policy decision.
+
 ## [1.2.0] — 2026-04-25
 
 ### Added

@@ -41,12 +41,9 @@ describe("evaluateMany", () => {
   });
 
   it("loops /v1/evaluate when v2Batch=false", async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          decision: "allow",
-          evaluatedAt: "2026-04-25T00:00:00Z",
-        }),
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ decision: "allow", evaluatedAt: "2026-04-25T00:00:00Z" })),
       ),
     );
     const out = await evaluateMany(

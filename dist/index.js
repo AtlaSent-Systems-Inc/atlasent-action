@@ -319,7 +319,12 @@ function parseInputs(env) {
   const failOnDeny = (env["INPUT_FAIL-ON-DENY"] || "true") === "true";
   const evaluationsRaw = env["INPUT_EVALUATIONS"];
   if (evaluationsRaw && evaluationsRaw.trim()) {
-    const parsed = JSON.parse(evaluationsRaw);
+    let parsed;
+    try {
+      parsed = JSON.parse(evaluationsRaw);
+    } catch {
+      throw new Error("`evaluations` is not valid JSON \u2014 expected a JSON array of evaluation requests");
+    }
     if (!Array.isArray(parsed) || parsed.length === 0) {
       throw new Error(
         "`evaluations` must be a non-empty JSON array of evaluation requests"
@@ -338,7 +343,12 @@ function parseInputs(env) {
   const actor = env["INPUT_ACTOR"] || env["GITHUB_ACTOR"] || "unknown";
   const environment = env["INPUT_ENVIRONMENT"];
   const contextRaw = env["INPUT_CONTEXT"] || "{}";
-  const context = JSON.parse(contextRaw);
+  let context = {};
+  try {
+    context = JSON.parse(contextRaw);
+  } catch {
+    throw new Error("`context` is not valid JSON \u2014 expected a JSON object");
+  }
   return {
     apiKey,
     apiUrl,
@@ -551,7 +561,7 @@ async function run() {
         { v2Batch, v2Streaming }
       );
     } catch (err) {
-      const msg = err instanceof import_enforce.EnforceError ? err.message : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
+      const msg = err instanceof import_enforce.EnforceError || err instanceof GateInfraError ? err.message : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
       setOutput("verified", "false");
       setFailed(`AtlaSent Gate (batch): ${msg}. Deploy blocked (fail-closed).`);
       return;

@@ -29,7 +29,12 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
 
   const evaluationsRaw = env["INPUT_EVALUATIONS"];
   if (evaluationsRaw && evaluationsRaw.trim()) {
-    const parsed = JSON.parse(evaluationsRaw) as EvaluateRequest[];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(evaluationsRaw);
+    } catch {
+      throw new Error("`evaluations` is not valid JSON — expected a JSON array of evaluation requests");
+    }
     if (!Array.isArray(parsed) || parsed.length === 0) {
       throw new Error(
         "`evaluations` must be a non-empty JSON array of evaluation requests",
@@ -39,7 +44,7 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
       apiKey,
       apiUrl,
       failOnDeny,
-      evaluations: parsed,
+      evaluations: parsed as EvaluateRequest[],
       waitForId: env["INPUT_WAIT-FOR-ID"] || undefined,
       waitTimeoutMs: parseInt(env["INPUT_WAIT-TIMEOUT-MS"] || "600000", 10),
     };
@@ -49,7 +54,12 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
   const actor = env["INPUT_ACTOR"] || env["GITHUB_ACTOR"] || "unknown";
   const environment = env["INPUT_ENVIRONMENT"];
   const contextRaw = env["INPUT_CONTEXT"] || "{}";
-  const context = JSON.parse(contextRaw) as Record<string, unknown>;
+  let context: Record<string, unknown> = {};
+  try {
+    context = JSON.parse(contextRaw) as Record<string, unknown>;
+  } catch {
+    throw new Error("`context` is not valid JSON — expected a JSON object");
+  }
 
   return {
     apiKey,

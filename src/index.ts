@@ -11,6 +11,7 @@
 
 import { enforce, EnforceError } from "@atlasent/enforce";
 import type { Decision, EnforceConfig } from "@atlasent/enforce";
+import { GateInfraError } from "./gate";
 import { runV21 } from "./v21";
 
 // ---------------------------------------------------------------------------
@@ -140,7 +141,7 @@ async function run(): Promise<void> {
       );
     } catch (err) {
       const msg =
-        err instanceof EnforceError
+        err instanceof EnforceError || err instanceof GateInfraError
           ? err.message
           : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
       setOutput("verified", "false");

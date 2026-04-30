@@ -21,9 +21,9 @@ inputs:
     description: 'Environment (defaults to live for main branch, test otherwise)'
     required: false
   api-url:
-    description: 'AtlaSent API URL (defaults to production)'
+    description: 'AtlaSent API URL base (defaults to production). The enforcement wrapper appends /v1/evaluate and /v1/verify-permit.'
     required: false
-    default: 'https://ihghhasvxtltlbizvkqy.supabase.co/functions/v1'
+    default: 'https://api.atlasent.io'
   fail-on-deny:
     description: 'Fail the workflow step if the action is denied (default: true)'
     required: false

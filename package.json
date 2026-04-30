@@ -9,6 +9,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
+  "dependencies": {
+    "@atlasent/enforce": "*"
+  },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "esbuild": "^0.20.0",

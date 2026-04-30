@@ -140,9 +140,10 @@ describe("runGate SIM tests", () => {
   it("allow + no permit_token → throws GateInfraError, no verify call", async () => {
     fetchMock.mockResolvedValueOnce(jsonResp({ decision: "allow", evaluation_id: "ev1" }));
 
-    const err = await runGate(PARAMS).catch((e) => e as GateInfraError);
-    expect(err).toBeInstanceOf(GateInfraError);
-    expect(err.message).toMatch(/no permit_token/);
+    let caught: unknown;
+    await runGate(PARAMS).catch((e) => { caught = e; });
+    expect(caught).toBeInstanceOf(GateInfraError);
+    expect((caught as GateInfraError).message).toMatch(/no permit_token/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -186,9 +187,10 @@ describe("runGate SIM tests", () => {
   it("evaluate transport error → throws GateInfraError", async () => {
     fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
 
-    const err = await runGate(PARAMS).catch((e) => e as GateInfraError);
-    expect(err).toBeInstanceOf(GateInfraError);
-    expect(err.message).toMatch(/evaluate unreachable/);
+    let caught: unknown;
+    await runGate(PARAMS).catch((e) => { caught = e; });
+    expect(caught).toBeInstanceOf(GateInfraError);
+    expect((caught as GateInfraError).message).toMatch(/evaluate unreachable/);
   });
 
   it("evaluate 5xx → throws GateInfraError (fail-closed)", async () => {
@@ -222,9 +224,10 @@ describe("runGate SIM tests", () => {
       .mockResolvedValueOnce(jsonResp({ decision: "allow", permit_token: "tok1" }))
       .mockRejectedValueOnce(new Error("ETIMEDOUT"));
 
-    const err = await runGate(PARAMS).catch((e) => e as GateInfraError);
-    expect(err).toBeInstanceOf(GateInfraError);
-    expect(err.message).toMatch(/verify-permit unreachable/);
+    let caught: unknown;
+    await runGate(PARAMS).catch((e) => { caught = e; });
+    expect(caught).toBeInstanceOf(GateInfraError);
+    expect((caught as GateInfraError).message).toMatch(/verify-permit unreachable/);
   });
 
   it("allow + verify 5xx → throws GateInfraError", async () => {

@@ -50,6 +50,62 @@ export class GateInfraError extends Error {
 }
 
 // ---------------------------------------------------------------------------
+// Standalone verify step (used by both runGate and the v2.1 batch path)
+// ---------------------------------------------------------------------------
+
+export interface VerifyParams {
+  apiUrl: string;
+  apiKey: string;
+  actionType: string;
+  actorId: string;
+  permitToken: string;
+  /** Override the default verify endpoint path. Defaults to /v1-verify-permit
+   *  (Supabase style). Pass "/v1/verify-permit" for the conventional REST API. */
+  verifyPath?: string;
+}
+
+export interface VerifyResult {
+  verified: boolean;
+  outcome?: string;
+}
+
+export async function verifyOne(params: VerifyParams): Promise<VerifyResult> {
+  const path = params.verifyPath ?? "/v1-verify-permit";
+  let res: Response;
+  try {
+    res = await fetch(`${params.apiUrl}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${params.apiKey}`,
+      },
+      body: JSON.stringify({
+        permit_token: params.permitToken,
+        action_type: params.actionType,
+        actor_id: params.actorId,
+      }),
+    });
+  } catch (err) {
+    throw new GateInfraError(
+      `verify-permit unreachable: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  if (!res.ok) {
+    throw new GateInfraError(`verify-permit HTTP ${res.status}`, res.status);
+  }
+
+  let body: { verified?: boolean; outcome?: string };
+  try {
+    body = (await res.json()) as { verified?: boolean; outcome?: string };
+  } catch {
+    throw new GateInfraError("failed to parse verify-permit response as JSON");
+  }
+
+  return { verified: body.verified === true, outcome: body.outcome };
+}
+
+// ---------------------------------------------------------------------------
 // Main gate function
 // ---------------------------------------------------------------------------
 
@@ -126,41 +182,15 @@ export async function runGate(params: GateParams): Promise<GateResult> {
     );
   }
 
-  let verifyRes: Response;
-  try {
-    verifyRes = await fetch(`${params.apiUrl}/v1-verify-permit`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${params.apiKey}`,
-      },
-      body: JSON.stringify({
-        permit_token: permitToken,
-        action_type: params.actionType,
-        actor_id: params.actorId,
-      }),
-    });
-  } catch (err) {
-    throw new GateInfraError(
-      `verify-permit unreachable: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
+  const verify = await verifyOne({
+    apiUrl: params.apiUrl,
+    apiKey: params.apiKey,
+    actionType: params.actionType,
+    actorId: params.actorId,
+    permitToken,
+  });
 
-  if (!verifyRes.ok) {
-    throw new GateInfraError(
-      `verify-permit HTTP ${verifyRes.status}`,
-      verifyRes.status,
-    );
-  }
-
-  let verifyBody: { verified?: boolean; outcome?: string };
-  try {
-    verifyBody = (await verifyRes.json()) as { verified?: boolean; outcome?: string };
-  } catch {
-    throw new GateInfraError("failed to parse verify-permit response as JSON");
-  }
-
-  if (verifyBody.verified !== true) {
+  if (!verify.verified) {
     // outcome=permit_consumed (replay), permit_expired, etc.
     return {
       ok: false,
@@ -170,8 +200,8 @@ export async function runGate(params: GateParams): Promise<GateResult> {
       evaluationId,
       proofHash,
       riskScore,
-      reason: `permit verification failed (outcome=${verifyBody.outcome ?? "unknown"})`,
-      verifyOutcome: verifyBody.outcome,
+      reason: `permit verification failed (outcome=${verify.outcome ?? "unknown"})`,
+      verifyOutcome: verify.outcome,
     };
   }
 
@@ -183,7 +213,7 @@ export async function runGate(params: GateParams): Promise<GateResult> {
     evaluationId,
     proofHash,
     riskScore,
-    verifyOutcome: verifyBody.outcome ?? "verified",
+    verifyOutcome: verify.outcome ?? "verified",
   };
 }
 

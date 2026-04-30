@@ -1,9 +1,13 @@
 // AtlaSent Gate Action — GitHub Actions entry point.
-// HTTP logic lives in src/gate.ts (evaluate → v1-verify-permit, fail-closed).
-// This file handles GH Actions I/O: reading inputs, masking secrets, and
-// translating GateResult / GateInfraError into step outputs and exit codes.
+//
+// Routing:
+//   evaluations input set → v2.1 batch path via runV21()
+//   single action input   → v1 single path via runGate()
+//
+// Both paths call verify-permit for every allow decision (fail-closed).
 
 import { GateInfraError, runGate } from "./gate";
+import { runV21 } from "./v21";
 
 // ---------------------------------------------------------------------------
 // GitHub Actions helpers
@@ -89,21 +93,93 @@ function resolveEnvironment(explicit: string, ref: string, apiKey: string): stri
 async function run(): Promise<void> {
   // 1. Read inputs
   const apiKey = getInput("api-key", true);
+  const apiUrl =
+    getInput("api-url") || "https://ihghhasvxtltlbizvkqy.supabase.co/functions/v1";
+  const failOnDeny = getInput("fail-on-deny") !== "false";
+
+  maskValue(apiKey);
+
+  // ── v2.1 batch path ────────────────────────────────────────────────────────
+  // When the `evaluations` input is set, fan out via runV21 (batch or loop).
+  // Each allow decision is automatically verified via verifyOne() in batch.ts.
+  const evaluationsRaw = getInput("evaluations");
+  if (evaluationsRaw) {
+    const waitForId = getInput("wait-for-id") || undefined;
+    const waitTimeoutMs = parseInt(getInput("wait-timeout-ms") || "600000", 10);
+    const v2Batch = getInput("v2-batch") === "true";
+    const v2Streaming = getInput("v2-streaming") === "true";
+
+    let result;
+    try {
+      result = await runV21(
+        {
+          "INPUT_API-KEY": apiKey,
+          "INPUT_API-URL": apiUrl,
+          "INPUT_FAIL-ON-DENY": failOnDeny ? "true" : "false",
+          INPUT_EVALUATIONS: evaluationsRaw,
+          "INPUT_WAIT-FOR-ID": waitForId,
+          "INPUT_WAIT-TIMEOUT-MS": String(waitTimeoutMs),
+        },
+        { v2Batch, v2Streaming },
+      );
+    } catch (err) {
+      const msg =
+        err instanceof GateInfraError
+          ? err.message
+          : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
+      setOutput("verified", "false");
+      setFailed(`AtlaSent Gate (batch): ${msg}. Deploy blocked (fail-closed).`);
+      return;
+    }
+
+    const decisionsJson = JSON.stringify(
+      result.decisions.map((d) => ({
+        decision: d.decision,
+        verified: d.verified ?? false,
+        evaluationId: d.id ?? "",
+        permitToken: d.permitToken ? "(masked)" : "",
+        reasons: d.reasons ?? [],
+        verifyOutcome: d.verifyOutcome ?? "",
+      })),
+    );
+
+    const allVerified = result.decisions.every(
+      (d) => d.decision !== "allow" || d.verified === true,
+    );
+
+    setOutput("batch-id", result.batchId);
+    setOutput("decisions", decisionsJson);
+    setOutput("verified", allVerified ? "true" : "false");
+
+    if (result.failed) {
+      setFailed(
+        `AtlaSent Gate: one or more evaluations denied. See 'decisions' output for details.`,
+      );
+      return;
+    }
+    if (!allVerified) {
+      setFailed(
+        `AtlaSent Gate: one or more allow decisions failed permit verification. Deploy blocked.`,
+      );
+      return;
+    }
+
+    info(`AtlaSent Gate: all ${result.decisions.length} evaluation(s) allowed and verified`);
+    info(`  Batch ID: ${result.batchId}`);
+    return;
+  }
+
+  // ── v1 single-eval path ────────────────────────────────────────────────────
   const actionType = getInput("action", true);
   const actor = getInput("actor") || "unknown";
   const targetId = getInput("target-id");
   const explicitEnv = getInput("environment");
-  const apiUrl =
-    getInput("api-url") || "https://ihghhasvxtltlbizvkqy.supabase.co/functions/v1";
-  const failOnDeny = getInput("fail-on-deny") !== "false";
   let extraContext: Record<string, unknown> = {};
   try {
     extraContext = JSON.parse(getInput("context") || "{}");
   } catch {
     warning("Could not parse 'context' input as JSON — ignoring");
   }
-
-  maskValue(apiKey);
 
   // 2. Build evaluate payload
   const gh = getGitHubContext();

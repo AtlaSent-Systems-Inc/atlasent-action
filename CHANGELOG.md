@@ -4,6 +4,8 @@ All notable changes to `atlasent-action` are documented here.
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-04-30
+
 ### Action — v1-verify-permit wiring (A5 end-to-end)
 - `verified` output: `"true"` only when evaluate returned `decision=allow`
   AND `/v1/verify-permit` confirmed `verified=true`; `"false"` in every

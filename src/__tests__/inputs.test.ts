@@ -46,6 +46,25 @@ describe("parseInputs", () => {
     ).toThrow(/non-empty/);
   });
 
+  it("throws a clear error on invalid JSON in evaluations", () => {
+    expect(() =>
+      parseInputs({
+        "INPUT_API-KEY": "ask_test",
+        INPUT_EVALUATIONS: "not-json",
+      }),
+    ).toThrow(/not valid JSON/);
+  });
+
+  it("throws a clear error on invalid JSON in context", () => {
+    expect(() =>
+      parseInputs({
+        "INPUT_API-KEY": "ask_test",
+        INPUT_ACTION: "deploy",
+        INPUT_CONTEXT: "{bad json}",
+      }),
+    ).toThrow(/not valid JSON/);
+  });
+
   it("throws when neither single nor list is set", () => {
     expect(() => parseInputs({ "INPUT_API-KEY": "ask_test" })).toThrow(
       /Missing required input: action/,

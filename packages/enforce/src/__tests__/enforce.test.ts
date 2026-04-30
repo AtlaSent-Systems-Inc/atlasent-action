@@ -17,23 +17,39 @@ const BASE_CONFIG = {
 // Raw API response shapes (snake_case) used for mock HTTP bodies
 const ALLOW_RESPONSE = { decision: "allow", evaluation_id: "ev-1", permit_token: "pt-abc" };
 const DENY_RESPONSE = { decision: "deny", deny_reason: "policy blocked" };
+const VERIFY_OK = { verified: true, outcome: "ok" };
 
 function mockResponse(status: number, body: unknown) {
   mockPost.mockResolvedValueOnce({ status, body: JSON.stringify(body) });
+}
+
+/** Queue: evaluate response, then verify-permit response. */
+function mockAllow() {
+  mockResponse(200, ALLOW_RESPONSE);
+  mockResponse(200, VERIFY_OK);
 }
 
 describe("enforce — contract invariants", () => {
   beforeEach(() => mockPost.mockReset());
   afterEach(() => vi.restoreAllMocks());
 
-  it("executes fn and returns { result, decision } when allow", async () => {
-    mockResponse(200, ALLOW_RESPONSE);
+  it("executes fn and returns { result, decision, verifyOutcome } when allow+verified", async () => {
+    mockAllow();
     const fn = vi.fn().mockResolvedValue("deployed");
     const out = await enforce(BASE_CONFIG, fn);
     expect(fn).toHaveBeenCalledOnce();
     expect(out.result).toBe("deployed");
     expect(out.decision.decision).toBe("allow");
     expect(out.decision.permitToken).toBe("pt-abc");
+    expect(out.verifyOutcome).toBe("ok");
+  });
+
+  it("calls evaluate then verify-permit (two POST calls)", async () => {
+    mockAllow();
+    await enforce(BASE_CONFIG, vi.fn().mockResolvedValue(null));
+    expect(mockPost).toHaveBeenCalledTimes(2);
+    expect(mockPost.mock.calls[0][0]).toBe("https://api.test/v1/evaluate");
+    expect(mockPost.mock.calls[1][0]).toBe("https://api.test/v1/verify-permit");
   });
 
   it("fn never runs when evaluate throws (network failure)", async () => {
@@ -73,8 +89,40 @@ describe("enforce — contract invariants", () => {
     expect(fn).not.toHaveBeenCalled();
   });
 
-  it("propagates fn errors naturally after a successful allow", async () => {
+  it("fn never runs when verifyPermit returns verified=false (replay)", async () => {
     mockResponse(200, ALLOW_RESPONSE);
+    mockResponse(200, { verified: false, outcome: "permit_consumed" });
+    const fn = vi.fn();
+    await expect(enforce(BASE_CONFIG, fn)).rejects.toSatisfy(
+      (e: EnforceError) => e instanceof EnforceError && e.phase === "verify-permit",
+    );
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("fn never runs when verifyPermit is unreachable", async () => {
+    mockResponse(200, ALLOW_RESPONSE);
+    mockPost.mockRejectedValueOnce(new Error("ETIMEDOUT"));
+    const fn = vi.fn();
+    await expect(enforce(BASE_CONFIG, fn)).rejects.toSatisfy(
+      (e: EnforceError) => e instanceof EnforceError && e.phase === "verify-permit",
+    );
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("fn never runs when evaluate returns allow but no permit_token", async () => {
+    mockResponse(200, { decision: "allow", evaluation_id: "ev-1" }); // no permit_token
+    const fn = vi.fn();
+    await expect(enforce(BASE_CONFIG, fn)).rejects.toSatisfy(
+      (e: EnforceError) =>
+        e instanceof EnforceError &&
+        e.phase === "verify-permit" &&
+        /no permit_token/.test(e.message),
+    );
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("propagates fn errors naturally after a successful allow+verify", async () => {
+    mockAllow();
     const boom = new Error("deploy exploded");
     const fn = vi.fn().mockRejectedValue(boom);
     await expect(enforce(BASE_CONFIG, fn)).rejects.toBe(boom);
@@ -97,5 +145,16 @@ describe("enforce — contract invariants", () => {
     expect(err).toBeInstanceOf(EnforceError);
     expect(err.phase).toBe("verify");
     expect(err.decision?.decision).toBe("deny");
+  });
+
+  it("error from verify-permit phase carries the decision", async () => {
+    mockResponse(200, ALLOW_RESPONSE);
+    mockResponse(200, { verified: false, outcome: "permit_expired" });
+    const fn = vi.fn();
+    const err = await enforce(BASE_CONFIG, fn).catch((e: unknown) => e as EnforceError);
+    expect(err).toBeInstanceOf(EnforceError);
+    expect(err.phase).toBe("verify-permit");
+    expect(err.decision?.decision).toBe("allow");
+    expect(err.decision?.permitToken).toBe("pt-abc");
   });
 });

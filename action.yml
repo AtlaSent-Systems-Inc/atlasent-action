@@ -8,10 +8,10 @@ inputs:
     description: 'AtlaSent API key (ask_live_* or ask_test_*)'
     required: true
   action:
-    description: 'Action type to evaluate (e.g., production_deploy)'
-    required: true
+    description: 'Action type to evaluate (e.g., production_deploy). Used for single-eval path. Ignored when evaluations is set.'
+    required: false
   actor:
-    description: 'Actor identity (defaults to github.actor)'
+    description: 'Actor identity (defaults to github.actor). Used for single-eval path.'
     required: false
     default: '${{ github.actor }}'
   target-id:
@@ -21,28 +21,52 @@ inputs:
     description: 'Environment (defaults to live for main branch, test otherwise)'
     required: false
   api-url:
-    description: 'AtlaSent API URL (defaults to production)'
+    description: 'AtlaSent API URL base (defaults to production). The enforcement wrapper appends /v1/evaluate and /v1/verify-permit.'
     required: false
-    default: 'https://ihghhasvxtltlbizvkqy.supabase.co/functions/v1'
+    default: 'https://api.atlasent.io'
   fail-on-deny:
     description: 'Fail the workflow step if the action is denied (default: true)'
     required: false
     default: 'true'
   context:
-    description: 'JSON context to include in the evaluation (optional)'
+    description: 'JSON context to include in the evaluation (optional). Used for single-eval path.'
     required: false
     default: '{}'
+  evaluations:
+    description: 'JSON array of evaluation requests for batch mode, e.g. [{"action":"deploy.prod","actor":"alice"}]. When set, single-eval inputs (action, actor, context) are ignored.'
+    required: false
+  wait-for-id:
+    description: 'Evaluation ID to block on until it reaches a terminal state (allow/deny). Used with hold/escalate decisions that require async approval.'
+    required: false
+  wait-timeout-ms:
+    description: 'Maximum milliseconds to wait for a terminal decision when wait-for-id is set (default: 600000 = 10 min).'
+    required: false
+    default: '600000'
+  v2-batch:
+    description: 'Enable the /v1/evaluate/batch endpoint for batch evaluations (default: false, falls back to sequential /v1/evaluate loop).'
+    required: false
+    default: 'false'
+  v2-streaming:
+    description: 'Enable Server-Sent Events stream for wait-for-id polling (default: false, falls back to HTTP polling).'
+    required: false
+    default: 'false'
 outputs:
   decision:
-    description: 'The evaluation decision (allow/deny/hold/escalate)'
+    description: 'The evaluation decision (allow/deny/hold/escalate). Set for single-eval path only.'
   permit-token:
-    description: 'The permit token (if allowed)'
+    description: 'The permit token consumed by the gate (audit reference; single-use, already consumed by v1-verify-permit). Single-eval path only.'
   evaluation-id:
-    description: 'The evaluation ID for audit trail'
+    description: 'The evaluation ID for audit trail. Single-eval path only.'
   proof-hash:
-    description: 'The cryptographic proof hash'
+    description: 'The cryptographic proof hash. Single-eval path only.'
   risk-score:
-    description: 'The numeric risk score from the Decision response. Empty string when the evaluator did not return a risk assessment.'
+    description: 'The numeric risk score from the Decision response. Empty string when the evaluator did not return a risk assessment. Single-eval path only.'
+  verified:
+    description: '"true" when evaluate=allow AND verify-permit=true for ALL evaluations; "false" otherwise (fail-closed). Set on both single and batch paths.'
+  decisions:
+    description: 'JSON array of per-item decision results for the batch path. Each item: {decision, verified, evaluationId, permitToken, reasons, verifyOutcome}.'
+  batch-id:
+    description: 'Batch identifier for the v2.1 batch path (either the server-assigned batchId or loop-<ts> for the sequential fallback).'
 runs:
   using: 'node20'
   main: 'dist/index.js'

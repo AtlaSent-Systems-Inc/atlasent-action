@@ -33,6 +33,7 @@ export function post(
         res.on("end", () =>
           resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf-8") }),
         );
+        res.on("error", reject);
       },
     );
     req.on("error", reject);

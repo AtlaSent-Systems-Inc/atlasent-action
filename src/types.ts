@@ -17,4 +17,7 @@ export interface Decision {
   proofHash?: string;
   reasons?: string[];
   evaluatedAt: string;
+  /** Set after verify-permit round-trip. True only when evaluate=allow AND verify=true. */
+  verified?: boolean;
+  verifyOutcome?: string;
 }

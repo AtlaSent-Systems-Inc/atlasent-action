@@ -1,15 +1,24 @@
-// AtlaSent Gate Action — Zero-dependency GitHub Action entry point
-// Reads GitHub Actions inputs via INPUT_* env vars and calls the AtlaSent evaluate endpoint.
+// AtlaSent Gate Action — GitHub Actions entry point.
+//
+// Routing:
+//   evaluations input set → v2.1 batch path via runV21()
+//   single action input   → @atlasent/enforce (canonical enforcement wrapper)
+//
+// The enforcement contract (evaluate → verify → verifyPermit) lives entirely
+// in @atlasent/enforce. This file handles GH Actions I/O: reading inputs,
+// masking secrets, and translating EnforceResult / EnforceError into step
+// outputs and exit codes.
 
-import https from "node:https";
-import http from "node:http";
+import { enforce, EnforceError } from "@atlasent/enforce";
+import type { Decision, EnforceConfig } from "@atlasent/enforce";
+import { GateInfraError } from "./gate";
+import { runV21 } from "./v21";
 
 // ---------------------------------------------------------------------------
-// Helpers
+// GitHub Actions helpers
 // ---------------------------------------------------------------------------
 
 function getInput(name: string, required = false): string {
-  // GitHub Actions sets inputs as env vars: INPUT_<UPPER_NAME> with hyphens replaced by underscores
   const envKey = `INPUT_${name.replace(/-/g, "_").toUpperCase()}`;
   const val = (process.env[envKey] ?? "").trim();
   if (required && !val) {
@@ -24,7 +33,6 @@ function setOutput(name: string, value: string): void {
     const fs = require("node:fs");
     fs.appendFileSync(outputFile, `${name}=${value}\n`);
   }
-  // Also log for older runners
   console.log(`::set-output name=${name}::${value}`);
 }
 
@@ -46,57 +54,7 @@ function maskValue(value: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP helper — zero-dependency POST using Node built-ins
-// ---------------------------------------------------------------------------
-
-interface HttpResponse {
-  status: number;
-  body: string;
-}
-
-function post(url: string, body: string, headers: Record<string, string>): Promise<HttpResponse> {
-  return new Promise((resolve, reject) => {
-    const parsed = new URL(url);
-    const transport = parsed.protocol === "https:" ? https : http;
-
-    const req = transport.request(
-      {
-        hostname: parsed.hostname,
-        port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
-        path: parsed.pathname + parsed.search,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(body),
-          ...headers,
-        },
-        timeout: 30_000,
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
-        res.on("end", () => {
-          resolve({
-            status: res.statusCode ?? 0,
-            body: Buffer.concat(chunks).toString("utf-8"),
-          });
-        });
-      },
-    );
-
-    req.on("error", reject);
-    req.on("timeout", () => {
-      req.destroy();
-      reject(new Error("Request timed out after 30 seconds"));
-    });
-
-    req.write(body);
-    req.end();
-  });
-}
-
-// ---------------------------------------------------------------------------
-// GitHub context from environment
+// GitHub context
 // ---------------------------------------------------------------------------
 
 interface GitHubContext {
@@ -125,42 +83,27 @@ function getGitHubContext(): GitHubContext {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Determine environment
-// ---------------------------------------------------------------------------
-
 function resolveEnvironment(explicit: string, ref: string, apiKey: string): string {
   if (explicit) return explicit;
-  // Infer from API key prefix
   if (apiKey.startsWith("ask_test_")) return "test";
   if (apiKey.startsWith("ask_live_")) return "live";
-  // Infer from branch
   const branch = ref.replace("refs/heads/", "");
   return branch === "main" || branch === "master" ? "live" : "test";
 }
 
 // ---------------------------------------------------------------------------
-// Risk-score extraction
+// Output helpers — translate a Decision object into GH Actions outputs.
+// Must be called BEFORE setFailed/warning so outputs are visible on failure.
 // ---------------------------------------------------------------------------
 
-// The v1-evaluate response carries risk in two shapes depending on how
-// the rule engine was wired:
-//   - Canonical (per atlasent-api openapi `Decision.risk`):
-//       { risk: { level, score, reasons, ... } }
-//   - Flat (older / minimal evaluator):
-//       { risk_score: number }
-// Try canonical first, fall back to flat. Returns "" when neither is
-// present so the GitHub output is still set (callers can branch on
-// empty string).
-function extractRiskScore(result: Record<string, unknown>): string {
-  const risk = result["risk"];
-  if (risk && typeof risk === "object" && "score" in risk) {
-    const score = (risk as { score?: unknown }).score;
-    if (typeof score === "number") return String(score);
-  }
-  const flat = result["risk_score"];
-  if (typeof flat === "number") return String(flat);
-  return "";
+function setDecisionOutputs(d: Decision): void {
+  if (d.permitToken) maskValue(d.permitToken);
+  if (d.proofHash) maskValue(d.proofHash);
+  setOutput("decision", d.decision);
+  setOutput("permit-token", d.permitToken ?? "");
+  setOutput("evaluation-id", d.evaluationId ?? "");
+  setOutput("proof-hash", d.proofHash ?? "");
+  setOutput("risk-score", d.riskScore !== undefined ? String(d.riskScore) : "");
 }
 
 // ---------------------------------------------------------------------------
@@ -168,14 +111,88 @@ function extractRiskScore(result: Record<string, unknown>): string {
 // ---------------------------------------------------------------------------
 
 async function run(): Promise<void> {
-  // 1. Read inputs
+  // 1. Read shared inputs
   const apiKey = getInput("api-key", true);
+  const apiUrl = getInput("api-url") || "https://api.atlasent.io";
+  const failOnDeny = getInput("fail-on-deny") !== "false";
+
+  maskValue(apiKey);
+
+  // ── v2.1 batch path (scope-excluded from this unification) ─────────────────
+  const evaluationsRaw = getInput("evaluations");
+  if (evaluationsRaw) {
+    const waitForId = getInput("wait-for-id") || undefined;
+    const waitTimeoutMs = parseInt(getInput("wait-timeout-ms") || "600000", 10);
+    const v2Batch = getInput("v2-batch") === "true";
+    const v2Streaming = getInput("v2-streaming") === "true";
+
+    let result;
+    try {
+      result = await runV21(
+        {
+          "INPUT_API-KEY": apiKey,
+          "INPUT_API-URL": apiUrl,
+          "INPUT_FAIL-ON-DENY": failOnDeny ? "true" : "false",
+          INPUT_EVALUATIONS: evaluationsRaw,
+          "INPUT_WAIT-FOR-ID": waitForId,
+          "INPUT_WAIT-TIMEOUT-MS": String(waitTimeoutMs),
+        },
+        { v2Batch, v2Streaming },
+      );
+    } catch (err) {
+      const msg =
+        err instanceof EnforceError || err instanceof GateInfraError
+          ? err.message
+          : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
+      setOutput("verified", "false");
+      setOutput("decisions", "[]");
+      setOutput("batch-id", "");
+      setFailed(`AtlaSent Gate (batch): ${msg}. Deploy blocked (fail-closed).`);
+      return;
+    }
+
+    const decisionsJson = JSON.stringify(
+      result.decisions.map((d) => ({
+        decision: d.decision,
+        verified: d.verified ?? false,
+        evaluationId: d.id ?? "",
+        permitToken: d.permitToken ? "(masked)" : "",
+        reasons: d.reasons ?? [],
+        verifyOutcome: d.verifyOutcome ?? "",
+      })),
+    );
+
+    const allVerified = result.decisions.every(
+      (d) => d.decision !== "allow" || d.verified === true,
+    );
+
+    setOutput("batch-id", result.batchId);
+    setOutput("decisions", decisionsJson);
+    setOutput("verified", allVerified ? "true" : "false");
+
+    if (result.failed) {
+      setFailed(
+        `AtlaSent Gate: one or more evaluations were not allowed (deny/hold/escalate). See 'decisions' output for details.`,
+      );
+      return;
+    }
+    if (!allVerified) {
+      setFailed(
+        `AtlaSent Gate: one or more allow decisions failed permit verification. Deploy blocked.`,
+      );
+      return;
+    }
+
+    info(`AtlaSent Gate: all ${result.decisions.length} evaluation(s) allowed and verified`);
+    info(`  Batch ID: ${result.batchId}`);
+    return;
+  }
+
+  // ── Single-eval path via @atlasent/enforce ─────────────────────────────────
   const actionType = getInput("action", true);
   const actor = getInput("actor") || "unknown";
-  const targetId = getInput("target-id");
+  const targetId = getInput("target-id") || undefined;
   const explicitEnv = getInput("environment");
-  const apiUrl = getInput("api-url") || "https://ihghhasvxtltlbizvkqy.supabase.co/functions/v1";
-  const failOnDeny = getInput("fail-on-deny") !== "false";
   let extraContext: Record<string, unknown> = {};
   try {
     extraContext = JSON.parse(getInput("context") || "{}");
@@ -183,18 +200,25 @@ async function run(): Promise<void> {
     warning("Could not parse 'context' input as JSON — ignoring");
   }
 
-  // Mask the API key so it never appears in logs
-  maskValue(apiKey);
-
-  // 2. Build context
   const gh = getGitHubContext();
   const environment = resolveEnvironment(explicitEnv, gh.ref, apiKey);
 
-  const payload: Record<string, unknown> = {
-    action_type: actionType,
-    actor_id: `github:${actor}`,
+  info(
+    `AtlaSent Gate: evaluating "${actionType}" for actor "github:${actor}" in ${environment} environment` +
+      (targetId ? ` (target=${targetId})` : ""),
+  );
+
+  // @atlasent/enforce is the canonical enforcement wrapper.
+  // enforce() runs evaluate → verify (decision check) → verifyPermit (API call).
+  // fn is a no-op: the action's job is to gate, not execute app logic.
+  const config: EnforceConfig = {
+    apiKey,
+    apiUrl,
+    action: actionType,
+    actor: `github:${actor}`,
+    environment,
+    targetId,
     context: {
-      environment,
       source: "github-action",
       repository: gh.repository,
       ref: gh.ref,
@@ -205,164 +229,107 @@ async function run(): Promise<void> {
       event_name: gh.event_name,
       pr_number: gh.pr_number ?? null,
       run_url: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
-      // target_id is also threaded into context so policies that read
-      // context.target_id (rather than the top-level target_id) match.
-      ...(targetId ? { target_id: targetId } : {}),
       ...extraContext,
     },
   };
 
-  // Top-level target_id matches the canonical EvaluationParams shape
-  // used by `@atlasent/sdk` and atlasent-console. Older evaluators
-  // that only inspect context will still see it via the context
-  // mirror above.
-  if (targetId) payload["target_id"] = targetId;
-
-  info(`AtlaSent Gate: evaluating "${actionType}" for actor "${actor}" in ${environment} environment${targetId ? ` (target=${targetId})` : ""}`);
-
-  // 3. Call the evaluate endpoint.
-  // Infrastructure errors (network, timeout, 5xx, 401/403, 429) are
-  // distinct from policy decisions. `fail-on-deny` governs whether a
-  // legitimate deny/hold/escalate fails the job; it does NOT mean
-  // "fail open on missing authorization." A security gate that
-  // silently lets deploys through when its authority source is
-  // unreachable is worse than no gate.
-  let response: HttpResponse;
+  let enforceResult: Awaited<ReturnType<typeof enforce>>;
   try {
-    response = await post(`${apiUrl}/v1-evaluate`, JSON.stringify(payload), {
-      Authorization: `Bearer ${apiKey}`,
-    });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    setOutput("decision", "error");
-    setFailed(
-      `AtlaSent API unreachable: ${message}. The deploy is blocked because ` +
-        `the authorization gate could not confirm a policy decision. ` +
-        `Set ATLASENT_ALLOW_INFRA_BYPASS=1 to deliberately fail-open on ` +
-        `transport errors (not recommended for production gates).`,
-    );
-    return;
-  }
+    enforceResult = await enforce(config, async () => {});
+  } catch (err) {
+    if (err instanceof EnforceError) {
+      // Set decision outputs before failing so they're visible in the step.
+      if (err.decision) {
+        setDecisionOutputs(err.decision);
+      } else {
+        setOutput("decision", "error");
+        setOutput("permit-token", "");
+        setOutput("evaluation-id", "");
+        setOutput("proof-hash", "");
+        setOutput("risk-score", "");
+      }
+      setOutput("verified", "false");
 
-  // 4. Classify the HTTP status. Only 2xx is a policy decision; every
-  // other class is an infrastructure state we must not confuse with
-  // a decision.
-  if (response.status >= 500) {
-    setOutput("decision", "error");
-    setFailed(
-      `AtlaSent API returned HTTP ${response.status} — infrastructure failure, ` +
-        `not a policy decision. Deploy blocked. Body: ${response.body.slice(0, 300)}`,
-    );
-    return;
-  }
-  if (response.status === 401 || response.status === 403) {
-    setOutput("decision", "error");
-    setFailed(
-      `AtlaSent API auth failed (HTTP ${response.status}). Check your ` +
-        `ATLASENT_API_KEY and the key's scopes. Body: ${response.body.slice(0, 300)}`,
-    );
-    return;
-  }
-  if (response.status === 429) {
-    // Rate-limited — transient, but safer to block than silently
-    // allow. Retries should be a caller-controlled workflow decision,
-    // not an action-level fail-open.
-    setOutput("decision", "error");
-    setFailed(
-      `AtlaSent API rate-limited this gate (HTTP 429). Deploy blocked. ` +
-        `Retry the job or raise the key's rate_limit_per_minute.`,
-    );
-    return;
-  }
-  if (response.status < 200 || response.status >= 300) {
-    const msg = `AtlaSent API returned HTTP ${response.status}: ${response.body.slice(0, 300)}`;
-    if (failOnDeny) {
-      setFailed(msg);
+      // phase="verify" is a policy decision; respect fail-on-deny.
+      // All other phases are infrastructure/security failures: always fail-closed.
+      if (err.phase === "verify" && !failOnDeny) {
+        switch (err.decision?.decision) {
+          case "deny":
+            warning(`Authorization DENIED: ${err.decision.denyReason ?? "no reason provided"}`);
+            break;
+          case "hold":
+            warning(`Authorization on HOLD: ${err.decision.holdReason ?? "awaiting approval"}`);
+            break;
+          case "escalate":
+            warning("Authorization ESCALATED — manual review required");
+            break;
+          default:
+            warning(`Authorization ${err.decision?.decision ?? "unknown"}`);
+        }
+        return;
+      }
+
+      // Fail-closed for evaluate + verify-permit phases, and verify when failOnDeny=true.
+      switch (err.phase) {
+        case "evaluate":
+          setFailed(
+            `AtlaSent Gate: ${err.message}. Deploy blocked — the gate cannot confirm authorization (fail-closed).`,
+          );
+          break;
+        case "verify":
+          switch (err.decision?.decision) {
+            case "deny":
+              setFailed(
+                `Authorization DENIED: ${err.decision.denyReason ?? "no reason provided"}`,
+              );
+              break;
+            case "hold":
+              setFailed(
+                `Authorization on HOLD: ${err.decision.holdReason ?? "awaiting approval"}`,
+              );
+              break;
+            case "escalate":
+              setFailed("Authorization ESCALATED — manual review required");
+              break;
+            default:
+              setFailed(`Unexpected decision from AtlaSent: ${err.decision?.decision ?? "unknown"}`);
+          }
+          break;
+        case "verify-permit":
+          setFailed(
+            `AtlaSent Gate: ${err.message}. Deploy blocked (fail-closed).`,
+          );
+          break;
+        default:
+          setFailed(`AtlaSent Gate: ${err.message}`);
+      }
       return;
     }
-    warning(msg);
+
+    // Non-EnforceError: unexpected
     setOutput("decision", "error");
+    setOutput("permit-token", "");
+    setOutput("evaluation-id", "");
+    setOutput("proof-hash", "");
+    setOutput("risk-score", "");
+    setOutput("verified", "false");
+    setFailed(
+      `AtlaSent Gate: Unexpected error: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return;
   }
 
-  let result: {
-    decision?: string;
-    permit_token?: string;
-    evaluation_id?: string;
-    proof_hash?: string;
-    deny_reason?: string;
-    hold_reason?: string;
-  };
+  // enforce() returned — decision=allow, verify=passed, verifyPermit=passed.
+  const { decision: d, verifyOutcome } = enforceResult;
+  setDecisionOutputs(d);
+  setOutput("verified", "true");
 
-  try {
-    result = JSON.parse(response.body);
-  } catch {
-    setFailed(`Failed to parse AtlaSent response: ${response.body.slice(0, 300)}`);
-    return;
-  }
-
-  const decision = result.decision ?? "unknown";
-  const permitToken = result.permit_token ?? "";
-  const evaluationId = result.evaluation_id ?? "";
-  const proofHash = result.proof_hash ?? "";
-  const riskScore = extractRiskScore(result as Record<string, unknown>);
-
-  // Mask the permit token + proof hash so they don't appear verbatim
-  // in action logs. The API key already gets masked at line 162;
-  // extend the same treatment to derived secrets. Permit tokens are
-  // short-lived and single-use but customer CI log retention can be
-  // long — treat as sensitive at rest.
-  if (permitToken) maskValue(permitToken);
-  if (proofHash) maskValue(proofHash);
-
-  // 5. Set outputs (GitHub masks them in console echoes because of
-  // the maskValue() calls above).
-  setOutput("decision", decision);
-  setOutput("permit-token", permitToken);
-  setOutput("evaluation-id", evaluationId);
-  setOutput("proof-hash", proofHash);
-  setOutput("risk-score", riskScore);
-
-  // 6. Handle decision
-  switch (decision) {
-    case "allow":
-      info(`Authorization GRANTED`);
-      info(`  Permit token: (set as 'permit-token' output, masked in logs)`);
-      info(`  Proof hash:   (set as 'proof-hash' output, masked in logs)`);
-      info(`  Evaluation:   ${evaluationId}`);
-      if (riskScore) info(`  Risk score:   ${riskScore}`);
-      break;
-
-    case "deny":
-      if (failOnDeny) {
-        setFailed(`Authorization DENIED: ${result!.deny_reason ?? "no reason provided"}`);
-      } else {
-        warning(`Authorization DENIED: ${result!.deny_reason ?? "no reason provided"}`);
-      }
-      break;
-
-    case "hold":
-      if (failOnDeny) {
-        setFailed(`Authorization on HOLD: ${result!.hold_reason ?? "awaiting approval"}`);
-      } else {
-        warning(`Authorization on HOLD: ${result!.hold_reason ?? "awaiting approval"}`);
-      }
-      break;
-
-    case "escalate":
-      if (failOnDeny) {
-        setFailed("Authorization ESCALATED — manual review required");
-      } else {
-        warning("Authorization ESCALATED — manual review required");
-      }
-      break;
-
-    default:
-      warning(`Unexpected decision: ${decision}`);
-      if (failOnDeny) {
-        setFailed(`Unexpected decision from AtlaSent: ${decision}`);
-      }
-  }
+  info(`Authorization GRANTED (evaluate + verify)`);
+  info(`  Permit token: (set as 'permit-token' output, masked in logs)`);
+  info(`  Proof hash:   (set as 'proof-hash' output, masked in logs)`);
+  info(`  Evaluation:   ${d.evaluationId ?? ""}`);
+  if (d.riskScore !== undefined) info(`  Risk score:   ${d.riskScore}`);
+  info(`  Verify:       ${verifyOutcome ?? "verified"}`);
 }
 
 run().catch((err) => {

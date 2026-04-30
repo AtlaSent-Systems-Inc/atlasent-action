@@ -6,6 +6,37 @@ All notable changes to `atlasent-action` are documented here.
 
 ## [1.3.0] — 2026-04-30
 
+### Bug fixes
+- **`wait-for-id` allow path was permanently broken** — when
+  `waitForTerminalDecision` resolved a hold/escalate to `allow`,
+  `v21.ts` assigned the terminal decision without calling `verifyOne`.
+  `verified` was always `undefined`, so `allVerified` was always
+  `false`. The hold → allow path now calls `verifyOne` on the terminal
+  permit (no `permitToken` → `verified=false`, fail-closed).
+- **`decisions` and `batch-id` outputs unset on batch error** —
+  the `runV21()` catch block only wrote `verified=false` before
+  `setFailed`. Downstream steps using `if: always()` got unset values.
+  Now emits `decisions=[]` and `batch-id=""` before failing.
+- **Transport ECONNRESET crash** — `packages/enforce/src/transport.ts`
+  had no `res.on("error")` handler. A mid-response connection reset
+  fired an unhandled EventEmitter error and crashed Node.js. Fixed by
+  adding `res.on("error", reject)` alongside `req.on("error", reject)`.
+- **Polling retried 5xx but not network errors** — `waitViaPolling`
+  swallowed non-2xx responses but let `fetch` throws (network errors,
+  malformed-JSON 200s) propagate immediately, breaking the retry
+  contract. Both cases now swallowed and retried; `AbortError` is
+  re-thrown so caller cancellation still works.
+- **Raw `SyntaxError` leaked on bad `evaluations`/`context` JSON** —
+  `parseInputs` called `JSON.parse` without try/catch; invalid JSON
+  surfaced as `Unexpected error: SyntaxError: ...`. Now reports
+  `` `evaluations` is not valid JSON `` and `` `context` is not valid
+  JSON ``.
+- **`GateInfraError` labelled "Unexpected error"** — the batch catch
+  block in `index.ts` only recognised `EnforceError` for clean message
+  formatting. `GateInfraError` from `verifyOne` on a 5xx appeared as
+  `Unexpected error: verify-permit HTTP 500`. Now detected alongside
+  `EnforceError`.
+
 ### Action — v1-verify-permit wiring (A5 end-to-end)
 - `verified` output: `"true"` only when evaluate returned `decision=allow`
   AND `/v1/verify-permit` confirmed `verified=true`; `"false"` in every

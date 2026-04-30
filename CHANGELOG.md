@@ -5,17 +5,16 @@ All notable changes to `atlasent-action` are documented here.
 ## [Unreleased]
 
 ### Action — v1-verify-permit wiring (A5 end-to-end)
-- `verified` output: `"true"` only when `/v1-evaluate` returned
-  `decision=allow` AND `/v1-verify-permit` confirmed `verified=true`;
-  `"false"` in every other case. Downstream steps must branch on
-  `verified`, not re-derive from `decision`.
-- `src/gate.ts`: fetch-based core (`runGate`, `verifyOne`) encapsulating
-  the evaluate → verify-permit flow with `GateInfraError` for all
-  infrastructure failures (network, 5xx, 401, 429, no permit_token).
-- 18 SIM tests (`src/__tests__/gate.test.ts`) covering all paths in
-  the decision matrix.
-- `permit-token` output is now an audit reference (single-use, already
-  consumed by the action's own verify call).
+- `verified` output: `"true"` only when evaluate returned `decision=allow`
+  AND `/v1/verify-permit` confirmed `verified=true`; `"false"` in every
+  other case. Downstream steps must branch on `verified`, not re-derive
+  from `decision`.
+- `src/gate.ts`: `verifyOne()` and `GateInfraError` for the verify-permit
+  round-trip; infrastructure failures (network, 5xx, 401, 429, no
+  permit_token) are always fail-closed. Single-eval enforcement delegated
+  to `@atlasent/enforce`; `verifyOne()` is used by the v2.1 batch path.
+- 9 SIM tests (`src/__tests__/gate.test.ts`) for `verifyOne()`.
+- `permit-token` output is an audit reference (single-use, already consumed).
 - Replay protection: stale or consumed `permit_token` → `verified=false`.
 
 ### Action — v2.1 batch entry point (B.AC4)

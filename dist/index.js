@@ -486,7 +486,7 @@ async function runV21(env, flags) {
       }
     }
   }
-  const failed = inputs.failOnDeny && decisions.some((d) => d.decision === "deny");
+  const failed = inputs.failOnDeny && decisions.some((d) => d.decision === "deny" || d.decision === "hold" || d.decision === "escalate");
   return { decisions, failed, batchId: batch.batchId };
 }
 
@@ -605,7 +605,7 @@ async function run() {
     setOutput("verified", allVerified ? "true" : "false");
     if (result.failed) {
       setFailed(
-        `AtlaSent Gate: one or more evaluations denied. See 'decisions' output for details.`
+        `AtlaSent Gate: one or more evaluations were not allowed (deny/hold/escalate). See 'decisions' output for details.`
       );
       return;
     }

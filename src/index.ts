@@ -172,7 +172,7 @@ async function run(): Promise<void> {
 
     if (result.failed) {
       setFailed(
-        `AtlaSent Gate: one or more evaluations denied. See 'decisions' output for details.`,
+        `AtlaSent Gate: one or more evaluations were not allowed (deny/hold/escalate). See 'decisions' output for details.`,
       );
       return;
     }

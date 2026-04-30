@@ -93,8 +93,29 @@ it("failed=true when any decision is deny and failOnDeny=true", async () => {
   expect(out.failed).toBe(true);
 });
 
-it("failed=false when deny but failOnDeny=false", async () => {
-  mockEvaluateMany.mockResolvedValueOnce({ decisions: [decision("deny")], batchId: "b1" });
+it("failed=true when any decision is hold and failOnDeny=true", async () => {
+  mockEvaluateMany.mockResolvedValueOnce({
+    decisions: [decision("allow"), decision("hold", "ev-2")],
+    batchId: "b1",
+  });
+  const out = await runV21(BASE_ENV, FLAGS);
+  expect(out.failed).toBe(true);
+});
+
+it("failed=true when any decision is escalate and failOnDeny=true", async () => {
+  mockEvaluateMany.mockResolvedValueOnce({
+    decisions: [decision("allow"), decision("escalate", "ev-2")],
+    batchId: "b1",
+  });
+  const out = await runV21(BASE_ENV, FLAGS);
+  expect(out.failed).toBe(true);
+});
+
+it("failed=false when non-allow but failOnDeny=false", async () => {
+  mockEvaluateMany.mockResolvedValueOnce({
+    decisions: [decision("deny"), decision("hold", "ev-2"), decision("escalate", "ev-3")],
+    batchId: "b1",
+  });
   const out = await runV21({ ...BASE_ENV, "INPUT_FAIL-ON-DENY": "false" }, FLAGS);
   expect(out.failed).toBe(false);
 });

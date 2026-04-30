@@ -28,7 +28,7 @@ print('action.yml valid')
 
       - name: Check evaluate step present
         run: |
-          grep -q 'v1-evaluate' src/gate.ts && echo 'evaluate step found'
+          grep -q 'v1/evaluate' src/batch.ts && echo 'evaluate step found'
 
       - name: Check verify step present
         run: |

@@ -46,13 +46,22 @@ All notable changes to `atlasent-action` are documented here.
   mock both evaluate and verify-permit calls (78 total).
 - Built `packages/enforce/dist/` (`index.js`, `index.d.ts`).
 
-### Action — stream SIM tests (B.AC3)
+### Action — v21 + stream SIM tests
+- 10 SIM tests for `runV21()` (`src/__tests__/v21.test.ts`): items passed
+  to `evaluateMany`, single action wrapped into a 1-item batch, batchId
+  forwarded, `failed` flag respects `failOnDeny`, `waitForTerminalDecision`
+  called/skipped based on `waitForId` matching a hold/escalate id.
+  Dependencies mocked via `vi.mock()`.
 - 8 SIM tests for `waitForTerminalDecision()` (`src/__tests__/stream.test.ts`),
   covering the polling path (immediate allow/deny, non-terminal retry,
   timeout) and the SSE streaming path (terminal event, non-terminal skip,
   body shape, non-2xx error).
 - Timeout test uses `vi.useFakeTimers()` / `vi.advanceTimersByTimeAsync()`
   to avoid real 5-second poll intervals in CI.
+
+### CI
+- `test.yml`: `Check evaluate step present` updated to grep `src/batch.ts`
+  for `v1/evaluate` instead of the removed `runGate()` path in `src/gate.ts`.
 
 ### Action — enforce unification
 - Single-eval path now uses `@atlasent/enforce` as the canonical

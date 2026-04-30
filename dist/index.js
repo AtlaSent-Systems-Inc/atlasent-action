@@ -569,6 +569,8 @@ async function run() {
     } catch (err) {
       const msg = err instanceof import_enforce.EnforceError || err instanceof GateInfraError ? err.message : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
       setOutput("verified", "false");
+      setOutput("decisions", "[]");
+      setOutput("batch-id", "");
       setFailed(`AtlaSent Gate (batch): ${msg}. Deploy blocked (fail-closed).`);
       return;
     }

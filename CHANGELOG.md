@@ -46,6 +46,14 @@ All notable changes to `atlasent-action` are documented here.
   mock both evaluate and verify-permit calls (78 total).
 - Built `packages/enforce/dist/` (`index.js`, `index.d.ts`).
 
+### Action — stream SIM tests (B.AC3)
+- 8 SIM tests for `waitForTerminalDecision()` (`src/__tests__/stream.test.ts`),
+  covering the polling path (immediate allow/deny, non-terminal retry,
+  timeout) and the SSE streaming path (terminal event, non-terminal skip,
+  body shape, non-2xx error).
+- Timeout test uses `vi.useFakeTimers()` / `vi.advanceTimersByTimeAsync()`
+  to avoid real 5-second poll intervals in CI.
+
 ### Action — enforce unification
 - Single-eval path now uses `@atlasent/enforce` as the canonical
   enforcement wrapper; `runGate()` (parallel fetch-based implementation)

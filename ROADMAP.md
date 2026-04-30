@@ -58,7 +58,14 @@ Authoritative deadlines and acceptance criteria stay in the umbrella docs:
 
 - PR #17 (atlasent-action): `target-id` input and `risk-score` output (1.2.0). Currently a draft, waiting on dist rebuild. Ships alongside its companion code.
 
-**Explicitly NOT in scope for v1 finish (stay in draft):**
+**Re-classified as v1 additive (per umbrella one-API-version lock):**
+
+The following drafts were previously labelled v2; ship them as v1 additive
+action features:
 
 - Pillar 9 Verifiable Proof System — atlasent-action #14
 - Batch / streaming / GraphQL — atlasent-action #15–16
+
+**Genuine v2 carve-out:** any PR whose diff removes/renames an existing
+input or output in `action.yml` holds in a separate branch until a
+deprecation runway is in place.

@@ -14,6 +14,7 @@
 //   4. Job summary is rendered per evaluation.
 
 import { evaluateMany } from "./batch";
+import { verifyOne } from "./gate";
 import { parseInputs } from "./inputs";
 import { waitForTerminalDecision } from "./stream";
 import type { Decision } from "./types";
@@ -55,7 +56,23 @@ export async function runV21(
         v2Streaming: flags.v2Streaming,
       });
       decisions = [...decisions];
-      decisions[idx] = terminal;
+      if (terminal.decision === "allow") {
+        // Terminal allow must be verified — same fail-closed contract as evaluateMany.
+        const item = items[idx];
+        const vr = terminal.permitToken
+          ? await verifyOne({
+              apiUrl: inputs.apiUrl,
+              apiKey: inputs.apiKey,
+              actionType: item.action,
+              actorId: item.actor,
+              permitToken: terminal.permitToken,
+              verifyPath: "/v1/verify-permit",
+            })
+          : { verified: false as const, outcome: undefined };
+        decisions[idx] = { ...terminal, verified: vr.verified, verifyOutcome: vr.outcome };
+      } else {
+        decisions[idx] = terminal;
+      }
     }
   }
 

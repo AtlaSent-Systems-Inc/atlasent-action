@@ -470,7 +470,20 @@ async function runV21(env, flags) {
         v2Streaming: flags.v2Streaming
       });
       decisions = [...decisions];
-      decisions[idx] = terminal;
+      if (terminal.decision === "allow") {
+        const item = items[idx];
+        const vr = terminal.permitToken ? await verifyOne({
+          apiUrl: inputs.apiUrl,
+          apiKey: inputs.apiKey,
+          actionType: item.action,
+          actorId: item.actor,
+          permitToken: terminal.permitToken,
+          verifyPath: "/v1/verify-permit"
+        }) : { verified: false, outcome: void 0 };
+        decisions[idx] = { ...terminal, verified: vr.verified, verifyOutcome: vr.outcome };
+      } else {
+        decisions[idx] = terminal;
+      }
     }
   }
   const failed = inputs.failOnDeny && decisions.some((d) => d.decision === "deny");

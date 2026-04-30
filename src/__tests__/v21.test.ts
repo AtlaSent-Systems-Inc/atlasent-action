@@ -5,12 +5,15 @@ import { runV21 } from "../v21";
 // parseInputs + evaluateMany + (optional) waitForTerminalDecision.
 
 vi.mock("../batch", () => ({ evaluateMany: vi.fn() }));
+vi.mock("../gate", () => ({ verifyOne: vi.fn() }));
 vi.mock("../stream", () => ({ waitForTerminalDecision: vi.fn() }));
 
 import { evaluateMany } from "../batch";
+import { verifyOne } from "../gate";
 import { waitForTerminalDecision } from "../stream";
 
 const mockEvaluateMany = evaluateMany as ReturnType<typeof vi.fn>;
+const mockVerifyOne = verifyOne as ReturnType<typeof vi.fn>;
 const mockWait = waitForTerminalDecision as ReturnType<typeof vi.fn>;
 
 // Minimal env that drives the batch path (evaluations set).
@@ -34,6 +37,7 @@ function decision(
 
 beforeEach(() => {
   mockEvaluateMany.mockReset();
+  mockVerifyOne.mockReset();
   mockWait.mockReset();
 });
 
@@ -102,6 +106,7 @@ it("calls waitForTerminalDecision when waitForId matches a hold decision", async
   const terminal = decision("allow", "ev-hold", "pt-1");
   mockEvaluateMany.mockResolvedValueOnce({ decisions: [hold], batchId: "b1" });
   mockWait.mockResolvedValueOnce(terminal);
+  mockVerifyOne.mockResolvedValueOnce({ verified: true, outcome: "ok" });
 
   const out = await runV21({ ...BASE_ENV, "INPUT_WAIT-FOR-ID": "ev-hold" }, FLAGS);
 
@@ -109,7 +114,40 @@ it("calls waitForTerminalDecision when waitForId matches a hold decision", async
   expect(mockWait).toHaveBeenCalledWith(
     expect.objectContaining({ evaluationId: "ev-hold", apiKey: "ask_test_key" }),
   );
+  expect(mockVerifyOne).toHaveBeenCalledOnce();
   expect(out.decisions[0].decision).toBe("allow");
+  expect(out.decisions[0].verified).toBe(true);
+});
+
+it("verifies terminal allow from wait-for-id with correct permit params", async () => {
+  const hold = decision("hold", "ev-hold");
+  const terminal = { ...decision("allow", "ev-hold", "pt-xyz"), verified: undefined };
+  mockEvaluateMany.mockResolvedValueOnce({ decisions: [hold], batchId: "b1" });
+  mockWait.mockResolvedValueOnce(terminal);
+  mockVerifyOne.mockResolvedValueOnce({ verified: true, outcome: "ok" });
+
+  await runV21({ ...BASE_ENV, "INPUT_WAIT-FOR-ID": "ev-hold" }, FLAGS);
+
+  expect(mockVerifyOne).toHaveBeenCalledWith(
+    expect.objectContaining({
+      permitToken: "pt-xyz",
+      actionType: "deploy.prod",
+      actorId: "alice",
+      verifyPath: "/v1/verify-permit",
+    }),
+  );
+});
+
+it("sets verified=false when terminal allow has no permitToken", async () => {
+  const hold = decision("hold", "ev-hold");
+  const terminalNoPermit = { id: "ev-hold", decision: "allow" as const, evaluatedAt: "2026-04-30T00:00:00Z" };
+  mockEvaluateMany.mockResolvedValueOnce({ decisions: [hold], batchId: "b1" });
+  mockWait.mockResolvedValueOnce(terminalNoPermit);
+
+  const out = await runV21({ ...BASE_ENV, "INPUT_WAIT-FOR-ID": "ev-hold" }, FLAGS);
+
+  expect(mockVerifyOne).not.toHaveBeenCalled();
+  expect(out.decisions[0].verified).toBe(false);
 });
 
 it("calls waitForTerminalDecision when waitForId matches an escalate decision", async () => {

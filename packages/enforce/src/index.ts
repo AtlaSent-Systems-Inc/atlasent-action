@@ -1,10 +1,10 @@
 // @atlasent/enforce — fail-closed execution wrapper.
 //
-// Enforces the evaluate → verify → execute contract:
-//   1. evaluate()  — calls POST /v1/evaluate; any infra error blocks execution
-//   2. verify()    — rejects non-allow decisions (deny / hold / escalate)
-//   3. enforce()   — composes the two; the wrapped function never runs unless
-//                    both evaluate and verify succeed
+// Enforces the evaluate → verify → verifyPermit → execute contract:
+//   1. evaluate()     — calls POST /v1/evaluate; any infra error blocks execution
+//   2. verify()       — rejects non-allow decisions (deny / hold / escalate)
+//   3. verifyPermit() — calls POST /v1/verify-permit; replay/expired tokens block
+//   4. enforce()      — composes all three; fn never runs unless all steps pass
 
 import { post } from "./transport";
 
@@ -34,7 +34,12 @@ export interface Decision {
   holdReason?: string;
 }
 
-export type EnforcePhase = "evaluate" | "verify" | "execute";
+export interface VerifyPermitResult {
+  verified: boolean;
+  outcome?: string;
+}
+
+export type EnforcePhase = "evaluate" | "verify" | "verify-permit" | "execute";
 
 export class EnforceError extends Error {
   readonly phase: EnforcePhase;
@@ -103,7 +108,7 @@ export async function evaluate(config: EnforceConfig): Promise<Decision> {
 }
 
 // ---------------------------------------------------------------------------
-// Step 2 — verify
+// Step 2 — verify (decision check — no HTTP call)
 // ---------------------------------------------------------------------------
 
 export function verify(decision: Decision): void {
@@ -134,17 +139,98 @@ export function verify(decision: Decision): void {
 }
 
 // ---------------------------------------------------------------------------
-// Step 3 — enforce (evaluate → verify → execute, fail-closed)
+// Step 3 — verifyPermit (calls /v1/verify-permit, fail-closed)
+//
+// Without this round-trip the enforce wrapper is evaluate-only: a tampered or
+// replayed permit_token would still surface decision=allow. This step consumes
+// the token — downstream re-verify returns outcome=permit_consumed.
+// ---------------------------------------------------------------------------
+
+export async function verifyPermit(
+  config: EnforceConfig,
+  decision: Decision,
+): Promise<VerifyPermitResult> {
+  if (!decision.permitToken) {
+    throw new EnforceError(
+      "evaluate returned allow but no permit_token — refusing to execute without verifiable permit",
+      "verify-permit",
+      decision,
+    );
+  }
+
+  const apiUrl = (config.apiUrl ?? DEFAULT_API_URL).replace(/\/$/, "");
+
+  let status: number;
+  let body: string;
+  try {
+    ({ status, body } = await post(
+      `${apiUrl}/v1/verify-permit`,
+      JSON.stringify({
+        permit_token: decision.permitToken,
+        action_type: config.action,
+        actor_id: config.actor,
+      }),
+      { Authorization: `Bearer ${config.apiKey}` },
+    ));
+  } catch (err) {
+    throw new EnforceError(
+      `verify-permit unreachable: ${err instanceof Error ? err.message : String(err)}`,
+      "verify-permit",
+      decision,
+    );
+  }
+
+  if (status >= 500) {
+    throw new EnforceError(
+      `verify-permit infrastructure failure (HTTP ${status})`,
+      "verify-permit",
+      decision,
+    );
+  }
+  if (status < 200 || status >= 300) {
+    throw new EnforceError(
+      `verify-permit failed (HTTP ${status})`,
+      "verify-permit",
+      decision,
+    );
+  }
+
+  let raw: { verified?: boolean; outcome?: string };
+  try {
+    raw = JSON.parse(body) as { verified?: boolean; outcome?: string };
+  } catch {
+    throw new EnforceError(
+      "Non-JSON response from verify-permit",
+      "verify-permit",
+      decision,
+    );
+  }
+
+  if (raw.verified !== true) {
+    // outcome=permit_consumed (replay), permit_expired, etc.
+    throw new EnforceError(
+      `Permit verification failed (outcome=${raw.outcome ?? "unknown"})`,
+      "verify-permit",
+      decision,
+    );
+  }
+
+  return { verified: true, outcome: raw.outcome };
+}
+
+// ---------------------------------------------------------------------------
+// Step 4 — enforce (evaluate → verify → verifyPermit → execute, fail-closed)
 // ---------------------------------------------------------------------------
 
 export async function enforce<T>(
   config: EnforceConfig,
   fn: () => Promise<T>,
-): Promise<{ result: T; decision: Decision }> {
-  const decision = await evaluate(config); // throws EnforceError → fn never runs
-  verify(decision);                         // throws EnforceError → fn never runs
+): Promise<{ result: T; decision: Decision; verifyOutcome?: string }> {
+  const decision = await evaluate(config);   // throws EnforceError → fn never runs
+  verify(decision);                          // throws EnforceError → fn never runs
+  const vp = await verifyPermit(config, decision); // throws EnforceError → fn never runs
   const result = await fn();
-  return { result, decision };
+  return { result, decision, verifyOutcome: vp.outcome };
 }
 
 // ---------------------------------------------------------------------------

@@ -44,8 +44,10 @@ All notable changes to `atlasent-action` are documented here.
   `verifyOutcome`.
 - New `EnforcePhase` value: `"verify-permit"`.
 - 14 SIM tests (`verify-permit.test.ts`); `enforce.test.ts` updated to
-  mock both evaluate and verify-permit calls (78 total).
-- Built `packages/enforce/dist/` (`index.js`, `index.d.ts`).
+  mock both evaluate and verify-permit calls.
+- 5 socket-level tests (`transport.test.ts`) covering success, request
+  error, response-stream error (ECONNRESET), timeout, and header forwarding.
+- Built `packages/enforce/dist/` (`index.js`, `index.d.ts`, `transport.js`).
 
 ### Action — v21 + stream SIM tests
 - 10 SIM tests for `runV21()` (`src/__tests__/v21.test.ts`): items passed

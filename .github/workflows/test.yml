@@ -13,18 +13,7 @@ jobs:
 
       - name: Validate action.yml
         run: |
-          # Verify action.yml is valid YAML
-          python3 -c "
-import yaml, sys
-with open('action.yml') as f:
-    data = yaml.safe_load(f)
-required = ['name', 'description', 'inputs', 'outputs', 'runs']
-for key in required:
-    if key not in data:
-        print(f'Missing key: {key}', file=sys.stderr)
-        sys.exit(1)
-print('action.yml valid')
-"
+          python3 -c "import yaml,sys; d=yaml.safe_load(open('action.yml')); missing=[k for k in ['name','description','inputs','outputs','runs'] if k not in d]; sys.exit(1) if missing else print('action.yml valid')"
 
       - name: Check evaluate step present
         run: |

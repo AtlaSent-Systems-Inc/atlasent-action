@@ -22,7 +22,7 @@ GitHub Action that gates CI deploys on an AtlaSent `allow` decision. Distributed
    - Move the floating `v1` major tag to `v1.3.0`.
    - Verify the Marketplace listing reflects v1.3.0.
 
-   Tracking issue: <link once filed>.
+   Tracking issue: [#25](https://github.com/AtlaSent-Systems-Inc/atlasent-action/issues/25).
 
 ## Post-GA — ordered by impact
 

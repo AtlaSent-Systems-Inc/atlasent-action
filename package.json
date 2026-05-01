@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "workspaces": ["packages/*"],
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=dist/index.js",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node24 --outfile=dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

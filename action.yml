@@ -68,5 +68,5 @@ outputs:
   batch-id:
     description: 'Batch identifier for the v2.1 batch path (either the server-assigned batchId or loop-<ts> for the sequential fallback).'
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'

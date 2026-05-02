@@ -5,6 +5,9 @@ on:
     branches: [main, 'claude/**']
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test-action-syntax:
     runs-on: ubuntu-latest

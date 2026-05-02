@@ -557,6 +557,7 @@ function setDecisionOutputs(d) {
 }
 async function run() {
   const apiKey = getInput("api-key", true);
+  maskValue(apiKey);
   const apiUrl = getInput("api-url") || "https://api.atlasent.io";
   const failOnDeny = getInput("fail-on-deny") !== "false";
   maskValue(apiKey);

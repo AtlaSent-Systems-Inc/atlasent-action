@@ -113,6 +113,12 @@ function setDecisionOutputs(d: Decision): void {
 async function run(): Promise<void> {
   // 1. Read shared inputs
   const apiKey = getInput("api-key", true);
+  // Mask immediately on the literal next line so any code path that
+  // logs / reflects this value before the explicit mask call below has
+  // no chance to print the plaintext key. The maskValue() call below
+  // is kept as defense-in-depth (idempotent).
+  maskValue(apiKey);
+
   const apiUrl = getInput("api-url") || "https://api.atlasent.io";
   const failOnDeny = getInput("fail-on-deny") !== "false";
 

@@ -99,6 +99,36 @@ The action sets several outputs you can reference in subsequent steps.
 | `v2-batch`         | No       | `false`   | Use the `/v1/evaluate/batch` endpoint instead of sequential loop.   |
 | `v2-streaming`     | No       | `false`   | Use Server-Sent Events for `wait-for-id` polling instead of HTTP polling. |
 
+## Streaming wait (v2.1)
+
+For long-running approvals such as change-window gates, enable `v2-streaming` to consume the AtlaSent SSE stream instead of polling. The step blocks until the evaluator reaches a terminal decision or `wait-timeout-ms` elapses:
+
+```yaml
+- uses: atlasent-systems-inc/atlasent-action@v1
+  with:
+    api-key: ${{ secrets.ATLASENT_API_KEY }}
+    action: production_deploy
+    actor: ${{ github.actor }}
+    v2-streaming: 'true'
+    wait-timeout-ms: '600000'
+```
+
+When `v2-streaming` is `false` (the default) the action falls back to 5-second HTTP polling — behaviour is identical, only the transport differs.
+
+## OIDC / keyless identity
+
+The `actor` input defaults to `${{ github.actor }}`, so no additional identity setup is needed. The action automatically embeds the GitHub username in the evaluation context sent to AtlaSent.
+
+To use keyless policies, ensure your AtlaSent policy references GitHub usernames or teams directly (e.g. `actor == "github:octocat"` or `actor in team:"github:platform-eng"`). No extra OIDC token exchange is required — the `api-key` authenticates the workflow, and `actor` carries the human identity for policy evaluation.
+
+```yaml
+- uses: AtlaSent-Systems-Inc/atlasent-action@v1
+  with:
+    api-key: ${{ secrets.ATLASENT_API_KEY }}
+    action: production_deploy
+    # actor defaults to ${{ github.actor }} — no extra config needed
+```
+
 ## Batch Mode
 
 Evaluate multiple actions in a single step:

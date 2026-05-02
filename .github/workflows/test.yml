@@ -34,9 +34,25 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Build and typecheck
+      - name: Install dependencies (lockfile-strict)
+        # `npm ci` refuses to drift package-lock.json from package.json,
+        # so a pull request that touches one without the other fails
+        # here rather than installing whatever the latest registry has.
+        run: npm ci
+
+      - name: Lockfile integrity check
+        # Defense-in-depth: even with `npm ci`, an install hook or a
+        # postinstall script in a transitive dep could mutate the
+        # lockfile in place. Refuse to proceed if the file changed.
         run: |
-          npm install
+          if ! git diff --quiet -- package-lock.json; then
+            echo "::error::package-lock.json drifted during install — a transitive dep may be rewriting it. Investigate before merging."
+            git --no-pager diff -- package-lock.json | head -200
+            exit 1
+          fi
+
+      - name: Typecheck and build
+        run: |
           npm run typecheck
           npm run build
 

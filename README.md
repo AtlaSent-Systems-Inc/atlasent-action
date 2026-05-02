@@ -115,11 +115,13 @@ For long-running approvals such as change-window gates, enable `v2-streaming` to
 
 When `v2-streaming` is `false` (the default) the action falls back to 5-second HTTP polling — behaviour is identical, only the transport differs.
 
-## OIDC / keyless identity
+## GitHub identity in the policy context
 
 The `actor` input defaults to `${{ github.actor }}`, so no additional identity setup is needed. The action automatically embeds the GitHub username in the evaluation context sent to AtlaSent.
 
-To use keyless policies, ensure your AtlaSent policy references GitHub usernames or teams directly (e.g. `actor == "github:octocat"` or `actor in team:"github:platform-eng"`). No extra OIDC token exchange is required — the `api-key` authenticates the workflow, and `actor` carries the human identity for policy evaluation.
+> **Not OIDC.** Earlier versions of this README described the flow as "OIDC / keyless identity," which was misleading. There is no OIDC token exchange happening. The `api-key` is what authenticates the workflow against the AtlaSent API; the GitHub `actor` value is just a string that the action embeds in the evaluation context so policies can branch on the human identity. If you want a true OIDC trust between GitHub and AtlaSent (no long-lived API key), file a feature request — the wire today does not support it.
+
+To branch on GitHub identity, write your AtlaSent policy against the `actor` field directly (e.g. `actor == "github:octocat"` or `actor in team:"github:platform-eng"`).
 
 ```yaml
 - uses: AtlaSent-Systems-Inc/atlasent-action@v1

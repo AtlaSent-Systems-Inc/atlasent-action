@@ -36,7 +36,7 @@ Push to main → AtlaSent evaluates → permit issued → deploy
 ## Using Outputs
 
 The action sets several outputs you can reference in subsequent steps.
-**Always gate on `verified`, not `decision`** — `verified=true` means the evaluation returned `allow` AND the server confirmed the permit token hasn't been replayed.
+**Always gate on `verified`, not `decision`** — `verified=true` means the evaluation returned `allow` AND the server confirmed the permit token hasn’t been replayed.
 
 ```yaml
 - name: Authorization Gate
@@ -104,7 +104,7 @@ The action sets several outputs you can reference in subsequent steps.
 For long-running approvals such as change-window gates, enable `v2-streaming` to consume the AtlaSent SSE stream instead of polling. The step blocks until the evaluator reaches a terminal decision or `wait-timeout-ms` elapses:
 
 ```yaml
-- uses: atlasent-systems-inc/atlasent-action@v1
+- uses: AtlaSent-Systems-Inc/atlasent-action@v1
   with:
     api-key: ${{ secrets.ATLASENT_API_KEY }}
     action: production_deploy
@@ -119,7 +119,7 @@ When `v2-streaming` is `false` (the default) the action falls back to 5-second H
 
 The `actor` input defaults to `${{ github.actor }}`, so no additional identity setup is needed. The action automatically embeds the GitHub username in the evaluation context sent to AtlaSent.
 
-> **Not OIDC.** Earlier versions of this README described the flow as "OIDC / keyless identity," which was misleading. There is no OIDC token exchange happening. The `api-key` is what authenticates the workflow against the AtlaSent API; the GitHub `actor` value is just a string that the action embeds in the evaluation context so policies can branch on the human identity. If you want a true OIDC trust between GitHub and AtlaSent (no long-lived API key), file a feature request — the wire today does not support it.
+> **No OIDC exchange.** The `api-key` is what authenticates the workflow against the AtlaSent API. The GitHub `actor` value is a string the action embeds in the evaluation context so policies can branch on human identity. If you want true OIDC trust between GitHub and AtlaSent (no long-lived API key), file a feature request — the wire today does not support it.
 
 To branch on GitHub identity, write your AtlaSent policy against the `actor` field directly (e.g. `actor == "github:octocat"` or `actor in team:"github:platform-eng"`).
 
@@ -156,7 +156,7 @@ Evaluate multiple actions in a single step:
 
 1. **Evaluate** — POST `/v1/evaluate` with `action_type`, `actor_id`, `target_id`, and a context object populated from GitHub workflow metadata (repo, ref, sha, workflow, run id, PR number, optional user-supplied `context`).
 2. **Decide** — Server returns `allow` / `deny` / `hold` / `escalate` plus a single-use `permit_token` (only when `allow`) and an optional `risk-score`.
-3. **Verify permit** — POST `/v1/verify-permit` to confirm the token hasn't been replayed. `verified=true` only when both steps pass.
+3. **Verify permit** — POST `/v1/verify-permit` to confirm the token hasn’t been replayed. `verified=true` only when both steps pass.
 4. **Proceed or block** — `fail-on-deny: true` (default) surfaces deny/hold/escalate as a failing step. `false` demotes them to a workflow `::warning`.
 5. **Audit** — Every evaluation writes to the AtlaSent append-only, hash-chained audit log. The `evaluation-id` and `proof-hash` outputs reference the record.
 

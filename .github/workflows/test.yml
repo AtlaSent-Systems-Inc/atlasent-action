@@ -27,7 +27,7 @@ jobs:
           grep -q 'fail-closed' src/gate.ts && echo 'fail-closed logic found'
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
 

@@ -1,15 +1,15 @@
-# Release Notes — v1.3.0
+# Release Notes — v0.1.0
 
-**Release date:** 2026-04-30
+**Release date:** 2026-05-02
 
-## AtlaSent GitHub Action Gate v1.3.0
+## AtlaSent GitHub Action Gate v0.1.0
 
-This release aligns the public release notes with the shipped `action.yml` contract and the v2.1 batch/verification flow.
+Initial public release of the AtlaSent GitHub Action authorization gate.
 
 ### Usage
 
 ```yaml
-- uses: AtlaSent-Systems-Inc/atlasent-action@v1
+- uses: AtlaSent-Systems-Inc/atlasent-action@v0
   with:
     api-key: ${{ secrets.ATLASENT_API_KEY }}
     action: deployment.production
@@ -50,13 +50,6 @@ This release aligns the public release notes with the shipped `action.yml` contr
 | `decisions` | Batch JSON array of per-item decision/verification results. |
 | `batch-id` | Batch identifier from server or local fallback. |
 
-### What was corrected from v1.0.0 notes
-
-- Replaced stale input names (`atlasent_api_key`, `atlasent_anon_key`, `agent`) with live contract keys (`api-key`, `actor`, etc.).
-- Removed deprecated/incorrect outputs (`decision_id`, `audit_hash`) and documented current outputs (`evaluation-id`, `proof-hash`, `risk-score`, `decisions`, `batch-id`).
-- Documented v2.1 batch controls (`evaluations`, `wait-for-id`, `v2-batch`, `v2-streaming`) and strict `verified` semantics.
-- Updated default API base URL to `https://api.atlasent.io`.
-
 ### Tag policy
 
-The `@v1` tag is maintained for compatible updates. Pin to a specific version tag for reproducible builds.
+The `@v0` tag is maintained for compatible updates within the v0 series. Pin to a specific version tag for reproducible builds.

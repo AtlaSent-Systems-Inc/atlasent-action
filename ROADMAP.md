@@ -2,6 +2,23 @@
 
 GitHub Action that gates CI deploys on an AtlaSent `allow` decision. Distributed via the GitHub Marketplace.
 
+## V1 Status — May 2026
+
+✅ Items 1–3 complete (target-id input, four-value decision output, Marketplace listing polish)
+🔄 Item 4 (release-ops): PR #28 open with automated release workflow — ready to merge → tag v1.3.0
+
+### Marketplace status
+- Only **v1.0.0** is currently live on the Marketplace
+- **v1.3.0** is ready to ship once PR #28 merges
+- v1.3.0 includes everything since v1.0.0 (see below)
+
+### What v1.3.0 includes vs v1.0.0
+- **Batch path** — `evaluations` / `wait-for-id` / `wait-timeout-ms` / `v2-batch` / `v2-streaming` inputs; `decisions` / `batch-id` outputs
+- **Verify-permit wiring** — `verify-permit` input is now meaningful (`verified` output populated)
+- **`target-id` input** — landed in v1.2.0 (2026-04-25)
+- **`risk-score` output** — landed in v1.2.0
+- **All bug fixes** — `transport.ts` ECONNRESET crash, polling not retrying network errors, `wait-for-id` allow path silently fail-closed, `decisions`/`batch-id` unset on batch error, raw `SyntaxError` on bad JSON inputs, `GateInfraError` mislabeled "Unexpected error"
+
 ## GA (v1) — must ship
 
 1. ~~**`target-id` input**~~ ✅ landed in v1.2.0 (CHANGELOG 2026-04-25). `action.yml` on main declares the input and threads it into both top-level `target_id` and `context.target_id`.
@@ -10,15 +27,15 @@ GitHub Action that gates CI deploys on an AtlaSent `allow` decision. Distributed
 
 3. ~~**Marketplace listing polish**~~ ✅ branding in `action.yml` (`icon: shield`, `color: green`). README + LICENSE present on main. Listing itself still on v1.0.0 — see item 4.
 
-4. **Cut the v1.2.0 + v1.3.0 releases** — code is on main but **only v1.0.0 is tagged or released**. The Marketplace listing customers see is v1.0.0, missing every change documented in CHANGELOG since 2026-04-17:
+4. **Cut the v1.3.0 release** — **PR #28 open with automated release workflow — ready to merge → tag v1.3.0**. Code is on main but only v1.0.0 is tagged or released. The Marketplace listing customers see is v1.0.0, missing every change documented in CHANGELOG since 2026-04-17:
    - **v1.2.0** (2026-04-25): `target-id` input, `risk-score` output. CHANGELOG entry notes "Source-only release. `dist/index.js` must be rebuilt before tagging — release engineering tracks the rebuild step."
    - **v1.3.0** (2026-04-30): `evaluations` / `wait-for-id` / `wait-timeout-ms` / `v2-batch` / `v2-streaming` inputs; `decisions` / `batch-id` outputs; A5 `verify-permit` wiring (`verified` is meaningful now); plus security-relevant bug fixes — `transport.ts` ECONNRESET crash, polling not retrying network errors, `wait-for-id` allow path silently fail-closed, `decisions`/`batch-id` unset on batch error, raw `SyntaxError` on bad JSON inputs, `GateInfraError` mislabeled "Unexpected error".
 
-   Required steps (release-ops, not code):
+   Required steps (automated via PR #28):
    - `npm run build` to refresh `dist/index.js` (`@atlasent/enforce` is bundled via esbuild — there is no runtime SDK pin to chase).
    - Commit the rebuilt `dist/` if it has drifted.
-   - Tag `v1.2.0` at the matching commit and `v1.3.0` at HEAD.
-   - Cut GitHub Releases for both, with the existing CHANGELOG entries as release notes.
+   - Tag `v1.3.0` at HEAD.
+   - Cut GitHub Release for v1.3.0, with the existing CHANGELOG entry as release notes.
    - Move the floating `v1` major tag to `v1.3.0`.
    - Verify the Marketplace listing reflects v1.3.0.
 

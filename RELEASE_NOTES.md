@@ -1,27 +1,44 @@
-# Release Notes — v0.1.0
+# Release Notes — v1.4.0
 
 **Release date:** 2026-05-02
 
-## AtlaSent GitHub Action Gate v0.1.0
+## AtlaSent GitHub Action Gate v1.4.0
 
-Initial public release of the AtlaSent GitHub Action authorization gate.
+Adds batch evaluation, streaming-wait for change-window approvals, and OIDC keyless authentication.
 
 ### Usage
 
 ```yaml
-- uses: AtlaSent-Systems-Inc/atlasent-action@v0
+- uses: AtlaSent-Systems-Inc/atlasent-action@v1
   with:
     api-key: ${{ secrets.ATLASENT_API_KEY }}
     action: deployment.production
     actor: ${{ github.actor }}
-    context: '{"repo":"${{ github.repository }}"}'
+    context: '{"repo":"${{ github.repository "}}"}'
 ```
+
+### What's new in v1.4.0
+
+#### Batch evaluation
+- `evaluations` input: JSON array for batch mode; overrides single-eval inputs when set
+- `decisions` output: JSON array of per-item decision/verification results
+- `batch-id` output: server-assigned batch ID or local fallback
+- `v2-batch` flag: opt into `/v1/evaluate/batch` endpoint
+
+#### Streaming wait
+- `wait-for-id` + `wait-timeout-ms` inputs: block on a `hold`/`escalate` until resolved
+- `v2-streaming` flag: opt into SSE streaming-wait for change-window approvals
+- Falls back to 5-second polling when `v2-streaming` is `false`
+
+#### OIDC / keyless authentication
+- `auth-mode: oidc` supported — no long-lived API key required in Actions secrets
+- `api-key` remains the default for backward compatibility
 
 ### Inputs
 
 | Input | Required | Description |
 |---|---|---|
-| `api-key` | Yes | AtlaSent API key (`ask_live_*` or `ask_test_*`). |
+| `api-key` | Yes* | AtlaSent API key (`ask_live_*` or `ask_test_*`). |
 | `action` | No* | Action type for single-eval path (ignored when `evaluations` is set). |
 | `actor` | No | Actor identity. Defaults to `${{ github.actor }}`. |
 | `target-id` | No | Target resource identifier; propagated for policy gating. |
@@ -34,8 +51,9 @@ Initial public release of the AtlaSent GitHub Action authorization gate.
 | `wait-timeout-ms` | No | Wait timeout in ms when using `wait-for-id`. Default: `600000`. |
 | `v2-batch` | No | Opt into `/v1/evaluate/batch`. Default: `false`. |
 | `v2-streaming` | No | Opt into SSE wait stream. Default: `false`. |
+| `auth-mode` | No | `api-key` (default) or `oidc` for keyless auth. |
 
-\* `action` is effectively required for single-evaluation usage.
+\* `api-key` not required when `auth-mode: oidc`. `action` is effectively required for single-evaluation usage.
 
 ### Outputs
 
@@ -52,4 +70,4 @@ Initial public release of the AtlaSent GitHub Action authorization gate.
 
 ### Tag policy
 
-The `@v0` tag is maintained for compatible updates within the v0 series. Pin to a specific version tag for reproducible builds.
+The `@v1` tag is maintained for compatible updates within the v1 series. Pin to a specific version tag for reproducible builds.

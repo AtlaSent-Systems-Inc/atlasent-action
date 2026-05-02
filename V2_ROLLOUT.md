@@ -2,13 +2,13 @@
 
 **Status:** Wave B complete · **Wave:** B (action SDK pin + batch + streaming-wait) · **Updated:** 2026-05-02
 
-Action-side cut of the [umbrella v2 rollout](https://github.com/AtlaSent-Systems-Inc/atlasent/blob/claude/plan-v2-rollout-5IPGF/V2_ROLLOUT.md). The action shipped v0.1.0 as the initial public release. v0.2.0 will add batch fan-out, streaming-wait, and SDK 2.x pin.
+Action-side cut of the [umbrella v2 rollout](https://github.com/AtlaSent-Systems-Inc/atlasent/blob/claude/plan-v2-rollout-5IPGF/V2_ROLLOUT.md). The action is at v1.3.0 (stable). v1.4.0 ships batch fan-out, streaming-wait, and SDK 2.x pin as Wave B deliverables.
 
 ## Position
 
-The action is a *bundled* gate — it doesn't runtime-import `@atlasent/sdk`. v0.2.0 changes that for two new code paths only (batch + streaming) so the bundle stays small for the v0.1.0 path.
+The action is a *bundled* gate — it doesn't runtime-import `@atlasent/sdk`. v1.4.0 changes that for two new code paths only (batch + streaming) so the bundle stays small for the v1.x single-eval path.
 
-## v0.2.0 deliverables
+## v1.4.0 deliverables
 
 | ID | Item | Path | Notes |
 |---|---|---|---|
@@ -18,14 +18,14 @@ The action is a *bundled* gate — it doesn't runtime-import `@atlasent/sdk`. v0
 | B.AC4 ✅ | Wire B.AC1–3 into `src/index.ts` main flow + `action.yml` inputs | `src/index.ts`, `action.yml` | Last; depends on input-shape sign-off in plan PR #15. |
 | B.AC5 ✅ | Default `auth-mode: oidc` in README example | `README.md` | Backward-compatible (`api-key` remains the default *input* value). |
 
-Each item ships with a fallback path so the v0.1.0 code stays byte-identical until the matching tenant flag flips.
+Each item ships with a fallback path so the v1.3.0 code stays byte-identical until the matching tenant flag flips.
 
 ## Tenant-flag matrix
 
 | Flag (from `atlasent-control-plane`) | Code path |
 |---|---|
 | `v2_batch=true` | `evaluateMany` → `POST /v1/evaluate/batch` |
-| `v2_batch=false` (default) | per-item loop on `/v1/evaluate` (today's behavior) |
+| `v2_batch=false` (default) | per-item loop on `/v1/evaluate` (v1.3.0 behavior) |
 | `v2_streaming=true` | SSE consumer for `change_window` waits |
 | `v2_streaming=false` (default) | 5-second polling on `/v1/evaluate/:id` |
 
@@ -37,27 +37,27 @@ agent is CI infrastructure, not a wellness app. But:
 
 - A future `behavior-aware` policy can deny CI deploys based on the
   on-call engineer's recent escalation rate (drawn from `behavior-insights` aggregates). The action emits `actor` (GitHub username) in the v1 evaluate context already; the policy side is what changes.
-- `change_window` decisions today already integrate with human approvals; v0.2.0 streaming-wait makes that loop tighter.
+- `change_window` decisions today already integrate with human approvals; v1.4.0 streaming-wait makes that loop tighter.
 
 ## Sequencing
 
 1. Plan PR #15 input-shape decision (single vs list, auto-detect)
-2. B.AC1–3 in flight as draft PR #16 (modules sit alongside v0.1.0 entry, not yet wired)
+2. B.AC1–3 in flight as draft PR #16 (modules sit alongside v1.3.0 entry, not yet wired)
 3. B.AC4 wiring once API endpoints (`/v1/evaluate/batch`, `/v1/evaluate/stream`) are deployed (Waqas lane)
-4. v0.1.0 polish (target-id input + risk-score output, draft PR #17) lands FIRST so v0.2.0 stacks cleanly
+4. v1.4.0 polish (target-id input + risk-score output, draft PR #17) lands FIRST so v1.5.0 stacks cleanly
 
 ## Cross-repo dependencies
 
 - **atlasent-sdk**: 2.x publish must precede B.AC1
 - **atlasent-api**: `/v1/evaluate/batch`, `/v1/evaluate/stream`, plus the `evaluations[].id` correlation field — all Waqas lane
 - **atlasent-control-plane**: `v2_batch` and `v2_streaming` per-tenant flags
-- **atlasent-examples**: `flows/01-deploy-gate` becomes the canonical example workflow; updated in `flows/00-golden-path` once v0.2.0 ships
+- **atlasent-examples**: `flows/01-deploy-gate` becomes the canonical example workflow; updated in `flows/00-golden-path` once v1.5.0 ships
 
-## Out of scope for v0.2.0
+## Out of scope for v1.4.0
 
 - GitLab CI / Bitbucket Pipelines actions — separate companion repos
 - Azure DevOps extension — same
-- Marketplace listing polish (icon, color, branding) — tracked in v0.1.0 GA milestones, not gated on v0.2.0
+- Marketplace listing polish (icon, color, branding) — tracked in v1.4.0 GA milestones, not gated on v1.5.0
 
 ## Open questions
 
@@ -68,5 +68,5 @@ agent is CI infrastructure, not a wellness app. But:
 ## Cross-repo links
 
 - Per-repo plan: [`atlasent-docs/plans/atlasent-action.md`](https://github.com/AtlaSent-Systems-Inc/atlasent-docs/blob/main/plans/atlasent-action.md)
-- Open PRs: #15 (plan, draft), #16 (B.AC1-3 implementation, draft), #17 (v0.1.0 polish, draft)
+- Open PRs: #15 (plan, draft), #16 (B.AC1-3 implementation, draft), #17 (v1.4.0 polish, draft)
 - Behavior layer: [`V2_BEHAVIOR_CONDITIONING_LAYER.md`](https://github.com/AtlaSent-Systems-Inc/atlasent-docs/blob/main/docs/V2_BEHAVIOR_CONDITIONING_LAYER.md)

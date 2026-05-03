@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@atlasent/enforce": "*"
+    "@atlasent/enforce": "^2.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

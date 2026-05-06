@@ -13,6 +13,10 @@ import { enforce, EnforceError } from "@atlasent/enforce";
 import type { Decision, EnforceConfig } from "@atlasent/enforce";
 import { GateInfraError } from "./gate";
 import { runV21 } from "./v21";
+import {
+  assessFinancialGovernance,
+} from "./financialGovernanceAdvisory";
+import type { FinancialAdvisoryInput } from "./financialGovernanceAdvisory";
 
 // ---------------------------------------------------------------------------
 // GitHub Actions helpers
@@ -78,7 +82,7 @@ function getGitHubContext(): GitHubContext {
     run_number: process.env["GITHUB_RUN_NUMBER"] ?? "",
     workflow: process.env["GITHUB_WORKFLOW"] ?? "",
     event_name: process.env["GITHUB_EVENT_NAME"] ?? "",
-    pr_number: process.env["GITHUB_REF"]?.match(/^refs\/pull\/(\d+)\//)?.[1],
+    pr_number: process.env["GITHUB_REF"]?.match(/^\/refs\/pull\/(\d+)\//)?.[1],
     server_url: process.env["GITHUB_SERVER_URL"] ?? "https://github.com",
   };
 }
@@ -104,6 +108,105 @@ function setDecisionOutputs(d: Decision): void {
   setOutput("evaluation-id", d.evaluationId ?? "");
   setOutput("proof-hash", d.proofHash ?? "");
   setOutput("risk-score", d.riskScore !== undefined ? String(d.riskScore) : "");
+}
+
+// ---------------------------------------------------------------------------
+// Financial Governance Advisory — non-blocking, advisory only.
+//
+// Called after enforcement resolves (allow or deny). Never throws, never
+// affects the exit code or enforcement decision.
+// ---------------------------------------------------------------------------
+
+function appendToStepSummary(content: string): void {
+  const summaryFile = process.env["GITHUB_STEP_SUMMARY"];
+  if (summaryFile) {
+    try {
+      const fs = require("node:fs");
+      fs.appendFileSync(summaryFile, content);
+    } catch {
+      // Non-fatal: advisory only
+    }
+  }
+}
+
+function emitFinancialGovernanceAdvisory(
+  actionType: string,
+  actor: string,
+  orgId: string,
+): void {
+  const governanceMode = getInput("financial-governance");
+  if (governanceMode !== "advisory") return;
+
+  const rawValue = getInput("financial-action-value");
+  const currency = getInput("financial-action-currency") || "USD";
+
+  const actionValue = rawValue ? parseFloat(rawValue) : null;
+
+  const advisoryInput: FinancialAdvisoryInput = {
+    actionType,
+    actionValue: actionValue !== null && !isNaN(actionValue) ? actionValue : null,
+    currency,
+    actorId: actor,
+    orgId,
+  };
+
+  let advisory;
+  try {
+    advisory = assessFinancialGovernance(advisoryInput);
+  } catch {
+    // Never block on advisory failure
+    warning("Financial governance advisory: assessment failed (non-fatal)");
+    return;
+  }
+
+  // Set output
+  setOutput("financial-governance-advice", JSON.stringify(advisory));
+
+  // Log summary line
+  info(`[Financial Governance Advisory] ${advisory.summary}`);
+  for (const signal of advisory.signals) {
+    info(`  • ${signal}`);
+  }
+
+  // Append formatted block to step summary
+  const tierEmoji: Record<string, string> = {
+    non_financial: "⚪",
+    low: "🟢",
+    medium: "🟡",
+    high: "🟠",
+    critical: "🔴",
+  };
+  const emoji = tierEmoji[advisory.riskTier] ?? "⚪";
+
+  const signalLines =
+    advisory.signals.length > 0
+      ? advisory.signals.map((s) => `- ${s}`).join("\n")
+      : "- No advisory signals";
+
+  const summaryBlock = [
+    "",
+    "---",
+    `## ${emoji} Financial Governance Advisory`,
+    "",
+    `| Field | Value |`,
+    `|---|---|`,
+    `| Risk Tier | \`${advisory.riskTier}\` |`,
+    `| Risk Score | ${advisory.riskScore} / 100 |`,
+    `| Evidence Required | ${advisory.evidenceRequired ? "**Yes**" : "No"} |`,
+    `| Action Type | \`${actionType}\` |`,
+    `| Actor | \`${actor}\` |`,
+    `| Currency | ${currency} |`,
+    actionValue !== null ? `| Action Value | $${actionValue.toLocaleString("en-US", { maximumFractionDigits: 2 })} |` : `| Action Value | N/A |`,
+    "",
+    "### Advisory Signals",
+    "",
+    signalLines,
+    "",
+    "> **Advisory only** — this assessment is non-blocking and does not affect enforcement decisions.",
+    "",
+  ].join("\n");
+
+  appendToStepSummary(summaryBlock);
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +311,8 @@ async function run(): Promise<void> {
 
   const gh = getGitHubContext();
   const environment = resolveEnvironment(explicitEnv, gh.ref, apiKey);
+  // Use repository as org identifier for advisory purposes
+  const orgId = gh.repository.split("/")[0] ?? "unknown";
 
   info(
     `AtlaSent Gate: evaluating "${actionType}" for actor "github:${actor}" in ${environment} environment` +
@@ -255,6 +360,10 @@ async function run(): Promise<void> {
         setOutput("risk-score", "");
       }
       setOutput("verified", "false");
+
+      // Emit financial governance advisory even on denied/error paths —
+      // advisory mode is informational regardless of enforcement outcome.
+      emitFinancialGovernanceAdvisory(actionType, actor, orgId);
 
       // phase="verify" is a policy decision; respect fail-on-deny.
       // All other phases are infrastructure/security failures: always fail-closed.
@@ -319,6 +428,10 @@ async function run(): Promise<void> {
     setOutput("proof-hash", "");
     setOutput("risk-score", "");
     setOutput("verified", "false");
+
+    // Still emit advisory on unexpected errors
+    emitFinancialGovernanceAdvisory(actionType, actor, orgId);
+
     setFailed(
       `AtlaSent Gate: Unexpected error: ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -336,6 +449,10 @@ async function run(): Promise<void> {
   info(`  Evaluation:   ${d.evaluationId ?? ""}`);
   if (d.riskScore !== undefined) info(`  Risk score:   ${d.riskScore}`);
   info(`  Verify:       ${verifyOutcome ?? "verified"}`);
+
+  // Emit financial governance advisory after successful enforcement.
+  // This is always the last step — non-blocking by design.
+  emitFinancialGovernanceAdvisory(actionType, actor, orgId);
 }
 
 run().catch((err) => {

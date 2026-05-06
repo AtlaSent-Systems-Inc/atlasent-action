@@ -50,6 +50,18 @@ inputs:
     description: 'Enable Server-Sent Events stream for wait-for-id polling (default: false, falls back to HTTP polling).'
     required: false
     default: 'false'
+  financial-governance:
+    description: 'Enable financial governance advisory ("advisory" or "")'
+    required: false
+    default: ''
+  financial-action-value:
+    description: 'Dollar value of the financial action being evaluated'
+    required: false
+    default: ''
+  financial-action-currency:
+    description: 'Currency code for the financial action value'
+    required: false
+    default: 'USD'
 outputs:
   decision:
     description: 'The evaluation decision (allow/deny/hold/escalate). Set for single-eval path only.'
@@ -67,6 +79,8 @@ outputs:
     description: 'JSON array of per-item decision results for the batch path. Each item: {decision, verified, evaluationId, permitToken, reasons, verifyOutcome}.'
   batch-id:
     description: 'Batch identifier for the v2.1 batch path (either the server-assigned batchId or loop-<ts> for the sequential fallback).'
+  financial-governance-advice:
+    description: 'JSON advisory output from financial governance assessment'
 runs:
   using: 'node24'
   main: 'dist/index.js'

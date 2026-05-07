@@ -8,6 +8,10 @@ var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
     for (let key of __getOwnPropNames(from))
@@ -24,6 +28,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
   mod
 ));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
 // packages/enforce/dist/transport.js
 var require_transport = __commonJS({
@@ -37,7 +42,7 @@ var require_transport = __commonJS({
     var node_https_1 = __importDefault(require("node:https"));
     var node_http_1 = __importDefault(require("node:http"));
     function post(url, body, headers) {
-      return new Promise((resolve, reject) => {
+      return new Promise((resolve2, reject) => {
         const parsed = new URL(url);
         const transport = parsed.protocol === "https:" ? node_https_1.default : node_http_1.default;
         const req = transport.request({
@@ -54,7 +59,7 @@ var require_transport = __commonJS({
         }, (res) => {
           const chunks = [];
           res.on("data", (chunk) => chunks.push(chunk));
-          res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf-8") }));
+          res.on("end", () => resolve2({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf-8") }));
           res.on("error", reject);
         });
         req.on("error", reject);
@@ -77,7 +82,7 @@ var require_dist = __commonJS({
     exports2.EnforceError = void 0;
     exports2.evaluate = evaluate;
     exports2.verify = verify;
-    exports2.verifyPermit = verifyPermit;
+    exports2.verifyPermit = verifyPermit3;
     exports2.enforce = enforce2;
     var transport_1 = require_transport();
     var DEFAULT_API_URL = "https://api.atlasent.io";
@@ -148,7 +153,7 @@ var require_dist = __commonJS({
           throw new EnforceError2(`Unknown decision: ${String(decision.decision)}`, "verify", decision);
       }
     }
-    async function verifyPermit(config, decision) {
+    async function verifyPermit3(config, decision) {
       if (!decision.permitToken) {
         throw new EnforceError2("evaluate returned allow but no permit_token \u2014 refusing to execute without verifiable permit", "verify-permit", decision);
       }
@@ -184,7 +189,7 @@ var require_dist = __commonJS({
     async function enforce2(config, fn) {
       const decision = await evaluate(config);
       verify(decision);
-      const vp = await verifyPermit(config, decision);
+      const vp = await verifyPermit3(config, decision);
       const result = await fn();
       return { result, decision, verifyOutcome: vp.outcome };
     }
@@ -218,7 +223,12 @@ var require_dist = __commonJS({
 });
 
 // src/index.ts
-var import_enforce = __toESM(require_dist());
+var src_exports = {};
+__export(src_exports, {
+  run: () => run
+});
+module.exports = __toCommonJS(src_exports);
+var import_enforce3 = __toESM(require_dist());
 
 // src/gate.ts
 var GateInfraError = class extends Error {
@@ -228,40 +238,12 @@ var GateInfraError = class extends Error {
     this.name = "GateInfraError";
   }
 };
-async function verifyOne(params) {
-  const path = params.verifyPath ?? "/v1-verify-permit";
-  let res;
-  try {
-    res = await fetch(`${params.apiUrl}${path}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${params.apiKey}`
-      },
-      body: JSON.stringify({
-        permit_token: params.permitToken,
-        action_type: params.actionType,
-        actor_id: params.actorId
-      })
-    });
-  } catch (err) {
-    throw new GateInfraError(
-      `verify-permit unreachable: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-  if (!res.ok) {
-    throw new GateInfraError(`verify-permit HTTP ${res.status}`, res.status);
-  }
-  let body;
-  try {
-    body = await res.json();
-  } catch {
-    throw new GateInfraError("failed to parse verify-permit response as JSON");
-  }
-  return { verified: body.verified === true, outcome: body.outcome };
-}
+
+// src/v21.ts
+var import_enforce2 = __toESM(require_dist());
 
 // src/batch.ts
+var import_enforce = __toESM(require_dist());
 async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
   const headers = {
     "content-type": "application/json",
@@ -302,14 +284,9 @@ async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
         return { ...d, verified: d.decision === "allow" ? false : void 0 };
       }
       const item = items[i];
-      const result = await verifyOne({
-        apiUrl,
-        apiKey,
-        actionType: item.action,
-        actorId: item.actor,
-        permitToken: d.permitToken,
-        verifyPath: "/v1/verify-permit"
-      });
+      const enforceConfig = { apiKey, apiUrl, action: item.action, actor: item.actor };
+      const enforceDecision = { decision: "allow", permitToken: d.permitToken };
+      const result = await (0, import_enforce.verifyPermit)(enforceConfig, enforceDecision);
       return { ...d, verified: result.verified, verifyOutcome: result.outcome };
     })
   );
@@ -321,6 +298,24 @@ function parseInputs(env) {
   const apiKey = required(env, "INPUT_API-KEY");
   const apiUrl = env["INPUT_API-URL"] || "https://api.atlasent.io";
   const failOnDeny = (env["INPUT_FAIL-ON-DENY"] || "true") === "true";
+  const policySyncEnabled = (env["INPUT_POLICY-SYNC"] ?? "").toLowerCase() === "true";
+  if (policySyncEnabled) {
+    const bundlePath = (env["INPUT_POLICY-BUNDLE"] ?? "").trim();
+    if (!bundlePath) {
+      throw new Error("`policy-bundle` is required when `policy-sync` is 'true'");
+    }
+    const dryRun = (env["INPUT_POLICY-DRY-RUN"] ?? "true").toLowerCase() !== "false";
+    return {
+      apiKey,
+      apiUrl,
+      failOnDeny,
+      policySync: {
+        bundlePath,
+        source: (env["INPUT_POLICY-SOURCE"] ?? "").trim() || void 0,
+        dryRun
+      }
+    };
+  }
   const evaluationsRaw = env["INPUT_EVALUATIONS"];
   if (evaluationsRaw && evaluationsRaw.trim()) {
     let parsed;
@@ -475,14 +470,10 @@ async function runV21(env, flags) {
       decisions = [...decisions];
       if (terminal.decision === "allow") {
         const item = items[idx];
-        const vr = terminal.permitToken ? await verifyOne({
-          apiUrl: inputs.apiUrl,
-          apiKey: inputs.apiKey,
-          actionType: item.action,
-          actorId: item.actor,
-          permitToken: terminal.permitToken,
-          verifyPath: "/v1/verify-permit"
-        }) : { verified: false, outcome: void 0 };
+        const vr = terminal.permitToken ? await (0, import_enforce2.verifyPermit)(
+          { apiKey: inputs.apiKey, apiUrl: inputs.apiUrl, action: item.action, actor: item.actor },
+          { decision: "allow", permitToken: terminal.permitToken }
+        ) : { verified: false, outcome: void 0 };
         decisions[idx] = { ...terminal, verified: vr.verified, verifyOutcome: vr.outcome };
       } else {
         decisions[idx] = terminal;
@@ -491,6 +482,90 @@ async function runV21(env, flags) {
   }
   const failed = inputs.failOnDeny && decisions.some((d) => d.decision === "deny" || d.decision === "hold" || d.decision === "escalate");
   return { decisions, failed, batchId: batch.batchId };
+}
+
+// src/policySync.ts
+var fs = __toESM(require("node:fs"));
+var path = __toESM(require("node:path"));
+async function runPolicySync(opts) {
+  const { apiKey, apiUrl, bundlePath, source, commitSha, ref, dryRun } = opts;
+  const workspace = process.env["GITHUB_WORKSPACE"] ?? ".";
+  const absPath = path.isAbsolute(bundlePath) ? bundlePath : path.resolve(workspace, bundlePath);
+  if (!fs.existsSync(absPath)) {
+    throw new Error(
+      `Policy bundle not found: ${bundlePath} (resolved to ${absPath})`
+    );
+  }
+  let policies;
+  try {
+    const raw = fs.readFileSync(absPath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      throw new Error("Policy bundle must be a JSON array of policy entries");
+    }
+    policies = parsed;
+  } catch (err) {
+    throw new Error(
+      `Failed to parse policy bundle at ${bundlePath}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (policies.length === 0) {
+    throw new Error("Policy bundle is empty \u2014 at least one entry is required");
+  }
+  const url = `${apiUrl.replace(/\/$/, "")}/v1/policy-sync`;
+  let resp;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        policies,
+        source: source ?? "github-action",
+        commit_sha: commitSha,
+        ref,
+        dry_run: dryRun
+      })
+    });
+  } catch (err) {
+    throw new Error(
+      `Network error reaching ${url}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (!resp.ok) {
+    let detail = "";
+    try {
+      const errBody = await resp.json();
+      detail = errBody.error ?? errBody.message ?? "";
+    } catch {
+    }
+    throw new Error(
+      `v1-policy-sync responded ${resp.status}${detail ? `: ${detail}` : ""}`
+    );
+  }
+  let run2;
+  try {
+    run2 = await resp.json();
+  } catch {
+    throw new Error("Could not parse JSON response from v1-policy-sync");
+  }
+  return {
+    run: run2,
+    diff: formatSyncDiff(run2),
+    rejected: run2.status === "rejected" || run2.status === "failed"
+  };
+}
+function formatSyncDiff(run2) {
+  const parts = [];
+  if (run2.policies_added > 0)
+    parts.push(`+${run2.policies_added} added`);
+  if (run2.policies_updated > 0)
+    parts.push(`~${run2.policies_updated} updated`);
+  if (run2.policies_removed > 0)
+    parts.push(`-${run2.policies_removed} removed`);
+  return parts.length > 0 ? parts.join(", ") : "no changes";
 }
 
 // src/financialGovernanceAdvisory.ts
@@ -575,11 +650,10 @@ function getInput(name, required2 = false) {
 function setOutput(name, value) {
   const outputFile = process.env["GITHUB_OUTPUT"];
   if (outputFile) {
-    const fs = require("node:fs");
-    fs.appendFileSync(outputFile, `${name}=${value}
+    const fs2 = require("node:fs");
+    fs2.appendFileSync(outputFile, `${name}=${value}
 `);
   }
-  console.log(`::set-output name=${name}::${value}`);
 }
 function setFailed(message) {
   console.log(`::error::${message}`);
@@ -635,8 +709,8 @@ function appendToStepSummary(content) {
   const summaryFile = process.env["GITHUB_STEP_SUMMARY"];
   if (summaryFile) {
     try {
-      const fs = require("node:fs");
-      fs.appendFileSync(summaryFile, content);
+      const fs2 = require("node:fs");
+      fs2.appendFileSync(summaryFile, content);
     } catch {
     }
   }
@@ -700,12 +774,90 @@ function emitFinancialGovernanceAdvisory(actionType, actor, orgId) {
   ].join("\n");
   appendToStepSummary(summaryBlock);
 }
+async function runPolicySyncStep(apiKey, apiUrl) {
+  const bundlePath = getInput("policy-bundle", true);
+  const source = getInput("policy-source") || "github-action";
+  const dryRun = getInput("policy-dry-run").toLowerCase() !== "false";
+  const gh = getGitHubContext();
+  info(
+    `AtlaSent Policy Sync: submitting "${bundlePath}" (source=${source}, dry_run=${dryRun}, sha=${gh.sha.slice(0, 8)})`
+  );
+  let result;
+  try {
+    result = await runPolicySync({
+      apiKey,
+      apiUrl,
+      bundlePath,
+      source,
+      commitSha: gh.sha,
+      ref: gh.ref,
+      dryRun
+    });
+  } catch (err) {
+    setOutput("sync-run-id", "");
+    setOutput("sync-status", "error");
+    setOutput("sync-diff", "");
+    setOutput("sync-summary", "");
+    setFailed(
+      `AtlaSent Policy Sync: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return;
+  }
+  const { run: run2, diff, rejected } = result;
+  setOutput("sync-run-id", run2.id ?? "");
+  setOutput("sync-status", run2.status);
+  setOutput("sync-diff", diff);
+  setOutput(
+    "sync-summary",
+    JSON.stringify({
+      added: run2.policies_added,
+      updated: run2.policies_updated,
+      removed: run2.policies_removed,
+      status: run2.status
+    })
+  );
+  appendToStepSummary(
+    [
+      "",
+      "## \u{1F4CB} AtlaSent Policy Sync",
+      "",
+      `| Field | Value |`,
+      `|---|---|`,
+      `| Run ID | \`${run2.id ?? "n/a"}\` |`,
+      `| Status | \`${run2.status}\` |`,
+      `| Mode | ${dryRun ? "Dry run (preview only)" : "Applied"} |`,
+      `| Changes | ${diff} |`,
+      `| Source | \`${source}\` |`,
+      `| Ref | \`${gh.ref}\` |`,
+      `| Commit | \`${gh.sha.slice(0, 8)}\` |`,
+      ""
+    ].join("\n")
+  );
+  if (rejected) {
+    setFailed(
+      `AtlaSent Policy Sync: bundle ${run2.status} \u2014 ${diff}. Fix policy errors and push again.`
+    );
+    return;
+  }
+  if (dryRun) {
+    info(`Policy sync dry run: ${diff}`);
+    info(`  Run ID: ${run2.id}`);
+    info(`  Set policy-dry-run: 'false' on the default branch to apply.`);
+  } else {
+    info(`Policy sync applied: ${diff}`);
+    info(`  Run ID: ${run2.id}`);
+  }
+}
 async function run() {
   const apiKey = getInput("api-key", true);
   maskValue(apiKey);
   const apiUrl = getInput("api-url") || "https://api.atlasent.io";
   const failOnDeny = getInput("fail-on-deny") !== "false";
   maskValue(apiKey);
+  if (getInput("policy-sync").toLowerCase() === "true") {
+    await runPolicySyncStep(apiKey, apiUrl);
+    return;
+  }
   const evaluationsRaw = getInput("evaluations");
   if (evaluationsRaw) {
     const waitForId = getInput("wait-for-id") || void 0;
@@ -726,7 +878,7 @@ async function run() {
         { v2Batch, v2Streaming }
       );
     } catch (err) {
-      const msg = err instanceof import_enforce.EnforceError || err instanceof GateInfraError ? err.message : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
+      const msg = err instanceof import_enforce3.EnforceError || err instanceof GateInfraError ? err.message : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
       setOutput("verified", "false");
       setOutput("decisions", "[]");
       setOutput("batch-id", "");
@@ -804,10 +956,10 @@ async function run() {
   };
   let enforceResult;
   try {
-    enforceResult = await (0, import_enforce.enforce)(config, async () => {
+    enforceResult = await (0, import_enforce3.enforce)(config, async () => {
     });
   } catch (err) {
-    if (err instanceof import_enforce.EnforceError) {
+    if (err instanceof import_enforce3.EnforceError) {
       if (err.decision) {
         setDecisionOutputs(err.decision);
       } else {
@@ -900,7 +1052,13 @@ async function run() {
   info(`  Verify:       ${verifyOutcome ?? "verified"}`);
   emitFinancialGovernanceAdvisory(actionType, actor, orgId);
 }
-run().catch((err) => {
-  console.log(`::error::Unexpected error: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
+if (require.main === module) {
+  run().catch((err) => {
+    console.log(`::error::Unexpected error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  });
+}
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  run
 });

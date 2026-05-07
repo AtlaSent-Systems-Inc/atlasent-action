@@ -13,8 +13,8 @@
 //      flips it.
 //   4. Job summary is rendered per evaluation.
 
+import { verifyPermit } from "@atlasent/enforce";
 import { evaluateMany } from "./batch";
-import { verifyOne } from "./gate";
 import { parseInputs } from "./inputs";
 import { waitForTerminalDecision } from "./stream";
 import type { Decision } from "./types";
@@ -58,16 +58,13 @@ export async function runV21(
       decisions = [...decisions];
       if (terminal.decision === "allow") {
         // Terminal allow must be verified — same fail-closed contract as evaluateMany.
+        // Uses @atlasent/enforce's canonical verifyPermit() implementation.
         const item = items[idx];
         const vr = terminal.permitToken
-          ? await verifyOne({
-              apiUrl: inputs.apiUrl,
-              apiKey: inputs.apiKey,
-              actionType: item.action,
-              actorId: item.actor,
-              permitToken: terminal.permitToken,
-              verifyPath: "/v1/verify-permit",
-            })
+          ? await verifyPermit(
+              { apiKey: inputs.apiKey, apiUrl: inputs.apiUrl, action: item.action, actor: item.actor },
+              { decision: "allow" as const, permitToken: terminal.permitToken },
+            )
           : { verified: false as const, outcome: undefined };
         decisions[idx] = { ...terminal, verified: vr.verified, verifyOutcome: vr.outcome };
       } else {

@@ -154,6 +154,9 @@ function mapDecision(raw) {
         riskScore: extractRiskScore(raw),
         denyReason: raw["deny_reason"],
         holdReason: raw["hold_reason"],
+        chainEntry: raw["chain_entry"] ?? null,
+        snapshot: raw["snapshot"] ?? null,
+        auditHash: raw["audit_hash"],
     };
 }
 function extractRiskScore(raw) {

@@ -32,6 +32,10 @@ export interface Decision {
   riskScore?: number;
   denyReason?: string;
   holdReason?: string;
+  /** v1.1 audit chain fields — present when the API returns them. */
+  chainEntry?: Record<string, unknown> | null;
+  snapshot?: Record<string, unknown> | null;
+  auditHash?: string;
 }
 
 export interface VerifyPermitResult {
@@ -246,6 +250,9 @@ function mapDecision(raw: Record<string, unknown>): Decision {
     riskScore: extractRiskScore(raw),
     denyReason: raw["deny_reason"] as string | undefined,
     holdReason: raw["hold_reason"] as string | undefined,
+    chainEntry: (raw["chain_entry"] as Record<string, unknown> | null | undefined) ?? null,
+    snapshot: (raw["snapshot"] as Record<string, unknown> | null | undefined) ?? null,
+    auditHash: raw["audit_hash"] as string | undefined,
   };
 }
 

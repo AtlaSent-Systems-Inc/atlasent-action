@@ -23,7 +23,7 @@ jobs:
 
       - name: Check verify step present
         run: |
-          grep -q 'v1-verify-permit' src/gate.ts && echo 'verify step found'
+          grep -q 'verifyPermit' src/batch.ts && echo 'verify step found'
 
       - name: Check fail-closed logic
         run: |

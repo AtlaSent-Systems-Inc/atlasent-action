@@ -3,15 +3,15 @@ import { runPolicySync, formatSyncDiff } from "../policySync";
 import type { PolicySyncRun, PolicySyncOptions } from "../policySync";
 
 // ---------------------------------------------------------------------------
-// fs mock — must be declared before any import that touches node:fs
+// fs mock — must be declared before any import that touches fs
 // ---------------------------------------------------------------------------
 
-vi.mock("node:fs", () => ({
+vi.mock("fs", () => ({
   existsSync: vi.fn(),
   readFileSync: vi.fn(),
 }));
 
-import * as fs from "node:fs";
+import * as fs from "fs";
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -4,8 +4,8 @@
 // Supports dry-run (preview diff) and live apply modes.
 // CI fails when the sync run is rejected or fails validation.
 
-import * as fs from "node:fs";
-import * as path from "node:path";
+import * as fs from "fs";
+import * as path from "path";
 
 export interface PolicyBundleEntry {
   name: string;

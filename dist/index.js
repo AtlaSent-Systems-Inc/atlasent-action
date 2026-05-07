@@ -485,8 +485,8 @@ async function runV21(env, flags) {
 }
 
 // src/policySync.ts
-var fs = __toESM(require("node:fs"));
-var path = __toESM(require("node:path"));
+var fs = __toESM(require("fs"));
+var path = __toESM(require("path"));
 async function runPolicySync(opts) {
   const { apiKey, apiUrl, bundlePath, source, commitSha, ref, dryRun } = opts;
   const workspace = process.env["GITHUB_WORKSPACE"] ?? ".";

@@ -15,6 +15,10 @@ export interface Decision {
     riskScore?: number;
     denyReason?: string;
     holdReason?: string;
+    /** v1.1 audit chain fields — present when the API returns them. */
+    chainEntry?: Record<string, unknown> | null;
+    snapshot?: Record<string, unknown> | null;
+    auditHash?: string;
 }
 export interface VerifyPermitResult {
     verified: boolean;

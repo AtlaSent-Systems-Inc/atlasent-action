@@ -108,6 +108,9 @@ function setDecisionOutputs(d: Decision): void {
   setOutput("evaluation-id", d.evaluationId ?? "");
   setOutput("proof-hash", d.proofHash ?? "");
   setOutput("risk-score", d.riskScore !== undefined ? String(d.riskScore) : "");
+  setOutput("chain-entry", JSON.stringify(d.chainEntry ?? null));
+  setOutput("snapshot", JSON.stringify(d.snapshot ?? null));
+  setOutput("audit-hash", d.auditHash ?? "");
 }
 
 // ---------------------------------------------------------------------------
@@ -358,6 +361,9 @@ async function run(): Promise<void> {
         setOutput("evaluation-id", "");
         setOutput("proof-hash", "");
         setOutput("risk-score", "");
+        setOutput("chain-entry", JSON.stringify(null));
+        setOutput("snapshot", JSON.stringify(null));
+        setOutput("audit-hash", "");
       }
       setOutput("verified", "false");
 
@@ -427,6 +433,9 @@ async function run(): Promise<void> {
     setOutput("evaluation-id", "");
     setOutput("proof-hash", "");
     setOutput("risk-score", "");
+    setOutput("chain-entry", JSON.stringify(null));
+    setOutput("snapshot", JSON.stringify(null));
+    setOutput("audit-hash", "");
     setOutput("verified", "false");
 
     // Still emit advisory on unexpected errors

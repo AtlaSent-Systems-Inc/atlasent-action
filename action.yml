@@ -81,6 +81,15 @@ outputs:
     description: 'Batch identifier for the v2.1 batch path (either the server-assigned batchId or loop-<ts> for the sequential fallback).'
   financial-governance-advice:
     description: 'JSON advisory output from financial governance assessment'
+  chain-entry:
+    description: 'v1.1 immutable audit chain entry (JSON)'
+    value: ${{ steps.gate.outputs.chain-entry }}
+  snapshot:
+    description: 'Decision snapshot (JSON)'
+    value: ${{ steps.gate.outputs.snapshot }}
+  audit-hash:
+    description: 'SHA-256 audit chain hash'
+    value: ${{ steps.gate.outputs.audit-hash }}
 runs:
   using: 'node24'
   main: 'dist/index.js'

@@ -4,9 +4,12 @@
 // /v1/evaluate/batch. Otherwise, per-item /v1/evaluate loop. Either
 // path then runs verify-permit for every allow decision, matching the
 // single-eval runGate() contract — the gate is fail-closed end-to-end.
+//
+// Uses @atlasent/enforce's verifyPermit() as the canonical implementation.
 
-import { verifyOne } from "./gate";
-import type { Decision, EvaluateRequest } from "./types";
+import { verifyPermit } from "@atlasent/enforce";
+import type { EvaluateRequest } from "./types";
+import type { Decision } from "./types";
 
 export interface BatchResult {
   decisions: Decision[];
@@ -59,23 +62,18 @@ export async function evaluateMany(
     batchId = `loop-${Date.now()}`;
   }
 
-  // Verify permits for every allow decision.
-  // Uses the REST-style path (/v1/verify-permit) matching the v2 API convention.
-  // Fail-closed: if any verify throws, the error propagates up.
+  // Verify permits for every allow decision using the canonical verifyPermit()
+  // from @atlasent/enforce. Fail-closed: if any verify throws, the error
+  // propagates up.
   const verified = await Promise.all(
     decisions.map(async (d, i) => {
       if (d.decision !== "allow" || !d.permitToken) {
         return { ...d, verified: d.decision === "allow" ? false : undefined };
       }
       const item = items[i];
-      const result = await verifyOne({
-        apiUrl,
-        apiKey,
-        actionType: item.action,
-        actorId: item.actor,
-        permitToken: d.permitToken,
-        verifyPath: "/v1/verify-permit",
-      });
+      const enforceConfig = { apiKey, apiUrl, action: item.action, actor: item.actor };
+      const enforceDecision = { decision: "allow" as const, permitToken: d.permitToken };
+      const result = await verifyPermit(enforceConfig, enforceDecision);
       return { ...d, verified: result.verified, verifyOutcome: result.outcome };
     }),
   );

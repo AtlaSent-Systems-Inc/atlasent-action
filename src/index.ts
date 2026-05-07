@@ -37,7 +37,6 @@ function setOutput(name: string, value: string): void {
     const fs = require("node:fs");
     fs.appendFileSync(outputFile, `${name}=${value}\n`);
   }
-  console.log(`::set-output name=${name}::${value}`);
 }
 
 function setFailed(message: string): never {
@@ -216,7 +215,7 @@ function emitFinancialGovernanceAdvisory(
 // Main
 // ---------------------------------------------------------------------------
 
-async function run(): Promise<void> {
+export async function run(): Promise<void> {
   // 1. Read shared inputs
   const apiKey = getInput("api-key", true);
   // Mask immediately on the literal next line so any code path that
@@ -464,7 +463,10 @@ async function run(): Promise<void> {
   emitFinancialGovernanceAdvisory(actionType, actor, orgId);
 }
 
-run().catch((err) => {
-  console.log(`::error::Unexpected error: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
-});
+// Only auto-invoke when run as the main entry point (not during tests/imports).
+if (require.main === module) {
+  run().catch((err) => {
+    console.log(`::error::Unexpected error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  });
+}

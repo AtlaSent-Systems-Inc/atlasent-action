@@ -1,6 +1,7 @@
 // AtlaSent Gate Action — GitHub Actions entry point.
 //
-// Routing:
+// Routing (in priority order):
+//   policy-sync=true      → v1-policy-sync (post bundle, fail CI on rejection)
 //   evaluations input set → v2.1 batch path via runV21()
 //   single action input   → @atlasent/enforce (canonical enforcement wrapper)
 //
@@ -13,6 +14,7 @@ import { enforce, EnforceError } from "@atlasent/enforce";
 import type { Decision, EnforceConfig } from "@atlasent/enforce";
 import { GateInfraError } from "./gate";
 import { runV21 } from "./v21";
+import { runPolicySync } from "./policySync";
 import {
   assessFinancialGovernance,
 } from "./financialGovernanceAdvisory";
@@ -114,9 +116,6 @@ function setDecisionOutputs(d: Decision): void {
 
 // ---------------------------------------------------------------------------
 // Financial Governance Advisory — non-blocking, advisory only.
-//
-// Called after enforcement resolves (allow or deny). Never throws, never
-// affects the exit code or enforcement decision.
 // ---------------------------------------------------------------------------
 
 function appendToStepSummary(content: string): void {
@@ -156,21 +155,17 @@ function emitFinancialGovernanceAdvisory(
   try {
     advisory = assessFinancialGovernance(advisoryInput);
   } catch {
-    // Never block on advisory failure
     warning("Financial governance advisory: assessment failed (non-fatal)");
     return;
   }
 
-  // Set output
   setOutput("financial-governance-advice", JSON.stringify(advisory));
 
-  // Log summary line
   info(`[Financial Governance Advisory] ${advisory.summary}`);
   for (const signal of advisory.signals) {
     info(`  • ${signal}`);
   }
 
-  // Append formatted block to step summary
   const tierEmoji: Record<string, string> = {
     non_financial: "⚪",
     low: "🟢",
@@ -179,7 +174,6 @@ function emitFinancialGovernanceAdvisory(
     critical: "🔴",
   };
   const emoji = tierEmoji[advisory.riskTier] ?? "⚪";
-
   const signalLines =
     advisory.signals.length > 0
       ? advisory.signals.map((s) => `- ${s}`).join("\n")
@@ -198,7 +192,9 @@ function emitFinancialGovernanceAdvisory(
     `| Action Type | \`${actionType}\` |`,
     `| Actor | \`${actor}\` |`,
     `| Currency | ${currency} |`,
-    actionValue !== null ? `| Action Value | $${actionValue.toLocaleString("en-US", { maximumFractionDigits: 2 })} |` : `| Action Value | N/A |`,
+    actionValue !== null
+      ? `| Action Value | $${actionValue.toLocaleString("en-US", { maximumFractionDigits: 2 })} |`
+      : `| Action Value | N/A |`,
     "",
     "### Advisory Signals",
     "",
@@ -212,22 +208,114 @@ function emitFinancialGovernanceAdvisory(
 }
 
 // ---------------------------------------------------------------------------
+// Policy Sync step handler
+// ---------------------------------------------------------------------------
+
+async function runPolicySyncStep(apiKey: string, apiUrl: string): Promise<void> {
+  const bundlePath = getInput("policy-bundle", true);
+  const source = getInput("policy-source") || "github-action";
+  const dryRun = getInput("policy-dry-run").toLowerCase() !== "false";
+  const gh = getGitHubContext();
+
+  info(
+    `AtlaSent Policy Sync: submitting "${bundlePath}" ` +
+      `(source=${source}, dry_run=${dryRun}, sha=${gh.sha.slice(0, 8)})`,
+  );
+
+  let result;
+  try {
+    result = await runPolicySync({
+      apiKey,
+      apiUrl,
+      bundlePath,
+      source,
+      commitSha: gh.sha,
+      ref: gh.ref,
+      dryRun,
+    });
+  } catch (err) {
+    setOutput("sync-run-id", "");
+    setOutput("sync-status", "error");
+    setOutput("sync-diff", "");
+    setOutput("sync-summary", "");
+    setFailed(
+      `AtlaSent Policy Sync: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return;
+  }
+
+  const { run, diff, rejected } = result;
+
+  setOutput("sync-run-id", run.id ?? "");
+  setOutput("sync-status", run.status);
+  setOutput("sync-diff", diff);
+  setOutput(
+    "sync-summary",
+    JSON.stringify({
+      added: run.policies_added,
+      updated: run.policies_updated,
+      removed: run.policies_removed,
+      status: run.status,
+    }),
+  );
+
+  appendToStepSummary(
+    [
+      "",
+      "## 📋 AtlaSent Policy Sync",
+      "",
+      `| Field | Value |`,
+      `|---|---|`,
+      `| Run ID | \`${run.id ?? "n/a"}\` |`,
+      `| Status | \`${run.status}\` |`,
+      `| Mode | ${dryRun ? "Dry run (preview only)" : "Applied"} |`,
+      `| Changes | ${diff} |`,
+      `| Source | \`${source}\` |`,
+      `| Ref | \`${gh.ref}\` |`,
+      `| Commit | \`${gh.sha.slice(0, 8)}\` |`,
+      "",
+    ].join("\n"),
+  );
+
+  if (rejected) {
+    setFailed(
+      `AtlaSent Policy Sync: bundle ${run.status} — ${diff}. ` +
+        `Fix policy errors and push again.`,
+    );
+    return;
+  }
+
+  if (dryRun) {
+    info(`Policy sync dry run: ${diff}`);
+    info(`  Run ID: ${run.id}`);
+    info(`  Set policy-dry-run: 'false' on the default branch to apply.`);
+  } else {
+    info(`Policy sync applied: ${diff}`);
+    info(`  Run ID: ${run.id}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 export async function run(): Promise<void> {
   // 1. Read shared inputs
   const apiKey = getInput("api-key", true);
-  // Mask immediately on the literal next line so any code path that
-  // logs / reflects this value before the explicit mask call below has
-  // no chance to print the plaintext key. The maskValue() call below
-  // is kept as defense-in-depth (idempotent).
   maskValue(apiKey);
 
   const apiUrl = getInput("api-url") || "https://api.atlasent.io";
   const failOnDeny = getInput("fail-on-deny") !== "false";
 
   maskValue(apiKey);
+
+  // ── Policy sync path ────────────────────────────────────────────────────────
+  if (getInput("policy-sync").toLowerCase() === "true") {
+    await runPolicySyncStep(apiKey, apiUrl);
+    return;
+  }
 
   // ── v2.1 batch path (scope-excluded from this unification) ─────────────────
   const evaluationsRaw = getInput("evaluations");
@@ -313,7 +401,6 @@ export async function run(): Promise<void> {
 
   const gh = getGitHubContext();
   const environment = resolveEnvironment(explicitEnv, gh.ref, apiKey);
-  // Use repository as org identifier for advisory purposes
   const orgId = gh.repository.split("/")[0] ?? "unknown";
 
   info(
@@ -321,9 +408,6 @@ export async function run(): Promise<void> {
       (targetId ? ` (target=${targetId})` : ""),
   );
 
-  // @atlasent/enforce is the canonical enforcement wrapper.
-  // enforce() runs evaluate → verify (decision check) → verifyPermit (API call).
-  // fn is a no-op: the action's job is to gate, not execute app logic.
   const config: EnforceConfig = {
     apiKey,
     apiUrl,
@@ -351,7 +435,6 @@ export async function run(): Promise<void> {
     enforceResult = await enforce(config, async () => {});
   } catch (err) {
     if (err instanceof EnforceError) {
-      // Set decision outputs before failing so they're visible in the step.
       if (err.decision) {
         setDecisionOutputs(err.decision);
       } else {
@@ -366,12 +449,8 @@ export async function run(): Promise<void> {
       }
       setOutput("verified", "false");
 
-      // Emit financial governance advisory even on denied/error paths —
-      // advisory mode is informational regardless of enforcement outcome.
       emitFinancialGovernanceAdvisory(actionType, actor, orgId);
 
-      // phase="verify" is a policy decision; respect fail-on-deny.
-      // All other phases are infrastructure/security failures: always fail-closed.
       if (err.phase === "verify" && !failOnDeny) {
         switch (err.decision?.decision) {
           case "deny":
@@ -389,7 +468,6 @@ export async function run(): Promise<void> {
         return;
       }
 
-      // Fail-closed for evaluate + verify-permit phases, and verify when failOnDeny=true.
       switch (err.phase) {
         case "evaluate":
           setFailed(
@@ -426,7 +504,6 @@ export async function run(): Promise<void> {
       return;
     }
 
-    // Non-EnforceError: unexpected
     setOutput("decision", "error");
     setOutput("permit-token", "");
     setOutput("evaluation-id", "");
@@ -437,7 +514,6 @@ export async function run(): Promise<void> {
     setOutput("audit-hash", "");
     setOutput("verified", "false");
 
-    // Still emit advisory on unexpected errors
     emitFinancialGovernanceAdvisory(actionType, actor, orgId);
 
     setFailed(
@@ -446,7 +522,6 @@ export async function run(): Promise<void> {
     return;
   }
 
-  // enforce() returned — decision=allow, verify=passed, verifyPermit=passed.
   const { decision: d, verifyOutcome } = enforceResult;
   setDecisionOutputs(d);
   setOutput("verified", "true");
@@ -458,12 +533,9 @@ export async function run(): Promise<void> {
   if (d.riskScore !== undefined) info(`  Risk score:   ${d.riskScore}`);
   info(`  Verify:       ${verifyOutcome ?? "verified"}`);
 
-  // Emit financial governance advisory after successful enforcement.
-  // This is always the last step — non-blocking by design.
   emitFinancialGovernanceAdvisory(actionType, actor, orgId);
 }
 
-// Only auto-invoke when run as the main entry point (not during tests/imports).
 if (require.main === module) {
   run().catch((err) => {
     console.log(`::error::Unexpected error: ${err instanceof Error ? err.message : String(err)}`);

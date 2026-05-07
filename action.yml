@@ -8,7 +8,7 @@ inputs:
     description: 'AtlaSent API key (ask_live_* or ask_test_*)'
     required: true
   action:
-    description: 'Action type to evaluate (e.g., production_deploy). Used for single-eval path. Ignored when evaluations is set.'
+    description: 'Action type to evaluate (e.g., production_deploy). Used for single-eval path. Ignored when evaluations or policy-sync is set.'
     required: false
   actor:
     description: 'Actor identity (defaults to github.actor). Used for single-eval path.'
@@ -62,6 +62,30 @@ inputs:
     description: 'Currency code for the financial action value'
     required: false
     default: 'USD'
+  # ── Policy Sync ────────────────────────────────────────────────────────────
+  policy-sync:
+    description: |
+      When "true", run in policy sync mode: read a JSON bundle file and post it
+      to v1-policy-sync. CI fails when the run is rejected or invalid.
+      Cannot be combined with the evaluations or action inputs.
+    required: false
+    default: 'false'
+  policy-bundle:
+    description: |
+      Path to the policy bundle JSON file, relative to the repository root.
+      Must be a JSON array of policy entries: [{name, body, description?, tags?}].
+      Required when policy-sync is "true".
+    required: false
+  policy-source:
+    description: 'Source label written into the sync run record (defaults to "github-action").'
+    required: false
+    default: 'github-action'
+  policy-dry-run:
+    description: |
+      When "true" (default), submit as a dry-run to preview the diff without
+      applying. Set to "false" on the default branch to apply changes live.
+    required: false
+    default: 'true'
 outputs:
   decision:
     description: 'The evaluation decision (allow/deny/hold/escalate). Set for single-eval path only.'
@@ -90,6 +114,15 @@ outputs:
   audit-hash:
     description: 'SHA-256 audit chain hash'
     value: ${{ steps.gate.outputs.audit-hash }}
+  # ── Policy Sync outputs ────────────────────────────────────────────────────
+  sync-run-id:
+    description: 'The policy sync run ID returned by v1-policy-sync. Set when policy-sync is "true".'
+  sync-status:
+    description: 'Terminal status of the sync run (completed, rejected, failed, error). Set when policy-sync is "true".'
+  sync-diff:
+    description: 'Human-readable diff summary, e.g. "+3 added, ~1 updated, -2 removed". Set when policy-sync is "true".'
+  sync-summary:
+    description: 'JSON {added, updated, removed, status}. Set when policy-sync is "true".'
 runs:
   using: 'node24'
   main: 'dist/index.js'

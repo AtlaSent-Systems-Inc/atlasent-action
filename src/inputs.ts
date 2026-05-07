@@ -1,11 +1,12 @@
 // Wave B.AC1 — input parser.
 //
-// The action accepts either:
-//   - a single `action` input (v2.0 behavior, preserved exactly), or
-//   - a list of evaluations as a JSON `evaluations` input (v2.1).
+// The action accepts three mutually exclusive modes:
+//   1. policy-sync=true  — post a policy bundle to v1-policy-sync
+//   2. evaluations set   — fan out via v2.1 batch evaluate
+//   3. action set        — single evaluation (v2.0 fallback)
 //
-// When both are set, `evaluations` wins and `action` is ignored. This
-// is auto-detected so existing workflows continue to work unchanged.
+// Mode 1 is checked first; within modes 2/3, `evaluations` wins over `action`.
+// Existing single-eval workflows continue to work unchanged.
 
 import type { EvaluateRequest } from "./types";
 
@@ -13,6 +14,12 @@ export interface ActionInputs {
   apiKey: string;
   apiUrl: string;
   failOnDeny: boolean;
+  /** When present, run policy sync instead of evaluation. */
+  policySync?: {
+    bundlePath: string;
+    source?: string;
+    dryRun: boolean;
+  };
   /** When provided, fan out via evaluateMany. Otherwise single eval. */
   evaluations?: EvaluateRequest[];
   /** Single-input fallback (v2.0 path). */
@@ -27,6 +34,27 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
   const apiUrl = env["INPUT_API-URL"] || "https://api.atlasent.io";
   const failOnDeny = (env["INPUT_FAIL-ON-DENY"] || "true") === "true";
 
+  // ── Policy sync mode (checked first) ────────────────────────────────────────
+  const policySyncEnabled = (env["INPUT_POLICY-SYNC"] ?? "").toLowerCase() === "true";
+  if (policySyncEnabled) {
+    const bundlePath = (env["INPUT_POLICY-BUNDLE"] ?? "").trim();
+    if (!bundlePath) {
+      throw new Error("`policy-bundle` is required when `policy-sync` is 'true'");
+    }
+    const dryRun = (env["INPUT_POLICY-DRY-RUN"] ?? "true").toLowerCase() !== "false";
+    return {
+      apiKey,
+      apiUrl,
+      failOnDeny,
+      policySync: {
+        bundlePath,
+        source: (env["INPUT_POLICY-SOURCE"] ?? "").trim() || undefined,
+        dryRun,
+      },
+    };
+  }
+
+  // ── Batch evaluation mode ────────────────────────────────────────────────────
   const evaluationsRaw = env["INPUT_EVALUATIONS"];
   if (evaluationsRaw && evaluationsRaw.trim()) {
     let parsed: unknown;
@@ -50,6 +78,7 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
     };
   }
 
+  // ── Single-eval mode (v2.0 fallback) ────────────────────────────────────────
   const action = required(env, "INPUT_ACTION");
   const actor = env["INPUT_ACTOR"] || env["GITHUB_ACTOR"] || "unknown";
   const environment = env["INPUT_ENVIRONMENT"];

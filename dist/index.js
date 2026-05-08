@@ -444,7 +444,84 @@ async function waitViaPolling(opts) {
   );
 }
 
+// src/evidenceClient.ts
+async function emitEvidenceEvent(cfg, event, log = console) {
+  const url = `${cfg.apiUrl.replace(/\/$/, "")}${cfg.endpoint ?? "/v1-runtime-events"}`;
+  const timeoutMs = cfg.timeoutMs ?? 5e3;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${cfg.apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(event),
+      signal: controller.signal
+    });
+    if (res.status === 404) {
+      log.info(
+        `AtlaSent: runtime evidence endpoint not present at ${url} (skipping ${event.event_type})`
+      );
+      return;
+    }
+    if (!res.ok) {
+      log.warning(
+        `AtlaSent: evidence emit ${event.event_type} \u2192 HTTP ${res.status} (advisory; build not affected)`
+      );
+      return;
+    }
+    log.info(`AtlaSent: evidence event ${event.event_type} emitted`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warning(
+      `AtlaSent: evidence emit failed (advisory; build not affected): ${msg}`
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // src/v21.ts
+async function emitBatchEvidence(decisions, items, cfg, log = console) {
+  const tasks = [];
+  for (let i = 0; i < decisions.length; i++) {
+    const d = decisions[i];
+    const item = items[i];
+    if (!d || !item)
+      continue;
+    if (d.decision !== "allow")
+      continue;
+    if (d.verified !== true)
+      continue;
+    if (!d.permitToken || !d.id)
+      continue;
+    tasks.push(
+      emitEvidenceEvent(
+        cfg,
+        {
+          event_type: "execution_started",
+          permit_token: d.permitToken,
+          evaluation_id: d.id,
+          environment: item.environment ?? "unknown",
+          execution_started_at: (/* @__PURE__ */ new Date()).toISOString(),
+          metadata: {
+            source: "github-action-batch",
+            action: item.action,
+            actor: item.actor,
+            ...item.context ?? {}
+          }
+        },
+        log
+      ).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warning(`AtlaSent: batch emit threw (advisory): ${msg}`);
+      })
+    );
+  }
+  await Promise.allSettled(tasks);
+}
 async function runV21(env, flags) {
   const inputs = parseInputs(env);
   const items = inputs.evaluations ?? [inputs.single];
@@ -480,6 +557,10 @@ async function runV21(env, flags) {
       }
     }
   }
+  await emitBatchEvidence(decisions, items, {
+    apiKey: inputs.apiKey,
+    apiUrl: inputs.apiUrl
+  });
   const failed = inputs.failOnDeny && decisions.some((d) => d.decision === "deny" || d.decision === "hold" || d.decision === "escalate");
   return { decisions, failed, batchId: batch.batchId };
 }
@@ -636,45 +717,6 @@ function assessFinancialGovernance(input) {
     signals,
     summary
   };
-}
-
-// src/evidenceClient.ts
-async function emitEvidenceEvent(cfg, event, log = console) {
-  const url = `${cfg.apiUrl.replace(/\/$/, "")}${cfg.endpoint ?? "/v1-runtime-events"}`;
-  const timeoutMs = cfg.timeoutMs ?? 5e3;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${cfg.apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(event),
-      signal: controller.signal
-    });
-    if (res.status === 404) {
-      log.info(
-        `AtlaSent: runtime evidence endpoint not present at ${url} (skipping ${event.event_type})`
-      );
-      return;
-    }
-    if (!res.ok) {
-      log.warning(
-        `AtlaSent: evidence emit ${event.event_type} \u2192 HTTP ${res.status} (advisory; build not affected)`
-      );
-      return;
-    }
-    log.info(`AtlaSent: evidence event ${event.event_type} emitted`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.warning(
-      `AtlaSent: evidence emit failed (advisory; build not affected): ${msg}`
-    );
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 // src/index.ts

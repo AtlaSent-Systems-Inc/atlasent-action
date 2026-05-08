@@ -19,6 +19,7 @@ import {
   assessFinancialGovernance,
 } from "./financialGovernanceAdvisory";
 import type { FinancialAdvisoryInput } from "./financialGovernanceAdvisory";
+import { emitEvidenceEvent } from "./evidenceClient";
 
 // ---------------------------------------------------------------------------
 // GitHub Actions helpers
@@ -532,6 +533,33 @@ export async function run(): Promise<void> {
   info(`  Evaluation:   ${d.evaluationId ?? ""}`);
   if (d.riskScore !== undefined) info(`  Risk score:   ${d.riskScore}`);
   info(`  Verify:       ${verifyOutcome ?? "verified"}`);
+
+  // ── B7: emit execution_started evidence event ────────────────────────────
+  // Best-effort, fire-and-forget. Build outcome is already determined above.
+  if (d.permitToken && d.evaluationId) {
+    await emitEvidenceEvent(
+      { apiKey, apiUrl },
+      {
+        event_type: "execution_started",
+        permit_token: d.permitToken,
+        evaluation_id: d.evaluationId,
+        environment,
+        execution_started_at: new Date().toISOString(),
+        metadata: {
+          source: "github-action",
+          repository: gh.repository,
+          ref: gh.ref,
+          sha: gh.sha,
+          workflow: gh.workflow,
+          run_id: gh.run_id,
+          run_url: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+          action: actionType,
+          actor: `github:${actor}`,
+        },
+      },
+      { info, warning },
+    );
+  }
 
   emitFinancialGovernanceAdvisory(actionType, actor, orgId);
 }

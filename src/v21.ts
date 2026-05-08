@@ -11,18 +11,77 @@
 //   3. If any decision is hold|escalate AND a wait-for-id is set,
 //      waitForTerminalDecision() blocks until the upstream approver
 //      flips it.
-//   4. Job summary is rendered per evaluation.
+//   4. After terminal decisions are settled, the runtime evidence
+//      emitter (B7) fires execution_started events for every allow+
+//      verified decision. Best-effort, never blocks the action.
+//   5. Job summary is rendered per evaluation.
 
 import { verifyPermit } from "@atlasent/enforce";
 import { evaluateMany } from "./batch";
 import { parseInputs } from "./inputs";
 import { waitForTerminalDecision } from "./stream";
-import type { Decision } from "./types";
+import type { Decision, EvaluateRequest } from "./types";
+import { emitEvidenceEvent } from "./evidenceClient";
 
 export interface RunOutput {
   decisions: Decision[];
   failed: boolean;
   batchId: string;
+}
+
+/**
+ * Fire execution_started events for every successful authorization in a
+ * batch. Pure function over (decisions, items) so the wiring is testable
+ * without the upstream mocks. Best-effort: every failure is swallowed
+ * and the function never throws.
+ *
+ * Skipped: deny / hold / escalate, missing permitToken, missing
+ * evaluation id, verified !== true.
+ */
+export async function emitBatchEvidence(
+  decisions: Decision[],
+  items: EvaluateRequest[],
+  cfg: { apiKey: string; apiUrl: string },
+  log: { info: (m: string) => void; warning: (m: string) => void } = console as unknown as {
+    info: (m: string) => void;
+    warning: (m: string) => void;
+  },
+): Promise<void> {
+  const tasks: Promise<void>[] = [];
+  for (let i = 0; i < decisions.length; i++) {
+    const d = decisions[i];
+    const item = items[i];
+    if (!d || !item) continue;
+    if (d.decision !== "allow") continue;
+    if (d.verified !== true) continue;
+    if (!d.permitToken || !d.id) continue;
+
+    tasks.push(
+      emitEvidenceEvent(
+        cfg,
+        {
+          event_type: "execution_started",
+          permit_token: d.permitToken,
+          evaluation_id: d.id,
+          environment: item.environment ?? "unknown",
+          execution_started_at: new Date().toISOString(),
+          metadata: {
+            source: "github-action-batch",
+            action: item.action,
+            actor: item.actor,
+            ...(item.context ?? {}),
+          },
+        },
+        log,
+      ).catch((err) => {
+        // emitEvidenceEvent already swallows; this is belt-and-braces
+        // so that an unexpected throw can't bubble out of allSettled.
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warning(`AtlaSent: batch emit threw (advisory): ${msg}`);
+      }),
+    );
+  }
+  await Promise.allSettled(tasks);
 }
 
 export async function runV21(
@@ -72,6 +131,15 @@ export async function runV21(
       }
     }
   }
+
+  // ── B7: emit runtime evidence for every successful authorization ──────────
+  // Runs only after the wait-for-id reconciliation, so terminal allows that
+  // started life as hold/escalate are still emitted. Best-effort; failures
+  // don't change the RunOutput.
+  await emitBatchEvidence(decisions, items, {
+    apiKey: inputs.apiKey,
+    apiUrl: inputs.apiUrl,
+  });
 
   const failed =
     inputs.failOnDeny &&

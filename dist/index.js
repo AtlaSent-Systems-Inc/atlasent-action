@@ -638,6 +638,45 @@ function assessFinancialGovernance(input) {
   };
 }
 
+// src/evidenceClient.ts
+async function emitEvidenceEvent(cfg, event, log = console) {
+  const url = `${cfg.apiUrl.replace(/\/$/, "")}${cfg.endpoint ?? "/v1-runtime-events"}`;
+  const timeoutMs = cfg.timeoutMs ?? 5e3;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${cfg.apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(event),
+      signal: controller.signal
+    });
+    if (res.status === 404) {
+      log.info(
+        `AtlaSent: runtime evidence endpoint not present at ${url} (skipping ${event.event_type})`
+      );
+      return;
+    }
+    if (!res.ok) {
+      log.warning(
+        `AtlaSent: evidence emit ${event.event_type} \u2192 HTTP ${res.status} (advisory; build not affected)`
+      );
+      return;
+    }
+    log.info(`AtlaSent: evidence event ${event.event_type} emitted`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warning(
+      `AtlaSent: evidence emit failed (advisory; build not affected): ${msg}`
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // src/index.ts
 function getInput(name, required2 = false) {
   const envKey = `INPUT_${name.replace(/-/g, "_").toUpperCase()}`;
@@ -1050,6 +1089,30 @@ async function run() {
   if (d.riskScore !== void 0)
     info(`  Risk score:   ${d.riskScore}`);
   info(`  Verify:       ${verifyOutcome ?? "verified"}`);
+  if (d.permitToken && d.evaluationId) {
+    await emitEvidenceEvent(
+      { apiKey, apiUrl },
+      {
+        event_type: "execution_started",
+        permit_token: d.permitToken,
+        evaluation_id: d.evaluationId,
+        environment,
+        execution_started_at: (/* @__PURE__ */ new Date()).toISOString(),
+        metadata: {
+          source: "github-action",
+          repository: gh.repository,
+          ref: gh.ref,
+          sha: gh.sha,
+          workflow: gh.workflow,
+          run_id: gh.run_id,
+          run_url: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+          action: actionType,
+          actor: `github:${actor}`
+        }
+      },
+      { info, warning }
+    );
+  }
   emitFinancialGovernanceAdvisory(actionType, actor, orgId);
 }
 if (require.main === module) {

@@ -182,4 +182,8 @@ This is distinct from `fail-on-deny`, which controls only how *policy* decisions
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+Licensed under the [Apache License, Version 2.0](./LICENSE). See [NOTICE](./NOTICE) for attribution.
+
+Copyright (c) AtlaSent IP Holdings LLC
+
+Commercial licensing inquiries: [legal@atlasent.io](mailto:legal@atlasent.io)

@@ -10,8 +10,9 @@ This release aligns the public release notes with the shipped `action.yml` contr
 
 ```yaml
 - uses: AtlaSent-Systems-Inc/atlasent-action@v1
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
-    api-key: ${{ secrets.ATLASENT_API_KEY }}
     action: deployment.production
     actor: ${{ github.actor }}
     context: '{"repo":"${{ github.repository }}"}'
@@ -21,7 +22,7 @@ This release aligns the public release notes with the shipped `action.yml` contr
 
 | Input | Required | Description |
 |---|---|---|
-| `api-key` | Yes | AtlaSent API key (`ask_live_*` or `ask_test_*`). |
+| `ATLASENT_API_KEY` env | Yes | AtlaSent API key (`ask_live_*` or `ask_test_*`). |
 | `action` | No* | Action type for single-eval path (ignored when `evaluations` is set). |
 | `actor` | No | Actor identity. Defaults to `${{ github.actor }}`. |
 | `target-id` | No | Target resource identifier; propagated for policy gating. |
@@ -32,7 +33,7 @@ This release aligns the public release notes with the shipped `action.yml` contr
 | `evaluations` | No | JSON array for batch mode; overrides single-eval inputs. |
 | `wait-for-id` | No | Evaluation ID to wait on until terminal (`allow`/`deny`). |
 | `wait-timeout-ms` | No | Wait timeout in ms when using `wait-for-id`. Default: `600000`. |
-| `v2-batch` | No | Opt into `/v1/evaluate/batch`. Default: `false`. |
+| `v2-batch` | No | Opt into `/v1-evaluate/batch`. Default: `false`. |
 | `v2-streaming` | No | Opt into SSE wait stream. Default: `false`. |
 
 \* `action` is effectively required for single-evaluation usage.

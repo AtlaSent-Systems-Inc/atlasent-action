@@ -7,6 +7,7 @@ import { runV21 } from "../v21";
 vi.mock("../batch", () => ({ evaluateMany: vi.fn() }));
 vi.mock("@atlasent/enforce", () => ({ verifyPermit: vi.fn() }));
 vi.mock("../stream", () => ({ waitForTerminalDecision: vi.fn() }));
+vi.mock("../evidenceClient", () => ({ emitEvidenceEvent: vi.fn(async () => {}) }));
 
 import { evaluateMany } from "../batch";
 import { verifyPermit } from "@atlasent/enforce";
@@ -18,10 +19,10 @@ const mockWait = waitForTerminalDecision as ReturnType<typeof vi.fn>;
 
 // Minimal env that drives the batch path (evaluations set).
 const BASE_ENV = {
-  "INPUT_API-KEY": "ask_test_key",
+  ATLASENT_API_KEY: "ask_test_key",
   "INPUT_API-URL": "https://api.test",
   "INPUT_FAIL-ON-DENY": "true",
-  INPUT_EVALUATIONS: JSON.stringify([{ action: "deploy.prod", actor: "alice" }]),
+  INPUT_EVALUATIONS: JSON.stringify([{ action: "deployment.production", actor: "alice" }]),
   "INPUT_WAIT-TIMEOUT-MS": "30000",
 };
 
@@ -51,7 +52,7 @@ it("passes items and flags through to evaluateMany", async () => {
   expect(mockEvaluateMany).toHaveBeenCalledWith(
     "https://api.test",
     "ask_test_key",
-    [{ action: "deploy.prod", actor: "alice" }],
+    [{ action: "deployment.production", actor: "alice" }],
     true,
   );
 });
@@ -59,13 +60,13 @@ it("passes items and flags through to evaluateMany", async () => {
 it("wraps single action/actor into a 1-item batch", async () => {
   mockEvaluateMany.mockResolvedValueOnce({ decisions: [decision("allow")], batchId: "b1" });
   await runV21(
-    { "INPUT_API-KEY": "ask_test_key", INPUT_ACTION: "deploy.staging", INPUT_ACTOR: "bob" },
+    { ATLASENT_API_KEY: "ask_test_key", INPUT_ACTION: "deployment.production", INPUT_ACTOR: "bob" },
     FLAGS,
   );
   expect(mockEvaluateMany).toHaveBeenCalledWith(
     "https://api.atlasent.io",
     "ask_test_key",
-    [expect.objectContaining({ action: "deploy.staging", actor: "bob" })],
+    [expect.objectContaining({ action: "deployment.production", actor: "bob" })],
     false,
   );
 });
@@ -153,7 +154,7 @@ it("verifies terminal allow from wait-for-id with correct permit params", async 
     expect.objectContaining({
       apiKey: "ask_test_key",
       apiUrl: "https://api.test",
-      action: "deploy.prod",
+      action: "deployment.production",
       actor: "alice",
     }),
     expect.objectContaining({

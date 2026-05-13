@@ -10,6 +10,8 @@
 
 import type { EvaluateRequest } from "./types";
 
+export const PROTECTED_ACTION = "deployment.production";
+
 export interface ActionInputs {
   apiKey: string;
   apiUrl: string;
@@ -30,7 +32,7 @@ export interface ActionInputs {
 }
 
 export function parseInputs(env: Record<string, string | undefined>): ActionInputs {
-  const apiKey = required(env, "INPUT_API-KEY");
+  const apiKey = required(env, "ATLASENT_API_KEY");
   const apiUrl = env["INPUT_API-URL"] || "https://api.atlasent.io";
   const failOnDeny = (env["INPUT_FAIL-ON-DENY"] || "true") === "true";
 
@@ -68,11 +70,15 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
         "`evaluations` must be a non-empty JSON array of evaluation requests",
       );
     }
+    const evaluations = parsed as EvaluateRequest[];
+    for (const item of evaluations) {
+      validateProtectedAction(item.action);
+    }
     return {
       apiKey,
       apiUrl,
       failOnDeny,
-      evaluations: parsed as EvaluateRequest[],
+      evaluations,
       waitForId: env["INPUT_WAIT-FOR-ID"] || undefined,
       waitTimeoutMs: parseInt(env["INPUT_WAIT-TIMEOUT-MS"] || "600000", 10),
     };
@@ -80,6 +86,7 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
 
   // ── Single-eval mode (v2.0 fallback) ────────────────────────────────────────
   const action = required(env, "INPUT_ACTION");
+  validateProtectedAction(action);
   const actor = env["INPUT_ACTOR"] || env["GITHUB_ACTOR"] || "unknown";
   const environment = env["INPUT_ENVIRONMENT"];
   const contextRaw = env["INPUT_CONTEXT"] || "{}";
@@ -103,7 +110,19 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
 function required(env: Record<string, string | undefined>, key: string): string {
   const v = env[key];
   if (!v) {
-    throw new Error(`Missing required input: ${key.replace("INPUT_", "").toLowerCase()}`);
+    throw new Error(
+      key === "ATLASENT_API_KEY"
+        ? "Missing required secret: ATLASENT_API_KEY"
+        : `Missing required input: ${key.replace("INPUT_", "").toLowerCase()}`,
+    );
   }
   return v;
+}
+
+function validateProtectedAction(action: string): void {
+  if (action !== PROTECTED_ACTION) {
+    throw new Error(
+      `Unsupported protected action "${action}". Deploy Gate V1 only permits "${PROTECTED_ACTION}"`,
+    );
+  }
 }

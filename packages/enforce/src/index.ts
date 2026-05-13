@@ -1,9 +1,9 @@
 // @atlasent/enforce — fail-closed execution wrapper.
 //
 // Enforces the evaluate → verify → verifyPermit → execute contract:
-//   1. evaluate()     — calls POST /v1/evaluate; any infra error blocks execution
+//   1. evaluate()     — calls POST /v1-evaluate; any infra error blocks execution
 //   2. verify()       — rejects non-allow decisions (deny / hold / escalate)
-//   3. verifyPermit() — calls POST /v1/verify-permit; replay/expired tokens block
+//   3. verifyPermit() — calls POST /v1-verify-permit; replay/expired tokens block
 //   4. enforce()      — composes all three; fn never runs unless all steps pass
 
 import { post } from "./transport";
@@ -78,7 +78,7 @@ export async function evaluate(config: EnforceConfig): Promise<Decision> {
   let status: number;
   let body: string;
   try {
-    ({ status, body } = await post(`${apiUrl}/v1/evaluate`, JSON.stringify(payload), {
+    ({ status, body } = await post(`${apiUrl}/v1-evaluate`, JSON.stringify(payload), {
       Authorization: `Bearer ${config.apiKey}`,
     }));
   } catch (err) {
@@ -143,7 +143,7 @@ export function verify(decision: Decision): void {
 }
 
 // ---------------------------------------------------------------------------
-// Step 3 — verifyPermit (calls /v1/verify-permit, fail-closed)
+// Step 3 — verifyPermit (calls /v1-verify-permit, fail-closed)
 //
 // Without this round-trip the enforce wrapper is evaluate-only: a tampered or
 // replayed permit_token would still surface decision=allow. This step consumes
@@ -168,7 +168,7 @@ export async function verifyPermit(
   let body: string;
   try {
     ({ status, body } = await post(
-      `${apiUrl}/v1/verify-permit`,
+      `${apiUrl}/v1-verify-permit`,
       JSON.stringify({
         permit_token: decision.permitToken,
         action_type: config.action,

@@ -15,7 +15,7 @@ The single biggest action-side v2 win. CI matrix jobs today fan out
 N action invocations = N HTTP round-trips. Move to one call.
 
 - **`mode: batch` input** — collects every action invocation in the
-  same workflow run and submits a single `POST /v1/evaluate:batch` at
+  same workflow run and submits a single `POST /v1-evaluate:batch` at
   the join point.
 - **`needs:` declaration** — when set, the batch step blocks downstream
   jobs only on the subset of decisions they depend on, not the whole

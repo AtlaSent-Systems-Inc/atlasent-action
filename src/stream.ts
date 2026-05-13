@@ -1,11 +1,11 @@
 // Wave B.AC3 — streaming-wait helper.
 //
-// Consumes /v1/evaluate/stream Server-Sent Events for the duration of
+// Consumes /v1-evaluate/stream Server-Sent Events for the duration of
 // a change_window approval. Resolves with the first terminal decision
 // (allow / deny) for the watched evaluation id, or rejects on timeout.
 //
 // When the per-tenant `v2_streaming` flag is off, falls back to
-// polling /v1/evaluate/:id every 5 seconds.
+// polling /v1-evaluate/:id every 5 seconds.
 
 import type { Decision } from "./types";
 
@@ -31,7 +31,7 @@ export async function waitForTerminalDecision(
 }
 
 async function waitViaStream(opts: WaitOptions): Promise<Decision> {
-  const r = await fetch(`${opts.apiUrl}/v1/evaluate/stream`, {
+  const r = await fetch(`${opts.apiUrl}/v1-evaluate/stream`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -42,7 +42,7 @@ async function waitViaStream(opts: WaitOptions): Promise<Decision> {
     signal: opts.signal,
   });
   if (!r.ok || !r.body) {
-    throw new Error(`atlasent /v1/evaluate/stream ${r.status}`);
+    throw new Error(`atlasent /v1-evaluate/stream ${r.status}`);
   }
   const reader = r.body.getReader();
   const decoder = new TextDecoder();
@@ -76,7 +76,7 @@ async function waitViaPolling(opts: WaitOptions): Promise<Decision> {
   while (Date.now() < deadline) {
     try {
       const r = await fetch(
-        `${opts.apiUrl}/v1/evaluate/${encodeURIComponent(opts.evaluationId)}`,
+        `${opts.apiUrl}/v1-evaluate/${encodeURIComponent(opts.evaluationId)}`,
         {
           headers: { authorization: `Bearer ${opts.apiKey}` },
           signal: opts.signal,

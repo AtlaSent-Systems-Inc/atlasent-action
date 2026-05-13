@@ -66,10 +66,10 @@ export async function emitBatchEvidence(
           environment: item.environment ?? "unknown",
           execution_started_at: new Date().toISOString(),
           metadata: {
+            ...(item.context ?? {}),
             source: "github-action-batch",
             action: item.action,
             actor: item.actor,
-            ...(item.context ?? {}),
           },
         },
         log,

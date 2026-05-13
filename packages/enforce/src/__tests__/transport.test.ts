@@ -36,7 +36,7 @@ describe("transport.post", () => {
       return req;
     });
 
-    const p = post("https://api.test/v1/evaluate", '{"x":1}', { Authorization: "Bearer k" });
+    const p = post("https://api.test/v1-evaluate", '{"x":1}', { Authorization: "Bearer k" });
     res.emit("data", Buffer.from('{"ok"'));
     res.emit("data", Buffer.from(':true}'));
     res.emit("end");
@@ -57,7 +57,7 @@ describe("transport.post", () => {
       return req;
     });
 
-    const p = post("https://api.test/v1/evaluate", '{"x":1}', { Authorization: "Bearer k" });
+    const p = post("https://api.test/v1-evaluate", '{"x":1}', { Authorization: "Bearer k" });
     res.emit("end");
     await p;
 
@@ -71,7 +71,7 @@ describe("transport.post", () => {
     const req = fakeReq();
     mockRequest.mockImplementation(() => req);
 
-    const p = post("https://api.test/v1/evaluate", "{}", {});
+    const p = post("https://api.test/v1-evaluate", "{}", {});
     req.emit("error", new Error("ECONNREFUSED"));
 
     await expect(p).rejects.toThrow("ECONNREFUSED");
@@ -86,7 +86,7 @@ describe("transport.post", () => {
       return req;
     });
 
-    const p = post("https://api.test/v1/evaluate", "{}", {});
+    const p = post("https://api.test/v1-evaluate", "{}", {});
     res.emit("data", Buffer.from("partial"));
     res.emit("error", new Error("ECONNRESET"));
 
@@ -97,7 +97,7 @@ describe("transport.post", () => {
     const req = fakeReq();
     mockRequest.mockImplementation(() => req);
 
-    const p = post("https://api.test/v1/evaluate", "{}", {});
+    const p = post("https://api.test/v1-evaluate", "{}", {});
     req.emit("timeout");
 
     await expect(p).rejects.toThrow("Request timed out after 30s");

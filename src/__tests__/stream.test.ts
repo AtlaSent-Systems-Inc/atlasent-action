@@ -54,7 +54,7 @@ describe("waitForTerminalDecision", () => {
     const result = await waitForTerminalDecision(BASE_OPTS);
     expect(result.decision).toBe("allow");
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.test/v1/evaluate/ev-123",
+      "https://api.test/v1-evaluate/ev-123",
       expect.objectContaining({
         headers: expect.objectContaining({ authorization: "Bearer ask_test_key" }),
       }),
@@ -123,7 +123,7 @@ describe("waitForTerminalDecision", () => {
 
     expect(result.decision).toBe("allow");
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.test/v1/evaluate/stream",
+      "https://api.test/v1-evaluate/stream",
       expect.objectContaining({ method: "POST" }),
     );
   });

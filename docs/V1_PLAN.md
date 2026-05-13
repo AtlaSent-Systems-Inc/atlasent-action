@@ -19,7 +19,7 @@ every production deploy was pre-authorized by a named approver — the
       permit token, and a link to the console's proof page.
 - [ ] Test mode (`mode: advisory`) logs the decision without blocking;
       enforced mode blocks on `deny` / `hold`.
-- [ ] README has a 3-line copy-paste for a production-deploy gate.
+- [ ] README has a 3-line copy-paste for a deployment.production gate.
 - [ ] E2E test: the action runs against a staging atlasent-api org on
       every PR.
 - [ ] Tag-based release: `v1.0.0`, plus a moving `v1` major tag.

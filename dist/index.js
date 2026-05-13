@@ -113,7 +113,7 @@ var require_dist = __commonJS({
       let status;
       let body;
       try {
-        ({ status, body } = await (0, transport_1.post)(`${apiUrl}/v1/evaluate`, JSON.stringify(payload), {
+        ({ status, body } = await (0, transport_1.post)(`${apiUrl}/v1-evaluate`, JSON.stringify(payload), {
           Authorization: `Bearer ${config.apiKey}`
         }));
       } catch (err) {
@@ -161,7 +161,7 @@ var require_dist = __commonJS({
       let status;
       let body;
       try {
-        ({ status, body } = await (0, transport_1.post)(`${apiUrl}/v1/verify-permit`, JSON.stringify({
+        ({ status, body } = await (0, transport_1.post)(`${apiUrl}/v1-verify-permit`, JSON.stringify({
           permit_token: decision.permitToken,
           action_type: config.action,
           actor_id: config.actor
@@ -252,13 +252,13 @@ async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
   let decisions;
   let batchId;
   if (v2Batch) {
-    const r = await fetch(`${apiUrl}/v1/evaluate/batch`, {
+    const r = await fetch(`${apiUrl}/v1-evaluate/batch`, {
       method: "POST",
       headers,
       body: JSON.stringify({ items })
     });
     if (!r.ok) {
-      throw new Error(`atlasent /v1/evaluate/batch ${r.status}`);
+      throw new Error(`atlasent /v1-evaluate/batch ${r.status}`);
     }
     const data = await r.json();
     decisions = data.results;
@@ -266,13 +266,13 @@ async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
   } else {
     decisions = [];
     for (const item of items) {
-      const r = await fetch(`${apiUrl}/v1/evaluate`, {
+      const r = await fetch(`${apiUrl}/v1-evaluate`, {
         method: "POST",
         headers,
         body: JSON.stringify(item)
       });
       if (!r.ok) {
-        throw new Error(`atlasent /v1/evaluate ${r.status}`);
+        throw new Error(`atlasent /v1-evaluate ${r.status}`);
       }
       decisions.push(await r.json());
     }
@@ -294,8 +294,9 @@ async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
 }
 
 // src/inputs.ts
+var PROTECTED_ACTION = "deployment.production";
 function parseInputs(env) {
-  const apiKey = required(env, "INPUT_API-KEY");
+  const apiKey = required(env, "ATLASENT_API_KEY");
   const apiUrl = env["INPUT_API-URL"] || "https://api.atlasent.io";
   const failOnDeny = (env["INPUT_FAIL-ON-DENY"] || "true") === "true";
   const policySyncEnabled = (env["INPUT_POLICY-SYNC"] ?? "").toLowerCase() === "true";
@@ -329,16 +330,21 @@ function parseInputs(env) {
         "`evaluations` must be a non-empty JSON array of evaluation requests"
       );
     }
+    const evaluations = parsed;
+    for (const item of evaluations) {
+      validateProtectedAction(item.action);
+    }
     return {
       apiKey,
       apiUrl,
       failOnDeny,
-      evaluations: parsed,
+      evaluations,
       waitForId: env["INPUT_WAIT-FOR-ID"] || void 0,
       waitTimeoutMs: parseInt(env["INPUT_WAIT-TIMEOUT-MS"] || "600000", 10)
     };
   }
   const action = required(env, "INPUT_ACTION");
+  validateProtectedAction(action);
   const actor = env["INPUT_ACTOR"] || env["GITHUB_ACTOR"] || "unknown";
   const environment = env["INPUT_ENVIRONMENT"];
   const contextRaw = env["INPUT_CONTEXT"] || "{}";
@@ -360,9 +366,18 @@ function parseInputs(env) {
 function required(env, key) {
   const v = env[key];
   if (!v) {
-    throw new Error(`Missing required input: ${key.replace("INPUT_", "").toLowerCase()}`);
+    throw new Error(
+      key === "ATLASENT_API_KEY" ? "Missing required secret: ATLASENT_API_KEY" : `Missing required input: ${key.replace("INPUT_", "").toLowerCase()}`
+    );
   }
   return v;
+}
+function validateProtectedAction(action) {
+  if (action !== PROTECTED_ACTION) {
+    throw new Error(
+      `Unsupported protected action "${action}". Deploy Gate V1 only permits "${PROTECTED_ACTION}"`
+    );
+  }
 }
 
 // src/stream.ts
@@ -375,7 +390,7 @@ async function waitForTerminalDecision(opts) {
   return waitViaPolling(opts);
 }
 async function waitViaStream(opts) {
-  const r = await fetch(`${opts.apiUrl}/v1/evaluate/stream`, {
+  const r = await fetch(`${opts.apiUrl}/v1-evaluate/stream`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -386,7 +401,7 @@ async function waitViaStream(opts) {
     signal: opts.signal
   });
   if (!r.ok || !r.body) {
-    throw new Error(`atlasent /v1/evaluate/stream ${r.status}`);
+    throw new Error(`atlasent /v1-evaluate/stream ${r.status}`);
   }
   const reader = r.body.getReader();
   const decoder = new TextDecoder();
@@ -421,7 +436,7 @@ async function waitViaPolling(opts) {
   while (Date.now() < deadline) {
     try {
       const r = await fetch(
-        `${opts.apiUrl}/v1/evaluate/${encodeURIComponent(opts.evaluationId)}`,
+        `${opts.apiUrl}/v1-evaluate/${encodeURIComponent(opts.evaluationId)}`,
         {
           headers: { authorization: `Bearer ${opts.apiKey}` },
           signal: opts.signal
@@ -507,10 +522,10 @@ async function emitBatchEvidence(decisions, items, cfg, log = console) {
           environment: item.environment ?? "unknown",
           execution_started_at: (/* @__PURE__ */ new Date()).toISOString(),
           metadata: {
+            ...item.context ?? {},
             source: "github-action-batch",
             action: item.action,
-            actor: item.actor,
-            ...item.context ?? {}
+            actor: item.actor
           }
         },
         log
@@ -720,6 +735,23 @@ function assessFinancialGovernance(input) {
 }
 
 // src/index.ts
+var PROTECTED_ACTION2 = "deployment.production";
+function getApiKey() {
+  const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
+  if (!apiKey) {
+    setFailed("ATLASENT_API_KEY is required");
+  }
+  return apiKey;
+}
+function validateProtectedAction2(actionType) {
+  if (actionType !== PROTECTED_ACTION2) {
+    setOutput("decision", "error");
+    setOutput("verified", "false");
+    setFailed(
+      `AtlaSent Gate: unsupported protected action "${actionType}". Deploy Gate V1 only permits "${PROTECTED_ACTION2}" (fail-closed).`
+    );
+  }
+}
 function getInput(name, required2 = false) {
   const envKey = `INPUT_${name.replace(/-/g, "_").toUpperCase()}`;
   const val = (process.env[envKey] ?? "").trim();
@@ -930,7 +962,7 @@ async function runPolicySyncStep(apiKey, apiUrl) {
   }
 }
 async function run() {
-  const apiKey = getInput("api-key", true);
+  const apiKey = getApiKey();
   maskValue(apiKey);
   const apiUrl = getInput("api-url") || "https://api.atlasent.io";
   const failOnDeny = getInput("fail-on-deny") !== "false";
@@ -949,7 +981,7 @@ async function run() {
     try {
       result = await runV21(
         {
-          "INPUT_API-KEY": apiKey,
+          ATLASENT_API_KEY: apiKey,
           "INPUT_API-URL": apiUrl,
           "INPUT_FAIL-ON-DENY": failOnDeny ? "true" : "false",
           INPUT_EVALUATIONS: evaluationsRaw,
@@ -999,6 +1031,7 @@ async function run() {
     return;
   }
   const actionType = getInput("action", true);
+  validateProtectedAction2(actionType);
   const actor = getInput("actor") || "unknown";
   const targetId = getInput("target-id") || void 0;
   const explicitEnv = getInput("environment");

@@ -6,6 +6,8 @@ import * as path from "node:path";
 // Mock @atlasent/enforce before importing index so that enforce() is
 // intercepted. EnforceError must still be the real class so instanceof checks
 // in run() work correctly.
+vi.mock("../evidenceClient", () => ({ emitEvidenceEvent: vi.fn(async () => {}) }));
+
 vi.mock("@atlasent/enforce", async (importOriginal) => {
   const original = await importOriginal<typeof import("@atlasent/enforce")>();
   return {
@@ -118,6 +120,10 @@ function setInput(name: string, value: string) {
   process.env[`INPUT_${name.replace(/-/g, "_").toUpperCase()}`] = value;
 }
 
+function setApiKey(value = "ask_test_key") {
+  process.env["ATLASENT_API_KEY"] = value;
+}
+
 function getConsoleLogs(): string[] {
   return (consoleSpy as unknown as { mock: { calls: Array<Array<unknown>> } })
     .mock.calls.map((c) => String(c[0]));
@@ -133,22 +139,35 @@ function getExitCalls(): Array<number | string | null | undefined> {
 // ---------------------------------------------------------------------------
 
 describe("missing required inputs", () => {
-  it("calls process.exit(1) when api-key is missing", async () => {
-    setInput("action", "deploy.prod");
-    // api-key is NOT set
+  it("calls process.exit(1) when ATLASENT_API_KEY is missing", async () => {
+    setInput("action", "deployment.production");
+    // ATLASENT_API_KEY is NOT set
 
     await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
     expect(getExitCalls()).toContain(1);
-    expect(getConsoleLogs().some((l) => l.includes("Input required and not supplied: api-key"))).toBe(true);
+    expect(getConsoleLogs().some((l) => l.includes("ATLASENT_API_KEY is required"))).toBe(true);
   });
 
   it("calls process.exit(1) when action is missing on the single-eval path", async () => {
-    setInput("api-key", "ask_test_key");
+    setApiKey();
     // action is NOT set, evaluations also not set
 
     await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
     expect(getExitCalls()).toContain(1);
     expect(getConsoleLogs().some((l) => l.includes("Input required and not supplied: action"))).toBe(true);
+  });
+
+  it("fails closed when action is not deployment.production", async () => {
+    setApiKey();
+    setInput("action", "deploy.staging");
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    expect(getExitCalls()).toContain(1);
+    expect(mockEnforce).not.toHaveBeenCalled();
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("error");
+    expect(outputs["verified"]).toBe("false");
+    expect(getConsoleLogs().some((l) => l.includes("deployment.production"))).toBe(true);
   });
 });
 
@@ -158,8 +177,8 @@ describe("missing required inputs", () => {
 
 describe("allow response", () => {
   it("sets decision=allow output and does NOT call process.exit", async () => {
-    setInput("api-key", "ask_test_key");
-    setInput("action", "production_deploy");
+    setApiKey();
+    setInput("action", "deployment.production");
 
     mockEnforce.mockResolvedValueOnce(makeAllowResult());
 
@@ -172,8 +191,8 @@ describe("allow response", () => {
   });
 
   it("sets permit-token, evaluation-id, proof-hash, risk-score outputs on allow", async () => {
-    setInput("api-key", "ask_test_key");
-    setInput("action", "deploy.prod");
+    setApiKey();
+    setInput("action", "deployment.production");
 
     mockEnforce.mockResolvedValueOnce(makeAllowResult({
       evaluationId: "ev-abc",
@@ -197,8 +216,8 @@ describe("allow response", () => {
 
 describe("deny decision", () => {
   it("calls process.exit(1) when enforce throws EnforceError with deny decision", async () => {
-    setInput("api-key", "ask_test_key");
-    setInput("action", "production_deploy");
+    setApiKey();
+    setInput("action", "deployment.production");
 
     const denyDecision = makeDecision({ decision: "deny", denyReason: "policy violation" });
     mockEnforce.mockRejectedValueOnce(
@@ -211,8 +230,8 @@ describe("deny decision", () => {
   });
 
   it("sets decision=deny output before failing", async () => {
-    setInput("api-key", "ask_test_key");
-    setInput("action", "deploy.prod");
+    setApiKey();
+    setInput("action", "deployment.production");
 
     const denyDecision = makeDecision({ decision: "deny", denyReason: "not allowed" });
     mockEnforce.mockRejectedValueOnce(
@@ -227,8 +246,8 @@ describe("deny decision", () => {
   });
 
   it("does NOT call process.exit when fail-on-deny=false and decision is deny", async () => {
-    setInput("api-key", "ask_test_key");
-    setInput("action", "deploy.prod");
+    setApiKey();
+    setInput("action", "deployment.production");
     setInput("fail-on-deny", "false");
 
     const denyDecision = makeDecision({ decision: "deny", denyReason: "informational only" });
@@ -248,8 +267,8 @@ describe("deny decision", () => {
 
 describe("v1.1 audit fields", () => {
   it("sets chain-entry output when API returns chainEntry", async () => {
-    setInput("api-key", "ask_test_key");
-    setInput("action", "deploy.prod");
+    setApiKey();
+    setInput("action", "deployment.production");
 
     const chainEntry = { blockHash: "0xabc", txIndex: 1 };
     mockEnforce.mockResolvedValueOnce(makeAllowResult({
@@ -267,8 +286,8 @@ describe("v1.1 audit fields", () => {
   });
 
   it("sets chain-entry to JSON null when chainEntry is absent", async () => {
-    setInput("api-key", "ask_test_key");
-    setInput("action", "deploy.prod");
+    setApiKey();
+    setInput("action", "deployment.production");
 
     mockEnforce.mockResolvedValueOnce(makeAllowResult({ chainEntry: undefined }));
 
@@ -280,13 +299,36 @@ describe("v1.1 audit fields", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5. Deprecated ::set-output is NOT emitted
+// 5. Verify failure → process.exit(1) (fail-closed)
+// ---------------------------------------------------------------------------
+
+describe("verify failure", () => {
+  it("fails closed when permit verification fails", async () => {
+    setApiKey();
+    setInput("action", "deployment.production");
+
+    const allowDecision = makeDecision({ decision: "allow", permitToken: "pt-replay" });
+    mockEnforce.mockRejectedValueOnce(
+      new EnforceError("Permit verification failed (outcome=permit_consumed)", "verify-permit", allowDecision),
+    );
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("allow");
+    expect(outputs["verified"]).toBe("false");
+    expect(getConsoleLogs().some((l) => l.includes("Deploy blocked (fail-closed)"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Deprecated ::set-output is NOT emitted
 // ---------------------------------------------------------------------------
 
 describe("deprecated ::set-output command", () => {
   it("does not emit ::set-output:: workflow command on allow", async () => {
-    setInput("api-key", "ask_test_key");
-    setInput("action", "deploy.prod");
+    setApiKey();
+    setInput("action", "deployment.production");
 
     mockEnforce.mockResolvedValueOnce(makeAllowResult());
 

@@ -9,7 +9,7 @@ const mockPost = post as ReturnType<typeof vi.fn>;
 const BASE_CONFIG = {
   apiKey: "ask_test_key",
   apiUrl: "https://api.test",
-  action: "production_deploy",
+  action: "deployment.production",
   actor: "alice",
 };
 
@@ -95,7 +95,7 @@ describe("evaluate", () => {
   it("hits the correct endpoint", async () => {
     mockResponse(200, { decision: "allow" });
     await evaluate(BASE_CONFIG);
-    expect(mockPost.mock.calls[0][0]).toBe("https://api.test/v1/evaluate");
+    expect(mockPost.mock.calls[0][0]).toBe("https://api.test/v1-evaluate");
   });
 
   it("sends Authorization header with the api key", async () => {
@@ -109,6 +109,6 @@ describe("evaluate", () => {
   it("strips trailing slash from apiUrl", async () => {
     mockResponse(200, { decision: "allow" });
     await evaluate({ ...BASE_CONFIG, apiUrl: "https://api.test/" });
-    expect(mockPost.mock.calls[0][0]).toBe("https://api.test/v1/evaluate");
+    expect(mockPost.mock.calls[0][0]).toBe("https://api.test/v1-evaluate");
   });
 });

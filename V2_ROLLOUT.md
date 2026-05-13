@@ -14,7 +14,7 @@ The action is a *bundled* gate — it doesn't runtime-import `@atlasent/sdk`. v2
 |---|---|---|---|
 | B.AC1 | Pin `@atlasent/sdk@^2` for the new code paths | `package.json`, build pipeline | Stays bundled. |
 | B.AC2 | New `evaluations` list input — fan out via `evaluateMany` | `action.yml`, `src/inputs.ts`, `src/batch.ts` | Single `action.yml` input parser auto-detects single (`action:`) vs list (`evaluations:`). List wins when both. |
-| B.AC3 | Streaming-wait for `change_window` approvals | `src/stream.ts` | Consumes `/v1/evaluate/stream` SSE; falls back to 5s polling when `v2_streaming` flag is off. |
+| B.AC3 | Streaming-wait for `change_window` approvals | `src/stream.ts` | Consumes `/v1-evaluate/stream` SSE; falls back to 5s polling when `v2_streaming` flag is off. |
 | B.AC4 | Wire B.AC1–3 into `src/index.ts` main flow + `action.yml` inputs | `src/index.ts`, `action.yml` | Last; depends on input-shape sign-off in plan PR #15. |
 | B.AC5 | Default `auth-mode: oidc` in README example | `README.md` | Backward-compatible (`api-key` remains the default *input* value). |
 
@@ -24,10 +24,10 @@ Each item ships with a fallback path so the v2.0 code stays byte-identical until
 
 | Flag (from `atlasent-control-plane`) | Code path |
 |---|---|
-| `v2_batch=true` | `evaluateMany` → `POST /v1/evaluate/batch` |
-| `v2_batch=false` (default) | per-item loop on `/v1/evaluate` (today's behavior) |
+| `v2_batch=true` | `evaluateMany` → `POST /v1-evaluate/batch` |
+| `v2_batch=false` (default) | per-item loop on `/v1-evaluate` (today's behavior) |
 | `v2_streaming=true` | SSE consumer for `change_window` waits |
-| `v2_streaming=false` (default) | 5-second polling on `/v1/evaluate/:id` |
+| `v2_streaming=false` (default) | 5-second polling on `/v1-evaluate/:id` |
 
 ## Behavior conditioning layer
 
@@ -43,13 +43,13 @@ agent is CI infrastructure, not a wellness app. But:
 
 1. Plan PR #15 input-shape decision (single vs list, auto-detect)
 2. B.AC1–3 in flight as draft PR #16 (modules sit alongside v2.0 entry, not yet wired)
-3. B.AC4 wiring once API endpoints (`/v1/evaluate/batch`, `/v1/evaluate/stream`) are deployed (Waqas lane)
+3. B.AC4 wiring once API endpoints (`/v1-evaluate/batch`, `/v1-evaluate/stream`) are deployed (Waqas lane)
 4. v1.2.0 polish (target-id input + risk-score output, draft PR #17) lands FIRST so v2.1 stacks cleanly
 
 ## Cross-repo dependencies
 
 - **atlasent-sdk**: 2.x publish must precede B.AC1
-- **atlasent-api**: `/v1/evaluate/batch`, `/v1/evaluate/stream`, plus the `evaluations[].id` correlation field — all Waqas lane
+- **atlasent-api**: `/v1-evaluate/batch`, `/v1-evaluate/stream`, plus the `evaluations[].id` correlation field — all Waqas lane
 - **atlasent-control-plane**: `v2_batch` and `v2_streaming` per-tenant flags
 - **atlasent-examples**: `flows/01-deploy-gate` becomes the canonical example workflow; updated in `flows/00-golden-path` once v2.1 ships
 

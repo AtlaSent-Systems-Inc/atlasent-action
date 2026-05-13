@@ -124,21 +124,21 @@ describe("runPolicySync", () => {
 
   it("throws when bundle is not valid JSON", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
-    vi.mocked(fs.readFileSync).mockReturnValue("not-json" as unknown as Buffer);
+    vi.mocked(fs.readFileSync).mockReturnValue("not-json" as unknown as string);
     await expect(runPolicySync(BASE)).rejects.toThrow(/Failed to parse policy bundle/);
   });
 
   it("throws when bundle JSON is not an array", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify({ name: "x" }) as unknown as Buffer,
+      JSON.stringify({ name: "x" }) as unknown as string,
     );
     await expect(runPolicySync(BASE)).rejects.toThrow(/must be a JSON array/);
   });
 
   it("throws when bundle array is empty", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify([]) as unknown as Buffer);
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify([]) as unknown as string);
     await expect(runPolicySync(BASE)).rejects.toThrow(/empty/);
   });
 
@@ -147,7 +147,7 @@ describe("runPolicySync", () => {
   it("throws on network error (fetch rejects)", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify(BUNDLE) as unknown as Buffer,
+      JSON.stringify(BUNDLE) as unknown as string,
     );
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
     await expect(runPolicySync(BASE)).rejects.toThrow(/Network error/);
@@ -156,7 +156,7 @@ describe("runPolicySync", () => {
   it("throws on non-OK response with error detail in body", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify(BUNDLE) as unknown as Buffer,
+      JSON.stringify(BUNDLE) as unknown as string,
     );
     vi.stubGlobal(
       "fetch",
@@ -172,7 +172,7 @@ describe("runPolicySync", () => {
   it("throws on non-OK response when error body is unparseable", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify(BUNDLE) as unknown as Buffer,
+      JSON.stringify(BUNDLE) as unknown as string,
     );
     vi.stubGlobal(
       "fetch",
@@ -188,7 +188,7 @@ describe("runPolicySync", () => {
   it("throws when success response body is not valid JSON", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify(BUNDLE) as unknown as Buffer,
+      JSON.stringify(BUNDLE) as unknown as string,
     );
     vi.stubGlobal(
       "fetch",
@@ -206,7 +206,7 @@ describe("runPolicySync", () => {
   it("returns run, formatted diff, and rejected=false on completed", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify(BUNDLE) as unknown as Buffer,
+      JSON.stringify(BUNDLE) as unknown as string,
     );
     const run = makeRun({ policies_added: 2, policies_updated: 1 });
     vi.stubGlobal("fetch", stubFetch(run));
@@ -220,7 +220,7 @@ describe("runPolicySync", () => {
   it('sets rejected=true when status is "rejected"', async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify(BUNDLE) as unknown as Buffer,
+      JSON.stringify(BUNDLE) as unknown as string,
     );
     vi.stubGlobal("fetch", stubFetch(makeRun({ status: "rejected" })));
     const result = await runPolicySync(BASE);
@@ -230,7 +230,7 @@ describe("runPolicySync", () => {
   it('sets rejected=true when status is "failed"', async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify(BUNDLE) as unknown as Buffer,
+      JSON.stringify(BUNDLE) as unknown as string,
     );
     vi.stubGlobal("fetch", stubFetch(makeRun({ status: "failed" })));
     const result = await runPolicySync(BASE);
@@ -240,7 +240,7 @@ describe("runPolicySync", () => {
   it('sets rejected=false when status is "validating" (still in progress)', async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify(BUNDLE) as unknown as Buffer,
+      JSON.stringify(BUNDLE) as unknown as string,
     );
     vi.stubGlobal("fetch", stubFetch(makeRun({ status: "validating" })));
     const result = await runPolicySync(BASE);
@@ -252,7 +252,7 @@ describe("runPolicySync", () => {
   it("hits the correct URL, stripping trailing slash from apiUrl", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify(BUNDLE) as unknown as Buffer,
+      JSON.stringify(BUNDLE) as unknown as string,
     );
     const fetchMock = stubFetch(makeRun());
     vi.stubGlobal("fetch", fetchMock);
@@ -264,7 +264,7 @@ describe("runPolicySync", () => {
   it("sends Bearer Authorization header", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify(BUNDLE) as unknown as Buffer,
+      JSON.stringify(BUNDLE) as unknown as string,
     );
     const fetchMock = stubFetch(makeRun());
     vi.stubGlobal("fetch", fetchMock);
@@ -279,7 +279,7 @@ describe("runPolicySync", () => {
   it("sends dry_run=true in request body", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify(BUNDLE) as unknown as Buffer,
+      JSON.stringify(BUNDLE) as unknown as string,
     );
     const fetchMock = stubFetch(makeRun());
     vi.stubGlobal("fetch", fetchMock);
@@ -292,7 +292,7 @@ describe("runPolicySync", () => {
   it("sends dry_run=false in request body", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify(BUNDLE) as unknown as Buffer,
+      JSON.stringify(BUNDLE) as unknown as string,
     );
     const fetchMock = stubFetch(makeRun());
     vi.stubGlobal("fetch", fetchMock);
@@ -305,7 +305,7 @@ describe("runPolicySync", () => {
   it("sends source, commit_sha, and ref in request body", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify(BUNDLE) as unknown as Buffer,
+      JSON.stringify(BUNDLE) as unknown as string,
     );
     const fetchMock = stubFetch(makeRun());
     vi.stubGlobal("fetch", fetchMock);
@@ -326,7 +326,7 @@ describe("runPolicySync", () => {
   it("defaults source to 'github-action' when not provided", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify(BUNDLE) as unknown as Buffer,
+      JSON.stringify(BUNDLE) as unknown as string,
     );
     const fetchMock = stubFetch(makeRun());
     vi.stubGlobal("fetch", fetchMock);
@@ -339,7 +339,7 @@ describe("runPolicySync", () => {
   it("sends the full policy array from the bundle file", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify(BUNDLE) as unknown as Buffer,
+      JSON.stringify(BUNDLE) as unknown as string,
     );
     const fetchMock = stubFetch(makeRun());
     vi.stubGlobal("fetch", fetchMock);

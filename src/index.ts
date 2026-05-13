@@ -21,6 +21,28 @@ import {
 import type { FinancialAdvisoryInput } from "./financialGovernanceAdvisory";
 import { emitEvidenceEvent } from "./evidenceClient";
 
+
+const PROTECTED_ACTION = "deployment.production";
+
+function getApiKey(): string {
+  const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
+  if (!apiKey) {
+    setFailed("ATLASENT_API_KEY is required");
+  }
+  return apiKey;
+}
+
+function validateProtectedAction(actionType: string): void {
+  if (actionType !== PROTECTED_ACTION) {
+    setOutput("decision", "error");
+    setOutput("verified", "false");
+    setFailed(
+      `AtlaSent Gate: unsupported protected action "${actionType}". ` +
+        `Deploy Gate V1 only permits "${PROTECTED_ACTION}" (fail-closed).`,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // GitHub Actions helpers
 // ---------------------------------------------------------------------------
@@ -304,7 +326,7 @@ async function runPolicySyncStep(apiKey: string, apiUrl: string): Promise<void> 
 
 export async function run(): Promise<void> {
   // 1. Read shared inputs
-  const apiKey = getInput("api-key", true);
+  const apiKey = getApiKey();
   maskValue(apiKey);
 
   const apiUrl = getInput("api-url") || "https://api.atlasent.io";
@@ -330,7 +352,7 @@ export async function run(): Promise<void> {
     try {
       result = await runV21(
         {
-          "INPUT_API-KEY": apiKey,
+          ATLASENT_API_KEY: apiKey,
           "INPUT_API-URL": apiUrl,
           "INPUT_FAIL-ON-DENY": failOnDeny ? "true" : "false",
           INPUT_EVALUATIONS: evaluationsRaw,
@@ -390,6 +412,7 @@ export async function run(): Promise<void> {
 
   // ── Single-eval path via @atlasent/enforce ─────────────────────────────────
   const actionType = getInput("action", true);
+  validateProtectedAction(actionType);
   const actor = getInput("actor") || "unknown";
   const targetId = getInput("target-id") || undefined;
   const explicitEnv = getInput("environment");

@@ -10,7 +10,7 @@ const mockPost = post as ReturnType<typeof vi.fn>;
 const BASE_CONFIG = {
   apiKey: "ask_test_key",
   apiUrl: "https://api.test",
-  action: "production_deploy",
+  action: "deployment.production",
   actor: "alice",
 };
 
@@ -48,8 +48,8 @@ describe("enforce — contract invariants", () => {
     mockAllow();
     await enforce(BASE_CONFIG, vi.fn().mockResolvedValue(null));
     expect(mockPost).toHaveBeenCalledTimes(2);
-    expect(mockPost.mock.calls[0][0]).toBe("https://api.test/v1/evaluate");
-    expect(mockPost.mock.calls[1][0]).toBe("https://api.test/v1/verify-permit");
+    expect(mockPost.mock.calls[0][0]).toBe("https://api.test/v1-evaluate");
+    expect(mockPost.mock.calls[1][0]).toBe("https://api.test/v1-verify-permit");
   });
 
   it("fn never runs when evaluate throws (network failure)", async () => {

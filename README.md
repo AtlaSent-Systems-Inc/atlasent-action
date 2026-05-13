@@ -11,9 +11,10 @@ Push to main → AtlaSent evaluates → permit issued → deploy
 
 ```yaml
 - uses: AtlaSent-Systems-Inc/atlasent-action@v1
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
-    api-key: ${{ secrets.ATLASENT_API_KEY }}
-    action: production_deploy
+    action: deployment.production
     target-id: ${{ github.repository }}
 ```
 
@@ -23,9 +24,10 @@ Push to main → AtlaSent evaluates → permit issued → deploy
 - name: Authorization Gate
   id: gate
   uses: AtlaSent-Systems-Inc/atlasent-action@v1
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
-    api-key: ${{ secrets.ATLASENT_API_KEY }}
-    action: production_deploy
+    action: deployment.production
     actor: ${{ github.actor }}
     target-id: api-service
     environment: live
@@ -42,9 +44,10 @@ The action sets several outputs you can reference in subsequent steps.
 - name: Authorization Gate
   id: gate
   uses: AtlaSent-Systems-Inc/atlasent-action@v1
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
-    api-key: ${{ secrets.ATLASENT_API_KEY }}
-    action: production_deploy
+    action: deployment.production
     target-id: api-service
 
 - name: Deploy
@@ -80,8 +83,8 @@ The action sets several outputs you can reference in subsequent steps.
 
 | Input          | Required | Default                | Description                                             |
 |----------------|----------|------------------------|---------------------------------------------------------|
-| `api-key`      | Yes      | —                      | AtlaSent API key (`ask_live_*` or `ask_test_*`)         |
-| `action`       | Yes*     | —                      | Action type to evaluate (e.g. `production_deploy`). Ignored when `evaluations` is set. |
+| `ATLASENT_API_KEY` env | Yes | — | AtlaSent API key (`ask_live_*` or `ask_test_*`). This is the only required secret. |
+| `action`       | Yes*     | —                      | Action type to evaluate (e.g. `deployment.production`). Ignored when `evaluations` is set. |
 | `actor`        | No       | `${{ github.actor }}`  | Actor identity                                          |
 | `target-id`    | No       | —                      | Target resource being acted on (service, artifact, etc) |
 | `environment`  | No       | Auto-detected          | `live` for `main`/`master`, `test` otherwise            |
@@ -96,7 +99,7 @@ The action sets several outputs you can reference in subsequent steps.
 | `evaluations`      | No       | —         | JSON array of evaluation requests. When set, single-eval inputs are ignored. |
 | `wait-for-id`      | No       | —         | Evaluation ID to block on until it reaches a terminal state (allow/deny). |
 | `wait-timeout-ms`  | No       | `600000`  | Max milliseconds to wait for a terminal decision (default: 10 min). |
-| `v2-batch`         | No       | `false`   | Use the `/v1/evaluate/batch` endpoint instead of sequential loop.   |
+| `v2-batch`         | No       | `false`   | Use the `/v1-evaluate/batch` endpoint instead of sequential loop.   |
 | `v2-streaming`     | No       | `false`   | Use Server-Sent Events for `wait-for-id` polling instead of HTTP polling. |
 
 ## Streaming wait (v2.1)
@@ -105,9 +108,10 @@ For long-running approvals such as change-window gates, enable `v2-streaming` to
 
 ```yaml
 - uses: AtlaSent-Systems-Inc/atlasent-action@v1
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
-    api-key: ${{ secrets.ATLASENT_API_KEY }}
-    action: production_deploy
+    action: deployment.production
     actor: ${{ github.actor }}
     v2-streaming: 'true'
     wait-timeout-ms: '600000'
@@ -119,15 +123,16 @@ When `v2-streaming` is `false` (the default) the action falls back to 5-second H
 
 The `actor` input defaults to `${{ github.actor }}`, so no additional identity setup is needed. The action automatically embeds the GitHub username in the evaluation context sent to AtlaSent.
 
-> **No OIDC exchange.** The `api-key` is what authenticates the workflow against the AtlaSent API. The GitHub `actor` value is a string the action embeds in the evaluation context so policies can branch on human identity. If you want true OIDC trust between GitHub and AtlaSent (no long-lived API key), file a feature request — the wire today does not support it.
+> **No OIDC exchange.** `ATLASENT_API_KEY` is what authenticates the workflow against the AtlaSent API. The GitHub `actor` value is a string the action embeds in the evaluation context so policies can branch on human identity. If you want true OIDC trust between GitHub and AtlaSent (no long-lived API key), file a feature request — the wire today does not support it.
 
 To branch on GitHub identity, write your AtlaSent policy against the `actor` field directly (e.g. `actor == "github:octocat"` or `actor in team:"github:platform-eng"`).
 
 ```yaml
 - uses: AtlaSent-Systems-Inc/atlasent-action@v1
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
-    api-key: ${{ secrets.ATLASENT_API_KEY }}
-    action: production_deploy
+    action: deployment.production
     # actor defaults to ${{ github.actor }} — no extra config needed
 ```
 
@@ -139,12 +144,12 @@ Evaluate multiple actions in a single step:
 - name: Batch Authorization Gate
   id: gate
   uses: AtlaSent-Systems-Inc/atlasent-action@v1
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
-    api-key: ${{ secrets.ATLASENT_API_KEY }}
     evaluations: |
       [
-        {"action": "deploy.staging", "actor": "${{ github.actor }}"},
-        {"action": "deploy.prod",    "actor": "${{ github.actor }}"}
+        {"action": "deployment.production", "actor": "${{ github.actor }}", "environment": "live"}
       ]
 
 - name: Deploy
@@ -154,9 +159,9 @@ Evaluate multiple actions in a single step:
 
 ## How It Works
 
-1. **Evaluate** — POST `/v1/evaluate` with `action_type`, `actor_id`, `target_id`, and a context object populated from GitHub workflow metadata (repo, ref, sha, workflow, run id, PR number, optional user-supplied `context`).
+1. **Evaluate** — POST `/v1-evaluate` with `action_type`, `actor_id`, `target_id`, and a context object populated from GitHub workflow metadata (repo, ref, sha, workflow, run id, PR number, optional user-supplied `context`).
 2. **Decide** — Server returns `allow` / `deny` / `hold` / `escalate` plus a single-use `permit_token` (only when `allow`) and an optional `risk-score`.
-3. **Verify permit** — POST `/v1/verify-permit` to confirm the token hasn’t been replayed. `verified=true` only when both steps pass.
+3. **Verify permit** — POST `/v1-verify-permit` to confirm the token hasn’t been replayed. `verified=true` only when both steps pass.
 4. **Proceed or block** — `fail-on-deny: true` (default) surfaces deny/hold/escalate as a failing step. `false` demotes them to a workflow `::warning`.
 5. **Audit** — Every evaluation writes to the AtlaSent append-only, hash-chained audit log. The `evaluation-id` and `proof-hash` outputs reference the record.
 

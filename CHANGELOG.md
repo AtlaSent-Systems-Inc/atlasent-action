@@ -19,7 +19,7 @@ SemVer-1.0 promise.
   deployment step executes. Threads `actor`, `action`, `target-id`,
   `bundle-id`, `change_window`, `approvals`, and arbitrary `context`
   into the request.
-- **`verify-permit` step (A5)** — calls `POST /v1/verify-permit`
+- **`verify-permit` step (A5)** — calls `POST /v1-verify-permit`
   after evaluate returns `decision: allow`. Closes the audit record
   and confirms the permit hasn't been revoked or already consumed.
   `verified` output is `"true"` only when both gates pass; `"false"`
@@ -32,7 +32,7 @@ SemVer-1.0 promise.
   decision until the upstream approver flips it (SSE stream or
   polling fallback).
 - **`v2-batch` / `v2-streaming` flags** — opt in to
-  `/v1/evaluate/batch` and SSE streaming respectively.
+  `/v1-evaluate/batch` and SSE streaming respectively.
 
 ### Outputs
 

@@ -34,9 +34,10 @@ jobs:
       - name: AtlaSent authorization gate
         id: gate
         uses: ./
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
         with:
-          api-key: ${{ secrets.ATLASENT_API_KEY }}
-          action: production_deploy
+          action: deployment.production
           actor: ${{ github.actor }}
           environment: ${{ inputs.environment || 'prod' }}
           fail-on-deny: ${{ inputs.fail_on_deny == false && 'false' || 'true' }}

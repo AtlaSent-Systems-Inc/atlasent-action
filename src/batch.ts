@@ -1,7 +1,7 @@
 // Wave B.AC2 / B.AC4 — batch fan-out helper with per-decision verify-permit.
 //
 // When the per-tenant `v2Batch` flag is on, posts a single batch to
-// /v1/evaluate/batch. Otherwise, per-item /v1/evaluate loop. Either
+// /v1-evaluate/batch. Otherwise, per-item /v1-evaluate loop. Either
 // path then runs verify-permit for every allow decision, matching the
 // single-eval runGate() contract — the gate is fail-closed end-to-end.
 //
@@ -32,13 +32,13 @@ export async function evaluateMany(
   let batchId: string;
 
   if (v2Batch) {
-    const r = await fetch(`${apiUrl}/v1/evaluate/batch`, {
+    const r = await fetch(`${apiUrl}/v1-evaluate/batch`, {
       method: "POST",
       headers,
       body: JSON.stringify({ items }),
     });
     if (!r.ok) {
-      throw new Error(`atlasent /v1/evaluate/batch ${r.status}`);
+      throw new Error(`atlasent /v1-evaluate/batch ${r.status}`);
     }
     const data = (await r.json()) as {
       results: Decision[];
@@ -49,13 +49,13 @@ export async function evaluateMany(
   } else {
     decisions = [];
     for (const item of items) {
-      const r = await fetch(`${apiUrl}/v1/evaluate`, {
+      const r = await fetch(`${apiUrl}/v1-evaluate`, {
         method: "POST",
         headers,
         body: JSON.stringify(item),
       });
       if (!r.ok) {
-        throw new Error(`atlasent /v1/evaluate ${r.status}`);
+        throw new Error(`atlasent /v1-evaluate ${r.status}`);
       }
       decisions.push((await r.json()) as Decision);
     }

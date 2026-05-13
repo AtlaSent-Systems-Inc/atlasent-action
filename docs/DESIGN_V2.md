@@ -2,7 +2,7 @@
 
 ## Breaking Change
 
-`atlasent-action` v2 removes its bundled evaluator and calls `POST /v1/evaluate`
+`atlasent-action` v2 removes its bundled evaluator and calls `POST /v1-evaluate`
 on the AtlaSent API instead. This is a **major version bump** (v2 tag).
 
 ## New Inputs
@@ -10,8 +10,8 @@ on the AtlaSent API instead. This is a **major version bump** (v2 tag).
 | Input | Required | Description |
 |-------|----------|-------------|
 | `atlasent-api-url` | Yes | Base URL of your AtlaSent API (e.g. `https://api.atlasent.io`) |
-| `atlasent-api-key` | Yes | Org-scoped API key with `evaluation:execute` scope |
-| `action-id` | Yes | Action identifier to evaluate (e.g. `ci.production-deploy`) |
+| `ATLASENT_API_KEY` env | Yes | Org-scoped API key with `evaluation:execute` scope |
+| `action-id` | Yes | Action identifier to evaluate (e.g. `deployment.production`) |
 | `environment` | No | Target environment (default: `production`) |
 | `actor-id` | No | Actor ID (default: GitHub actor) |
 | `context` | No | JSON string of extra context |
@@ -28,10 +28,11 @@ on the AtlaSent API instead. This is a **major version bump** (v2 tag).
 
 ```yaml
 - uses: atlasent-systems-inc/atlasent-action@v2
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
     atlasent-api-url: ${{ vars.ATLASENT_API_URL }}
-    atlasent-api-key: ${{ secrets.ATLASENT_API_KEY }}
-    action-id: ci.production-deploy
+    action-id: deployment.production
     environment: production
     actor-id: ${{ github.actor }}
     context: |
@@ -68,8 +69,9 @@ If the decision is `deny`, the action fails the workflow step by default
 
 # v2
 - uses: atlasent-systems-inc/atlasent-action@v2
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
     atlasent-api-url: ${{ vars.ATLASENT_API_URL }}
-    atlasent-api-key: ${{ secrets.ATLASENT_API_KEY }}
-    action-id: ci.production-deploy
+    action-id: deployment.production
 ```

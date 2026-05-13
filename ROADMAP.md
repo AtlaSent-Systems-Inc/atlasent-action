@@ -50,7 +50,7 @@ GitHub Action that gates CI deploys on an AtlaSent `allow` decision. Distributed
 
 ## Cross-repo dependencies
 
-- **atlasent-api**: the `decision` enum (`allow|deny|hold|escalate`) and the `/v1/verify-permit` endpoint are on `main` and surfaced here.
+- **atlasent-api**: the `decision` enum (`allow|deny|hold|escalate`) and the `/v1-verify-permit` endpoint are on `main` and surfaced here.
 - **atlasent-sdk**: no longer a runtime dep — `@atlasent/enforce` is a workspace package bundled into `dist/index.js` at build time. The pre-v1.3.0 "pin SDK version" item is moot.
 - **atlasent-docs**: needs a "CI gate" page pointing at Marketplace.
 

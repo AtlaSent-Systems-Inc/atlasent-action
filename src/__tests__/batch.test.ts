@@ -27,7 +27,7 @@ describe("evaluateMany", () => {
     );
   }
 
-  it("hits /v1/evaluate/batch when v2Batch=true and verifies allow decisions", async () => {
+  it("hits /v1-evaluate/batch when v2Batch=true and verifies allow decisions", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -48,15 +48,15 @@ describe("evaluateMany", () => {
     expect(out.batchId).toBe("b1");
     expect(out.decisions[0].verified).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.test/v1/evaluate/batch",
+      "https://api.test/v1-evaluate/batch",
       expect.anything(),
     );
     expect(mockVerifyPermit).toHaveBeenCalledOnce();
   });
 
-  it("loops /v1/evaluate when v2Batch=false and verifies each allow decision", async () => {
+  it("loops /v1-evaluate when v2Batch=false and verifies each allow decision", async () => {
     fetchMock.mockImplementation((url: string) => {
-      if (url.endsWith("/v1/evaluate")) {
+      if (url.endsWith("/v1-evaluate")) {
         return Promise.resolve(evalResp("allow", "tok1"));
       }
       return Promise.reject(new Error(`unexpected url: ${url}`));
@@ -139,7 +139,7 @@ describe("evaluateMany", () => {
     await evaluateMany(
       "https://api.test",
       "api-key-123",
-      [{ action: "deploy.prod", actor: "alice" }],
+      [{ action: "deployment.production", actor: "alice" }],
       false,
     );
 
@@ -147,7 +147,7 @@ describe("evaluateMany", () => {
       expect.objectContaining({
         apiKey: "api-key-123",
         apiUrl: "https://api.test",
-        action: "deploy.prod",
+        action: "deployment.production",
         actor: "alice",
       }),
       expect.objectContaining({

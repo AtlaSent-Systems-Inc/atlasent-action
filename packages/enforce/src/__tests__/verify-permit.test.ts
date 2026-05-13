@@ -10,7 +10,7 @@ const mockPost = post as ReturnType<typeof vi.fn>;
 const BASE_CONFIG = {
   apiKey: "ask_test_key",
   apiUrl: "https://api.test",
-  action: "production_deploy",
+  action: "deployment.production",
   actor: "alice",
 };
 
@@ -40,7 +40,7 @@ describe("verifyPermit", () => {
   it("hits the correct verify-permit endpoint", async () => {
     mockResponse(200, { verified: true });
     await verifyPermit(BASE_CONFIG, ALLOW_DECISION);
-    expect(mockPost.mock.calls[0][0]).toBe("https://api.test/v1/verify-permit");
+    expect(mockPost.mock.calls[0][0]).toBe("https://api.test/v1-verify-permit");
   });
 
   it("sends permit_token + action_type + actor_id in body", async () => {
@@ -48,7 +48,7 @@ describe("verifyPermit", () => {
     await verifyPermit(BASE_CONFIG, ALLOW_DECISION);
     const body = JSON.parse(mockPost.mock.calls[0][1] as string) as Record<string, unknown>;
     expect(body.permit_token).toBe("pt-abc");
-    expect(body.action_type).toBe("production_deploy");
+    expect(body.action_type).toBe("deployment.production");
     expect(body.actor_id).toBe("alice");
   });
 
@@ -63,7 +63,7 @@ describe("verifyPermit", () => {
   it("strips trailing slash from apiUrl", async () => {
     mockResponse(200, { verified: true });
     await verifyPermit({ ...BASE_CONFIG, apiUrl: "https://api.test/" }, ALLOW_DECISION);
-    expect(mockPost.mock.calls[0][0]).toBe("https://api.test/v1/verify-permit");
+    expect(mockPost.mock.calls[0][0]).toBe("https://api.test/v1-verify-permit");
   });
 
   // ── No permit_token ─────────────────────────────────────────────────────────

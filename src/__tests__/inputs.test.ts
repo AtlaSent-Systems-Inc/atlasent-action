@@ -6,13 +6,13 @@ describe("parseInputs", () => {
 
   it("parses v2.0 single-input path", () => {
     const out = parseInputs({
-      "INPUT_API-KEY": "ask_test",
-      INPUT_ACTION: "production_deploy",
+      ATLASENT_API_KEY: "ask_test",
+      INPUT_ACTION: "deployment.production",
       GITHUB_ACTOR: "alice",
     });
     expect(out.evaluations).toBeUndefined();
     expect(out.policySync).toBeUndefined();
-    expect(out.single?.action).toBe("production_deploy");
+    expect(out.single?.action).toBe("deployment.production");
     expect(out.single?.actor).toBe("alice");
   });
 
@@ -20,22 +20,22 @@ describe("parseInputs", () => {
 
   it("parses v2.1 list-input path", () => {
     const out = parseInputs({
-      "INPUT_API-KEY": "ask_test",
+      ATLASENT_API_KEY: "ask_test",
       INPUT_EVALUATIONS: JSON.stringify([
-        { action: "deploy.staging", actor: "alice" },
-        { action: "deploy.prod", actor: "alice" },
+        { action: "deployment.production", actor: "alice" },
+        { action: "deployment.production", actor: "alice" },
       ]),
     });
     expect(out.evaluations).toHaveLength(2);
-    expect(out.evaluations?.[1].action).toBe("deploy.prod");
+    expect(out.evaluations?.[1].action).toBe("deployment.production");
     expect(out.policySync).toBeUndefined();
   });
 
   it("prefers list when both action and evaluations are set", () => {
     const out = parseInputs({
-      "INPUT_API-KEY": "ask_test",
+      ATLASENT_API_KEY: "ask_test",
       INPUT_ACTION: "ignored",
-      INPUT_EVALUATIONS: JSON.stringify([{ action: "deploy.prod", actor: "alice" }]),
+      INPUT_EVALUATIONS: JSON.stringify([{ action: "deployment.production", actor: "alice" }]),
     });
     expect(out.evaluations).toHaveLength(1);
     expect(out.single).toBeUndefined();
@@ -44,7 +44,7 @@ describe("parseInputs", () => {
   it("throws on empty list", () => {
     expect(() =>
       parseInputs({
-        "INPUT_API-KEY": "ask_test",
+        ATLASENT_API_KEY: "ask_test",
         INPUT_EVALUATIONS: "[]",
       }),
     ).toThrow(/non-empty/);
@@ -53,7 +53,7 @@ describe("parseInputs", () => {
   it("throws a clear error on invalid JSON in evaluations", () => {
     expect(() =>
       parseInputs({
-        "INPUT_API-KEY": "ask_test",
+        ATLASENT_API_KEY: "ask_test",
         INPUT_EVALUATIONS: "not-json",
       }),
     ).toThrow(/not valid JSON/);
@@ -62,24 +62,42 @@ describe("parseInputs", () => {
   it("throws a clear error on invalid JSON in context", () => {
     expect(() =>
       parseInputs({
-        "INPUT_API-KEY": "ask_test",
-        INPUT_ACTION: "deploy",
+        ATLASENT_API_KEY: "ask_test",
+        INPUT_ACTION: "deployment.production",
         INPUT_CONTEXT: "{bad json}",
       }),
     ).toThrow(/not valid JSON/);
   });
 
   it("throws when neither single nor list is set", () => {
-    expect(() => parseInputs({ "INPUT_API-KEY": "ask_test" })).toThrow(
+    expect(() => parseInputs({ ATLASENT_API_KEY: "ask_test" })).toThrow(
       /Missing required input: action/,
     );
+  });
+
+  it("accepts ATLASENT_API_KEY as the required secret", () => {
+    const out = parseInputs({
+      ATLASENT_API_KEY: "ask_test_env",
+      INPUT_ACTION: "deployment.production",
+      GITHUB_ACTOR: "alice",
+    });
+    expect(out.apiKey).toBe("ask_test_env");
+  });
+
+  it("throws on wrong protected action", () => {
+    expect(() =>
+      parseInputs({
+        ATLASENT_API_KEY: "ask_test_env",
+        INPUT_ACTION: "deploy.staging",
+      }),
+    ).toThrow(/deployment\.production/);
   });
 
   // ── Policy sync path ─────────────────────────────────────────────────
 
   it("parses policy sync mode with defaults", () => {
     const out = parseInputs({
-      "INPUT_API-KEY": "ask_test",
+      ATLASENT_API_KEY: "ask_test",
       "INPUT_POLICY-SYNC": "true",
       "INPUT_POLICY-BUNDLE": "policies/bundle.json",
     });
@@ -93,7 +111,7 @@ describe("parseInputs", () => {
 
   it("parses policy-dry-run=false", () => {
     const out = parseInputs({
-      "INPUT_API-KEY": "ask_test",
+      ATLASENT_API_KEY: "ask_test",
       "INPUT_POLICY-SYNC": "true",
       "INPUT_POLICY-BUNDLE": "policies/bundle.json",
       "INPUT_POLICY-DRY-RUN": "false",
@@ -103,7 +121,7 @@ describe("parseInputs", () => {
 
   it("parses policy-dry-run=true explicitly", () => {
     const out = parseInputs({
-      "INPUT_API-KEY": "ask_test",
+      ATLASENT_API_KEY: "ask_test",
       "INPUT_POLICY-SYNC": "true",
       "INPUT_POLICY-BUNDLE": "policies/bundle.json",
       "INPUT_POLICY-DRY-RUN": "true",
@@ -113,7 +131,7 @@ describe("parseInputs", () => {
 
   it("parses policy-source", () => {
     const out = parseInputs({
-      "INPUT_API-KEY": "ask_test",
+      ATLASENT_API_KEY: "ask_test",
       "INPUT_POLICY-SYNC": "true",
       "INPUT_POLICY-BUNDLE": "policies/bundle.json",
       "INPUT_POLICY-SOURCE": "ci-pipeline",
@@ -124,7 +142,7 @@ describe("parseInputs", () => {
   it("throws when policy-sync=true but policy-bundle is missing", () => {
     expect(() =>
       parseInputs({
-        "INPUT_API-KEY": "ask_test",
+        ATLASENT_API_KEY: "ask_test",
         "INPUT_POLICY-SYNC": "true",
       }),
     ).toThrow(/policy-bundle.*required/);
@@ -132,7 +150,7 @@ describe("parseInputs", () => {
 
   it("policy-sync=true takes priority over evaluations", () => {
     const out = parseInputs({
-      "INPUT_API-KEY": "ask_test",
+      ATLASENT_API_KEY: "ask_test",
       "INPUT_POLICY-SYNC": "true",
       "INPUT_POLICY-BUNDLE": "policies/bundle.json",
       INPUT_EVALUATIONS: JSON.stringify([{ action: "deploy", actor: "alice" }]),
@@ -143,10 +161,10 @@ describe("parseInputs", () => {
 
   it("policy-sync=true takes priority over single action", () => {
     const out = parseInputs({
-      "INPUT_API-KEY": "ask_test",
+      ATLASENT_API_KEY: "ask_test",
       "INPUT_POLICY-SYNC": "true",
       "INPUT_POLICY-BUNDLE": "policies/bundle.json",
-      INPUT_ACTION: "production_deploy",
+      INPUT_ACTION: "deployment.production",
     });
     expect(out.policySync).toBeDefined();
     expect(out.single).toBeUndefined();
@@ -154,12 +172,12 @@ describe("parseInputs", () => {
 
   it("policy-sync=false falls through to normal routing", () => {
     const out = parseInputs({
-      "INPUT_API-KEY": "ask_test",
+      ATLASENT_API_KEY: "ask_test",
       "INPUT_POLICY-SYNC": "false",
-      INPUT_ACTION: "production_deploy",
+      INPUT_ACTION: "deployment.production",
       GITHUB_ACTOR: "alice",
     });
     expect(out.policySync).toBeUndefined();
-    expect(out.single?.action).toBe("production_deploy");
+    expect(out.single?.action).toBe("deployment.production");
   });
 });

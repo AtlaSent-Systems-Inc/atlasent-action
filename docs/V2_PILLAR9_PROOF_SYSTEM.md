@@ -48,9 +48,10 @@ Example workflow:
 ```yaml
 - uses: atlasent-systems/atlasent-action@v2
   id: gate
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_KEY }}
   with:
-    action: deploy_to_production
-    api-key: ${{ secrets.ATLASENT_KEY }}
+    action: deployment.production
     payload-fields: |
       environment=production
       approver=${{ github.actor }}

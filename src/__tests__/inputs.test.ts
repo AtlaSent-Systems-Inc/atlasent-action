@@ -7,12 +7,12 @@ describe("parseInputs", () => {
   it("parses v2.0 single-input path", () => {
     const out = parseInputs({
       ATLASENT_API_KEY: "ask_test",
-      INPUT_ACTION: "deployment.production",
+      INPUT_ACTION: "production.deploy",
       GITHUB_ACTOR: "alice",
     });
     expect(out.evaluations).toBeUndefined();
     expect(out.policySync).toBeUndefined();
-    expect(out.single?.action).toBe("deployment.production");
+    expect(out.single?.action).toBe("production.deploy");
     expect(out.single?.actor).toBe("alice");
   });
 
@@ -22,12 +22,12 @@ describe("parseInputs", () => {
     const out = parseInputs({
       ATLASENT_API_KEY: "ask_test",
       INPUT_EVALUATIONS: JSON.stringify([
-        { action: "deployment.production", actor: "alice" },
-        { action: "deployment.production", actor: "alice" },
+        { action: "production.deploy", actor: "alice" },
+        { action: "production.deploy", actor: "alice" },
       ]),
     });
     expect(out.evaluations).toHaveLength(2);
-    expect(out.evaluations?.[1].action).toBe("deployment.production");
+    expect(out.evaluations?.[1].action).toBe("production.deploy");
     expect(out.policySync).toBeUndefined();
   });
 
@@ -35,7 +35,7 @@ describe("parseInputs", () => {
     const out = parseInputs({
       ATLASENT_API_KEY: "ask_test",
       INPUT_ACTION: "ignored",
-      INPUT_EVALUATIONS: JSON.stringify([{ action: "deployment.production", actor: "alice" }]),
+      INPUT_EVALUATIONS: JSON.stringify([{ action: "production.deploy", actor: "alice" }]),
     });
     expect(out.evaluations).toHaveLength(1);
     expect(out.single).toBeUndefined();
@@ -63,7 +63,7 @@ describe("parseInputs", () => {
     expect(() =>
       parseInputs({
         ATLASENT_API_KEY: "ask_test",
-        INPUT_ACTION: "deployment.production",
+        INPUT_ACTION: "production.deploy",
         INPUT_CONTEXT: "{bad json}",
       }),
     ).toThrow(/not valid JSON/);
@@ -78,7 +78,7 @@ describe("parseInputs", () => {
   it("accepts ATLASENT_API_KEY as the required secret", () => {
     const out = parseInputs({
       ATLASENT_API_KEY: "ask_test_env",
-      INPUT_ACTION: "deployment.production",
+      INPUT_ACTION: "production.deploy",
       GITHUB_ACTOR: "alice",
     });
     expect(out.apiKey).toBe("ask_test_env");
@@ -90,7 +90,7 @@ describe("parseInputs", () => {
         ATLASENT_API_KEY: "ask_test_env",
         INPUT_ACTION: "deploy.staging",
       }),
-    ).toThrow(/deployment\.production/);
+    ).toThrow(/production\.deploy/);
   });
 
   // ── Policy sync path ─────────────────────────────────────────────────
@@ -164,7 +164,7 @@ describe("parseInputs", () => {
       ATLASENT_API_KEY: "ask_test",
       "INPUT_POLICY-SYNC": "true",
       "INPUT_POLICY-BUNDLE": "policies/bundle.json",
-      INPUT_ACTION: "deployment.production",
+      INPUT_ACTION: "production.deploy",
     });
     expect(out.policySync).toBeDefined();
     expect(out.single).toBeUndefined();
@@ -174,10 +174,10 @@ describe("parseInputs", () => {
     const out = parseInputs({
       ATLASENT_API_KEY: "ask_test",
       "INPUT_POLICY-SYNC": "false",
-      INPUT_ACTION: "deployment.production",
+      INPUT_ACTION: "production.deploy",
       GITHUB_ACTOR: "alice",
     });
     expect(out.policySync).toBeUndefined();
-    expect(out.single?.action).toBe("deployment.production");
+    expect(out.single?.action).toBe("production.deploy");
   });
 });

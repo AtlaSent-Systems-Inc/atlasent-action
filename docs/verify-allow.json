@@ -8,7 +8,7 @@
   "permit_age_seconds": 12,
   "metadata": {
     "agent": "github-actions",
-    "action": "deployment.production",
+    "action": "production.deploy",
     "actor": "deploy-engineer",
     "environment": "prod",
     "original_decision_id": "eval_9f8e7d6c5b4a3210",

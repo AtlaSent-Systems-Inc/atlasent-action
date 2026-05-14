@@ -44,7 +44,7 @@ describe("emitBatchEvidence", () => {
       allowVerified("eval-1", "permit-1"),
       allowVerified("eval-2", "permit-2"),
     ];
-    const items = [item("deployment.production", "live"), item("rotate.key", "test")];
+    const items = [item("production.deploy", "live"), item("rotate.key", "test")];
 
     await emitBatchEvidence(decisions, items, cfg, noopLog);
 
@@ -62,7 +62,7 @@ describe("emitBatchEvidence", () => {
     expect((firstCall[1] as { metadata: Record<string, unknown> }).metadata)
       .toMatchObject({
         source: "github-action-batch",
-        action: "deployment.production",
+        action: "production.deploy",
         actor: "github:tester",
       });
   });
@@ -76,7 +76,7 @@ describe("emitBatchEvidence", () => {
     });
 
     const decisions: Decision[] = [allowVerified("eval-1", "permit-1")];
-    const items = [item("deployment.production", "live")];
+    const items = [item("production.deploy", "live")];
 
     // Must not reject. If it did, the action would crash at this point and
     // the build outcome would be wrong.
@@ -91,7 +91,7 @@ describe("emitBatchEvidence", () => {
     });
     const log = { info: vi.fn(), warning: vi.fn() };
     const decisions: Decision[] = [allowVerified("eval-1", "permit-1")];
-    const items = [item("deployment.production", "live")];
+    const items = [item("production.deploy", "live")];
 
     await emitBatchEvidence(decisions, items, cfg, log);
 

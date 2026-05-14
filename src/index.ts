@@ -22,7 +22,7 @@ import type { FinancialAdvisoryInput } from "./financialGovernanceAdvisory";
 import { emitEvidenceEvent } from "./evidenceClient";
 
 
-const PROTECTED_ACTION = "deployment.production";
+const PROTECTED_ACTION = "production.deploy";
 
 function getApiKey(): string {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();

@@ -11,7 +11,7 @@ on the AtlaSent API instead. This is a **major version bump** (v2 tag).
 |-------|----------|-------------|
 | `atlasent-api-url` | Yes | Base URL of your AtlaSent API (e.g. `https://api.atlasent.io`) |
 | `ATLASENT_API_KEY` env | Yes | Org-scoped API key with `evaluation:execute` scope |
-| `action-id` | Yes | Action identifier to evaluate (e.g. `deployment.production`) |
+| `action-id` | Yes | Action identifier to evaluate (e.g. `production.deploy`) |
 | `environment` | No | Target environment (default: `production`) |
 | `actor-id` | No | Actor ID (default: GitHub actor) |
 | `context` | No | JSON string of extra context |
@@ -32,7 +32,7 @@ on the AtlaSent API instead. This is a **major version bump** (v2 tag).
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
     atlasent-api-url: ${{ vars.ATLASENT_API_URL }}
-    action-id: deployment.production
+    action-id: production.deploy
     environment: production
     actor-id: ${{ github.actor }}
     context: |
@@ -73,5 +73,5 @@ If the decision is `deny`, the action fails the workflow step by default
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
     atlasent-api-url: ${{ vars.ATLASENT_API_URL }}
-    action-id: deployment.production
+    action-id: production.deploy
 ```

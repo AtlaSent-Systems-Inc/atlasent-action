@@ -5,7 +5,7 @@ branding:
   color: 'green'
 inputs:
   action:
-    description: 'Action type to evaluate (e.g., deployment.production). Used for single-eval path. Ignored when evaluations or policy-sync is set.'
+    description: 'Action type to evaluate (e.g., production.deploy). Used for single-eval path. Ignored when evaluations or policy-sync is set.'
     required: false
   actor:
     description: 'Actor identity (defaults to github.actor). Used for single-eval path.'
@@ -30,7 +30,7 @@ inputs:
     required: false
     default: '{}'
   evaluations:
-    description: 'JSON array of evaluation requests for batch mode, e.g. [{"action":"deployment.production","actor":"alice"}]. When set, single-eval inputs (action, actor, context) are ignored.'
+    description: 'JSON array of evaluation requests for batch mode, e.g. [{"action":"production.deploy","actor":"alice"}]. When set, single-eval inputs (action, actor, context) are ignored.'
     required: false
   wait-for-id:
     description: 'Evaluation ID to block on until it reaches a terminal state (allow/deny). Used with hold/escalate decisions that require async approval.'

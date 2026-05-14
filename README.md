@@ -14,7 +14,7 @@ Push to main → AtlaSent evaluates → permit issued → deploy
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
-    action: deployment.production
+    action: production.deploy
     target-id: ${{ github.repository }}
 ```
 
@@ -27,7 +27,7 @@ Push to main → AtlaSent evaluates → permit issued → deploy
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
-    action: deployment.production
+    action: production.deploy
     actor: ${{ github.actor }}
     target-id: api-service
     environment: live
@@ -47,7 +47,7 @@ The action sets several outputs you can reference in subsequent steps.
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
-    action: deployment.production
+    action: production.deploy
     target-id: api-service
 
 - name: Deploy
@@ -84,7 +84,7 @@ The action sets several outputs you can reference in subsequent steps.
 | Input          | Required | Default                | Description                                             |
 |----------------|----------|------------------------|---------------------------------------------------------|
 | `ATLASENT_API_KEY` env | Yes | — | AtlaSent API key (`ask_live_*` or `ask_test_*`). This is the only required secret. |
-| `action`       | Yes*     | —                      | Action type to evaluate (e.g. `deployment.production`). Ignored when `evaluations` is set. |
+| `action`       | Yes*     | —                      | Action type to evaluate (e.g. `production.deploy`). Ignored when `evaluations` is set. |
 | `actor`        | No       | `${{ github.actor }}`  | Actor identity                                          |
 | `target-id`    | No       | —                      | Target resource being acted on (service, artifact, etc) |
 | `environment`  | No       | Auto-detected          | `live` for `main`/`master`, `test` otherwise            |
@@ -111,7 +111,7 @@ For long-running approvals such as change-window gates, enable `v2-streaming` to
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
-    action: deployment.production
+    action: production.deploy
     actor: ${{ github.actor }}
     v2-streaming: 'true'
     wait-timeout-ms: '600000'
@@ -132,7 +132,7 @@ To branch on GitHub identity, write your AtlaSent policy against the `actor` fie
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
-    action: deployment.production
+    action: production.deploy
     # actor defaults to ${{ github.actor }} — no extra config needed
 ```
 
@@ -149,7 +149,7 @@ Evaluate multiple actions in a single step:
   with:
     evaluations: |
       [
-        {"action": "deployment.production", "actor": "${{ github.actor }}", "environment": "live"}
+        {"action": "production.deploy", "actor": "${{ github.actor }}", "environment": "live"}
       ]
 
 - name: Deploy

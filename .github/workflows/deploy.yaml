@@ -37,7 +37,7 @@ jobs:
         env:
           ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
         with:
-          action: deployment.production
+          action: production.deploy
           actor: ${{ github.actor }}
           environment: ${{ inputs.environment || 'prod' }}
           fail-on-deny: ${{ inputs.fail_on_deny == false && 'false' || 'true' }}

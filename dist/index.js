@@ -294,7 +294,7 @@ async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
 }
 
 // src/inputs.ts
-var PROTECTED_ACTION = "deployment.production";
+var PROTECTED_ACTION = "production.deploy";
 function parseInputs(env) {
   const apiKey = required(env, "ATLASENT_API_KEY");
   const apiUrl = env["INPUT_API-URL"] || "https://api.atlasent.io";
@@ -735,7 +735,7 @@ function assessFinancialGovernance(input) {
 }
 
 // src/index.ts
-var PROTECTED_ACTION2 = "deployment.production";
+var PROTECTED_ACTION2 = "production.deploy";
 function getApiKey() {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
   if (!apiKey) {

@@ -37,7 +37,7 @@ v1 adds three new outputs:
   with:
     atlasent_api_key: ${{ secrets.ATLASENT_API_KEY }}
     atlasent_anon_key: ${{ secrets.ATLASENT_ANON_KEY }}
-    action: deployment.production
+    action: production.deploy
     environment: production
 
 # ... your deploy steps ...

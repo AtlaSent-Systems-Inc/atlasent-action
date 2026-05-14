@@ -51,7 +51,7 @@ Example workflow:
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_KEY }}
   with:
-    action: deployment.production
+    action: production.deploy
     payload-fields: |
       environment=production
       approver=${{ github.actor }}

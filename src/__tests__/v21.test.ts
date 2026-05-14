@@ -22,7 +22,7 @@ const BASE_ENV = {
   ATLASENT_API_KEY: "ask_test_key",
   "INPUT_API-URL": "https://api.test",
   "INPUT_FAIL-ON-DENY": "true",
-  INPUT_EVALUATIONS: JSON.stringify([{ action: "deployment.production", actor: "alice" }]),
+  INPUT_EVALUATIONS: JSON.stringify([{ action: "production.deploy", actor: "alice" }]),
   "INPUT_WAIT-TIMEOUT-MS": "30000",
 };
 
@@ -52,7 +52,7 @@ it("passes items and flags through to evaluateMany", async () => {
   expect(mockEvaluateMany).toHaveBeenCalledWith(
     "https://api.test",
     "ask_test_key",
-    [{ action: "deployment.production", actor: "alice" }],
+    [{ action: "production.deploy", actor: "alice" }],
     true,
   );
 });
@@ -60,13 +60,13 @@ it("passes items and flags through to evaluateMany", async () => {
 it("wraps single action/actor into a 1-item batch", async () => {
   mockEvaluateMany.mockResolvedValueOnce({ decisions: [decision("allow")], batchId: "b1" });
   await runV21(
-    { ATLASENT_API_KEY: "ask_test_key", INPUT_ACTION: "deployment.production", INPUT_ACTOR: "bob" },
+    { ATLASENT_API_KEY: "ask_test_key", INPUT_ACTION: "production.deploy", INPUT_ACTOR: "bob" },
     FLAGS,
   );
   expect(mockEvaluateMany).toHaveBeenCalledWith(
     "https://api.atlasent.io",
     "ask_test_key",
-    [expect.objectContaining({ action: "deployment.production", actor: "bob" })],
+    [expect.objectContaining({ action: "production.deploy", actor: "bob" })],
     false,
   );
 });
@@ -154,7 +154,7 @@ it("verifies terminal allow from wait-for-id with correct permit params", async 
     expect.objectContaining({
       apiKey: "ask_test_key",
       apiUrl: "https://api.test",
-      action: "deployment.production",
+      action: "production.deploy",
       actor: "alice",
     }),
     expect.objectContaining({

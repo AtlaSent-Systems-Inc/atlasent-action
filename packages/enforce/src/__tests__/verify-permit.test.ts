@@ -10,7 +10,7 @@ const mockPost = post as ReturnType<typeof vi.fn>;
 const BASE_CONFIG = {
   apiKey: "ask_test_key",
   apiUrl: "https://api.test",
-  action: "deployment.production",
+  action: "production.deploy",
   actor: "alice",
 };
 
@@ -48,7 +48,7 @@ describe("verifyPermit", () => {
     await verifyPermit(BASE_CONFIG, ALLOW_DECISION);
     const body = JSON.parse(mockPost.mock.calls[0][1] as string) as Record<string, unknown>;
     expect(body.permit_token).toBe("pt-abc");
-    expect(body.action_type).toBe("deployment.production");
+    expect(body.action_type).toBe("production.deploy");
     expect(body.actor_id).toBe("alice");
   });
 

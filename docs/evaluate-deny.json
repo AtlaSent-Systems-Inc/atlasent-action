@@ -24,7 +24,7 @@
   ],
   "metadata": {
     "agent": "github-actions",
-    "action": "deployment.production",
+    "action": "production.deploy",
     "actor": "deploy-engineer",
     "environment": "prod",
     "approvals": 0,

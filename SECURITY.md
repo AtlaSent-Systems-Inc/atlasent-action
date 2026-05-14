@@ -67,7 +67,7 @@ We follow [responsible disclosure](https://cheatsheetseries.owasp.org/cheatsheet
 - uses: atlasent-systems-inc/atlasent-action@v1  # pin to SHA in production
   with:
     api-key: ${{ secrets.ATLASENT_API_KEY }}
-    action: deployment.production
+    action: production.deploy
     actor: ${{ github.actor }}
     target-id: ${{ github.repository }}
 ```

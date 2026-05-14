@@ -139,7 +139,7 @@ describe("evaluateMany", () => {
     await evaluateMany(
       "https://api.test",
       "api-key-123",
-      [{ action: "deployment.production", actor: "alice" }],
+      [{ action: "production.deploy", actor: "alice" }],
       false,
     );
 
@@ -147,7 +147,7 @@ describe("evaluateMany", () => {
       expect.objectContaining({
         apiKey: "api-key-123",
         apiUrl: "https://api.test",
-        action: "deployment.production",
+        action: "production.deploy",
         actor: "alice",
       }),
       expect.objectContaining({

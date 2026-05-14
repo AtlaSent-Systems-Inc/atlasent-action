@@ -10,7 +10,7 @@ const mockPost = post as ReturnType<typeof vi.fn>;
 const BASE_CONFIG = {
   apiKey: "ask_test_key",
   apiUrl: "https://api.test",
-  action: "deployment.production",
+  action: "production.deploy",
   actor: "alice",
 };
 

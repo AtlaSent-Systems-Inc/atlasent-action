@@ -13,7 +13,7 @@ This release aligns the public release notes with the shipped `action.yml` contr
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
-    action: deployment.production
+    action: production.deploy
     actor: ${{ github.actor }}
     context: '{"repo":"${{ github.repository }}"}'
 ```

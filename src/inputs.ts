@@ -10,7 +10,7 @@
 
 import type { EvaluateRequest } from "./types";
 
-export const PROTECTED_ACTION = "deployment.production";
+export const PROTECTED_ACTION = "production.deploy";
 
 export interface ActionInputs {
   apiKey: string;

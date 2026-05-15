@@ -93,6 +93,30 @@ describe("parseInputs", () => {
     ).toThrow(/production\.deploy/);
   });
 
+  // ── V1 alias-window tolerance ───────────────────────────────────────
+
+  it("accepts the legacy deployment.production alias and normalizes single-eval to canonical", () => {
+    const out = parseInputs({
+      ATLASENT_API_KEY: "ask_test",
+      INPUT_ACTION: "deployment.production",
+      GITHUB_ACTOR: "alice",
+    });
+    expect(out.single?.action).toBe("production.deploy");
+  });
+
+  it("accepts the legacy alias inside batch evaluations and rewrites every item to canonical", () => {
+    const out = parseInputs({
+      ATLASENT_API_KEY: "ask_test",
+      INPUT_EVALUATIONS: JSON.stringify([
+        { action: "deployment.production", actor: "alice" },
+        { action: "production.deploy", actor: "bob" },
+      ]),
+    });
+    expect(out.evaluations).toHaveLength(2);
+    expect(out.evaluations?.[0].action).toBe("production.deploy");
+    expect(out.evaluations?.[1].action).toBe("production.deploy");
+  });
+
   // ── Policy sync path ─────────────────────────────────────────────────
 
   it("parses policy sync mode with defaults", () => {

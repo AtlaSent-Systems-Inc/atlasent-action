@@ -20,9 +20,11 @@ import {
 } from "./financialGovernanceAdvisory";
 import type { FinancialAdvisoryInput } from "./financialGovernanceAdvisory";
 import { emitEvidenceEvent } from "./evidenceClient";
-
-
-const PROTECTED_ACTION = "production.deploy";
+import {
+  LEGACY_PRODUCTION_DEPLOY_ALIAS,
+  PRODUCTION_DEPLOY_ACTION,
+  normalizeProtectedAction,
+} from "./canonicalAction";
 
 function getApiKey(): string {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -32,15 +34,28 @@ function getApiKey(): string {
   return apiKey;
 }
 
-function validateProtectedAction(actionType: string): void {
-  if (actionType !== PROTECTED_ACTION) {
+/**
+ * Normalize the workflow-supplied `action` input to the canonical
+ * Deploy Gate V1 string. Legacy alias `deployment.production` is
+ * accepted and rewritten to `production.deploy`. Anything else
+ * fails closed with `decision=error`.
+ *
+ * Returns the canonical string for downstream use. Callers should
+ * use the returned value, NOT the raw input, so every downstream
+ * surface (evaluate body, GH outputs, audit) carries the canonical.
+ */
+function normalizeAndValidateProtectedAction(actionType: string): string {
+  const { canonical } = normalizeProtectedAction(actionType);
+  if (canonical !== PRODUCTION_DEPLOY_ACTION) {
     setOutput("decision", "error");
     setOutput("verified", "false");
     setFailed(
       `AtlaSent Gate: unsupported protected action "${actionType}". ` +
-        `Deploy Gate V1 only permits "${PROTECTED_ACTION}" (fail-closed).`,
+        `Deploy Gate V1 only permits "${PRODUCTION_DEPLOY_ACTION}" ` +
+        `(legacy alias "${LEGACY_PRODUCTION_DEPLOY_ALIAS}" is accepted during the V1 alias window).`,
     );
   }
+  return canonical;
 }
 
 // ---------------------------------------------------------------------------
@@ -411,8 +426,12 @@ export async function run(): Promise<void> {
   }
 
   // ── Single-eval path via @atlasent/enforce ─────────────────────────────────
-  const actionType = getInput("action", true);
-  validateProtectedAction(actionType);
+  // Normalize the raw input to the canonical (`production.deploy`) before
+  // any downstream use. Legacy callers passing `deployment.production`
+  // continue to work; the evaluate body, GH outputs, and audit context
+  // all carry the canonical string from here on.
+  const rawActionType = getInput("action", true);
+  const actionType = normalizeAndValidateProtectedAction(rawActionType);
   const actor = getInput("actor") || "unknown";
   const targetId = getInput("target-id") || undefined;
   const explicitEnv = getInput("environment");

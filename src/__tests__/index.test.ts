@@ -190,6 +190,26 @@ describe("allow response", () => {
     expect(outputs["verified"]).toBe("true");
   });
 
+  it("accepts the legacy deployment.production alias and forwards the canonical to enforce()", async () => {
+    setApiKey();
+    setInput("action", "deployment.production");
+
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    expect(getExitCalls()).toHaveLength(0);
+    // The first call's first argument is the EnforceConfig. Its `action`
+    // field must be the canonical, not the legacy alias the caller sent.
+    const calls = (mockEnforce as unknown as { mock: { calls: Array<Array<unknown>> } }).mock.calls;
+    expect(calls).toHaveLength(1);
+    const enforceConfig = calls[0][0] as { action: string };
+    expect(enforceConfig.action).toBe("production.deploy");
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("allow");
+    expect(outputs["verified"]).toBe("true");
+  });
+
   it("sets permit-token, evaluation-id, proof-hash, risk-score outputs on allow", async () => {
     setApiKey();
     setInput("action", "production.deploy");

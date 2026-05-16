@@ -9,8 +9,16 @@
 // Existing single-eval workflows continue to work unchanged.
 
 import type { EvaluateRequest } from "./types";
+import {
+  PRODUCTION_DEPLOY_ACTION,
+  assertProtectedAction,
+  normalizeProtectedAction,
+} from "./canonicalAction";
 
-export const PROTECTED_ACTION = "production.deploy";
+// Re-exported for backward compatibility with consumers (and tests) that
+// imported `PROTECTED_ACTION` from this module before the canonical
+// helper was extracted into ./canonicalAction.
+export const PROTECTED_ACTION = PRODUCTION_DEPLOY_ACTION;
 
 export interface ActionInputs {
   apiKey: string;
@@ -71,8 +79,13 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
       );
     }
     const evaluations = parsed as EvaluateRequest[];
+    // Validate each item, then rewrite the action field to canonical so
+    // downstream call sites (and the batch endpoint) always see
+    // `production.deploy` on the wire — even when the workflow author
+    // passed the legacy alias.
     for (const item of evaluations) {
-      validateProtectedAction(item.action);
+      assertProtectedAction(item.action);
+      item.action = normalizeProtectedAction(item.action).canonical;
     }
     return {
       apiKey,
@@ -85,8 +98,14 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
   }
 
   // ── Single-eval mode (v2.0 fallback) ────────────────────────────────────────
-  const action = required(env, "INPUT_ACTION");
-  validateProtectedAction(action);
+  const rawAction = required(env, "INPUT_ACTION");
+  assertProtectedAction(rawAction);
+  // Normalize before forwarding: callers that pass the legacy alias
+  // (`deployment.production`) get rewritten to the canonical
+  // (`production.deploy`) here, so every downstream surface — the
+  // evaluate POST body, GH Actions outputs, audit logs — carries the
+  // canonical string.
+  const action = normalizeProtectedAction(rawAction).canonical;
   const actor = env["INPUT_ACTOR"] || env["GITHUB_ACTOR"] || "unknown";
   const environment = env["INPUT_ENVIRONMENT"];
   const contextRaw = env["INPUT_CONTEXT"] || "{}";
@@ -119,10 +138,3 @@ function required(env: Record<string, string | undefined>, key: string): string 
   return v;
 }
 
-function validateProtectedAction(action: string): void {
-  if (action !== PROTECTED_ACTION) {
-    throw new Error(
-      `Unsupported protected action "${action}". Deploy Gate V1 only permits "${PROTECTED_ACTION}"`,
-    );
-  }
-}

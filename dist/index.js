@@ -293,8 +293,25 @@ async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
   return { decisions: verified, batchId };
 }
 
+// src/canonicalAction.ts
+var PRODUCTION_DEPLOY_ACTION = "production.deploy";
+var LEGACY_PRODUCTION_DEPLOY_ALIAS = "deployment.production";
+function normalizeProtectedAction(raw) {
+  if (raw === LEGACY_PRODUCTION_DEPLOY_ALIAS) {
+    return { canonical: PRODUCTION_DEPLOY_ACTION, wasLegacyAlias: true };
+  }
+  return { canonical: raw, wasLegacyAlias: false };
+}
+function assertProtectedAction(raw) {
+  const { canonical } = normalizeProtectedAction(raw);
+  if (canonical !== PRODUCTION_DEPLOY_ACTION) {
+    throw new Error(
+      `Unsupported protected action "${raw}". Deploy Gate V1 only permits "${PRODUCTION_DEPLOY_ACTION}" (legacy alias "${LEGACY_PRODUCTION_DEPLOY_ALIAS}" is accepted during the V1 alias window).`
+    );
+  }
+}
+
 // src/inputs.ts
-var PROTECTED_ACTION = "production.deploy";
 function parseInputs(env) {
   const apiKey = required(env, "ATLASENT_API_KEY");
   const apiUrl = env["INPUT_API-URL"] || "https://api.atlasent.io";
@@ -332,7 +349,8 @@ function parseInputs(env) {
     }
     const evaluations = parsed;
     for (const item of evaluations) {
-      validateProtectedAction(item.action);
+      assertProtectedAction(item.action);
+      item.action = normalizeProtectedAction(item.action).canonical;
     }
     return {
       apiKey,
@@ -343,8 +361,9 @@ function parseInputs(env) {
       waitTimeoutMs: parseInt(env["INPUT_WAIT-TIMEOUT-MS"] || "600000", 10)
     };
   }
-  const action = required(env, "INPUT_ACTION");
-  validateProtectedAction(action);
+  const rawAction = required(env, "INPUT_ACTION");
+  assertProtectedAction(rawAction);
+  const action = normalizeProtectedAction(rawAction).canonical;
   const actor = env["INPUT_ACTOR"] || env["GITHUB_ACTOR"] || "unknown";
   const environment = env["INPUT_ENVIRONMENT"];
   const contextRaw = env["INPUT_CONTEXT"] || "{}";
@@ -371,13 +390,6 @@ function required(env, key) {
     );
   }
   return v;
-}
-function validateProtectedAction(action) {
-  if (action !== PROTECTED_ACTION) {
-    throw new Error(
-      `Unsupported protected action "${action}". Deploy Gate V1 only permits "${PROTECTED_ACTION}"`
-    );
-  }
 }
 
 // src/stream.ts
@@ -735,7 +747,6 @@ function assessFinancialGovernance(input) {
 }
 
 // src/index.ts
-var PROTECTED_ACTION2 = "production.deploy";
 function getApiKey() {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
   if (!apiKey) {
@@ -743,14 +754,16 @@ function getApiKey() {
   }
   return apiKey;
 }
-function validateProtectedAction2(actionType) {
-  if (actionType !== PROTECTED_ACTION2) {
+function normalizeAndValidateProtectedAction(actionType) {
+  const { canonical } = normalizeProtectedAction(actionType);
+  if (canonical !== PRODUCTION_DEPLOY_ACTION) {
     setOutput("decision", "error");
     setOutput("verified", "false");
     setFailed(
-      `AtlaSent Gate: unsupported protected action "${actionType}". Deploy Gate V1 only permits "${PROTECTED_ACTION2}" (fail-closed).`
+      `AtlaSent Gate: unsupported protected action "${actionType}". Deploy Gate V1 only permits "${PRODUCTION_DEPLOY_ACTION}" (legacy alias "${LEGACY_PRODUCTION_DEPLOY_ALIAS}" is accepted during the V1 alias window).`
     );
   }
+  return canonical;
 }
 function getInput(name, required2 = false) {
   const envKey = `INPUT_${name.replace(/-/g, "_").toUpperCase()}`;
@@ -1030,8 +1043,8 @@ async function run() {
     info(`  Batch ID: ${result.batchId}`);
     return;
   }
-  const actionType = getInput("action", true);
-  validateProtectedAction2(actionType);
+  const rawActionType = getInput("action", true);
+  const actionType = normalizeAndValidateProtectedAction(rawActionType);
   const actor = getInput("actor") || "unknown";
   const targetId = getInput("target-id") || void 0;
   const explicitEnv = getInput("environment");

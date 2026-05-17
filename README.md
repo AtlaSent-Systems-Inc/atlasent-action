@@ -75,7 +75,7 @@ The action sets several outputs you can reference in subsequent steps.
 |-------------|--------------------------------------------------------------------------------------------------|
 | `verified`  | `"true"` only when every allow decision verified; `"false"` otherwise                            |
 | `decisions` | JSON array of per-item results: `{decision, verified, evaluationId, permitToken, reasons, verifyOutcome}` |
-| `batch-id`  | Server-assigned batch ID, or `loop-<ts>` for the sequential fallback                            |
+| `batch-id`  | Server-assigned batch ID, `chunked-<ts>` when client-side chunking ran, or `loop-<ts>` for the sequential fallback |
 
 ## Inputs
 
@@ -99,7 +99,7 @@ The action sets several outputs you can reference in subsequent steps.
 | `evaluations`      | No       | —         | JSON array of evaluation requests. When set, single-eval inputs are ignored. |
 | `wait-for-id`      | No       | —         | Evaluation ID to block on until it reaches a terminal state (allow/deny). |
 | `wait-timeout-ms`  | No       | `600000`  | Max milliseconds to wait for a terminal decision (default: 10 min). |
-| `v2-batch`         | No       | `false`   | Use the `/v1-evaluate/batch` endpoint instead of sequential loop.   |
+| `v2-batch`         | No       | `false`   | Use the `/v1-evaluate/batch` endpoint instead of the sequential loop. Falls back to the loop automatically when the endpoint returns 404 or only one item is supplied. |
 | `v2-streaming`     | No       | `false`   | Use Server-Sent Events for `wait-for-id` polling instead of HTTP polling. |
 
 ## Streaming wait (v2.1)
@@ -147,15 +147,39 @@ Evaluate multiple actions in a single step:
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
   with:
+    v2-batch: 'true'
     evaluations: |
       [
-        {"action": "production.deploy", "actor": "${{ github.actor }}", "environment": "live"}
+        {"action": "production.deploy", "actor": "${{ github.actor }}", "environment": "live", "context": {"service": "api"}},
+        {"action": "production.deploy", "actor": "${{ github.actor }}", "environment": "live", "context": {"service": "worker"}},
+        {"action": "production.deploy", "actor": "${{ github.actor }}", "environment": "live", "context": {"service": "web"}}
       ]
 
 - name: Deploy
   if: steps.gate.outputs.verified == 'true'
   run: ./deploy.sh
 ```
+
+See [`docs/batch-example.yml`](./docs/batch-example.yml) for a fully-commented end-to-end workflow.
+
+### Batch auto-fallback (V2-D3)
+
+The `/v1-evaluate/batch` endpoint is **closed-by-default per tenant** — the
+`v2_batch` flag must be flipped on by AtlaSent operations before a given org
+can use it. To keep workflows portable across orgs at different rollout stages,
+the action falls back automatically:
+
+| Condition                                              | Transport                                       |
+|--------------------------------------------------------|-------------------------------------------------|
+| `v2-batch: false` (default)                            | Per-item `/v1-evaluate` loop                    |
+| `v2-batch: true` AND only 1 item supplied              | Per-item `/v1-evaluate` loop (no batch benefit) |
+| `v2-batch: true` AND `/v1-evaluate/batch` returns 404 | Per-item `/v1-evaluate` loop (tenant flag off)  |
+| `v2-batch: true` AND `items.length > 100`              | Multiple `/v1-evaluate/batch` POSTs, chunked client-side to the 100-item server cap |
+| `v2-batch: true` AND `/v1-evaluate/batch` returns 5xx | Step fails (fail-closed — does NOT silently downgrade) |
+
+`batch-id` distinguishes the path that actually ran: a UUID for server-side
+batches, `chunked-<ts>` when the action chunked client-side, and `loop-<ts>`
+for the per-item fallback.
 
 ## How It Works
 

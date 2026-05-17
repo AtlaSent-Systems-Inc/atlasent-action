@@ -244,6 +244,8 @@ var import_enforce2 = __toESM(require_dist());
 
 // src/batch.ts
 var import_enforce = __toESM(require_dist());
+var BATCH_MAX_ITEMS = 100;
+var BATCH_MIN_ITEMS = 2;
 async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
   const headers = {
     "content-type": "application/json",
@@ -251,32 +253,25 @@ async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
   };
   let decisions;
   let batchId;
-  if (v2Batch) {
-    const r = await fetch(`${apiUrl}/v1-evaluate/batch`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ items })
-    });
-    if (!r.ok) {
-      throw new Error(`atlasent /v1-evaluate/batch ${r.status}`);
-    }
-    const data = await r.json();
-    decisions = data.results;
-    batchId = data.batchId;
-  } else {
-    decisions = [];
-    for (const item of items) {
-      const r = await fetch(`${apiUrl}/v1-evaluate`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(item)
-      });
-      if (!r.ok) {
-        throw new Error(`atlasent /v1-evaluate ${r.status}`);
+  const shouldUseBatch = v2Batch && items.length >= BATCH_MIN_ITEMS;
+  if (shouldUseBatch) {
+    try {
+      const out = await postBatchChunked(apiUrl, headers, items);
+      decisions = out.decisions;
+      batchId = out.batchId;
+    } catch (err) {
+      if (err instanceof BatchEndpointDisabled) {
+        const out = await loopEvaluate(apiUrl, headers, items);
+        decisions = out.decisions;
+        batchId = out.batchId;
+      } else {
+        throw err;
       }
-      decisions.push(await r.json());
     }
-    batchId = `loop-${Date.now()}`;
+  } else {
+    const out = await loopEvaluate(apiUrl, headers, items);
+    decisions = out.decisions;
+    batchId = out.batchId;
   }
   const verified = await Promise.all(
     decisions.map(async (d, i) => {
@@ -291,6 +286,54 @@ async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
     })
   );
   return { decisions: verified, batchId };
+}
+var BatchEndpointDisabled = class extends Error {
+  constructor() {
+    super("v1-evaluate/batch disabled for this tenant (404)");
+    this.name = "BatchEndpointDisabled";
+  }
+};
+async function postBatchChunked(apiUrl, headers, items) {
+  const chunks = [];
+  for (let i = 0; i < items.length; i += BATCH_MAX_ITEMS) {
+    chunks.push(items.slice(i, i + BATCH_MAX_ITEMS));
+  }
+  const all = [];
+  let firstBatchId = "";
+  for (let c = 0; c < chunks.length; c++) {
+    const r = await fetch(`${apiUrl}/v1-evaluate/batch`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ items: chunks[c] })
+    });
+    if (r.status === 404) {
+      throw new BatchEndpointDisabled();
+    }
+    if (!r.ok) {
+      throw new Error(`atlasent /v1-evaluate/batch ${r.status}`);
+    }
+    const data = await r.json();
+    all.push(...data.results);
+    if (c === 0)
+      firstBatchId = data.batchId;
+  }
+  const batchId = chunks.length > 1 ? `chunked-${Date.now()}` : firstBatchId;
+  return { decisions: all, batchId };
+}
+async function loopEvaluate(apiUrl, headers, items) {
+  const decisions = [];
+  for (const item of items) {
+    const r = await fetch(`${apiUrl}/v1-evaluate`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(item)
+    });
+    if (!r.ok) {
+      throw new Error(`atlasent /v1-evaluate ${r.status}`);
+    }
+    decisions.push(await r.json());
+  }
+  return { decisions, batchId: `loop-${Date.now()}` };
 }
 
 // src/canonicalAction.ts

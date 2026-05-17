@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { evaluateMany } from "../batch";
+import { evaluateMany, BATCH_MAX_ITEMS, BATCH_MIN_ITEMS } from "../batch";
 
 // Mock @atlasent/enforce so verifyPermit uses a test double rather than the
 // real HTTP transport. fetch is still needed for the evaluate calls.
@@ -27,31 +27,39 @@ describe("evaluateMany", () => {
     );
   }
 
+  function batchResp(count: number, batchId = "b1", permitTokenPrefix = "tok") {
+    const results = Array.from({ length: count }, (_, i) => ({
+      decision: "allow",
+      evaluatedAt: "2026-04-25T00:00:00Z",
+      permitToken: `${permitTokenPrefix}${i}`,
+    }));
+    return new Response(JSON.stringify({ results, batchId }));
+  }
+
   it("hits /v1-evaluate/batch when v2Batch=true and verifies allow decisions", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          results: [{ decision: "allow", evaluatedAt: "2026-04-25T00:00:00Z", permitToken: "tok1" }],
-          batchId: "b1",
-        }),
-      ),
-    );
-    mockVerifyPermit.mockResolvedValueOnce({ verified: true, outcome: "ok" });
+    // Two items so the batch path is actually taken (single-item batches
+    // short-circuit to the loop now).
+    fetchMock.mockResolvedValueOnce(batchResp(2, "b1"));
+    mockVerifyPermit.mockResolvedValue({ verified: true, outcome: "ok" });
 
     const out = await evaluateMany(
       "https://api.test",
       "k",
-      [{ action: "a", actor: "u" }],
+      [
+        { action: "a", actor: "u" },
+        { action: "b", actor: "u" },
+      ],
       true,
     );
 
     expect(out.batchId).toBe("b1");
     expect(out.decisions[0].verified).toBe(true);
+    expect(out.decisions[1].verified).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.test/v1-evaluate/batch",
       expect.anything(),
     );
-    expect(mockVerifyPermit).toHaveBeenCalledOnce();
+    expect(mockVerifyPermit).toHaveBeenCalledTimes(2);
   });
 
   it("loops /v1-evaluate when v2Batch=false and verifies each allow decision", async () => {
@@ -119,7 +127,15 @@ describe("evaluateMany", () => {
   it("throws on non-2xx batch response", async () => {
     fetchMock.mockResolvedValueOnce(new Response("x", { status: 500 }));
     await expect(
-      evaluateMany("https://api.test", "k", [{ action: "a", actor: "u" }], true),
+      evaluateMany(
+        "https://api.test",
+        "k",
+        [
+          { action: "a", actor: "u" },
+          { action: "b", actor: "u" },
+        ],
+        true,
+      ),
     ).rejects.toThrow(/500/);
   });
 
@@ -155,5 +171,181 @@ describe("evaluateMany", () => {
         permitToken: "tok-xyz",
       }),
     );
+  });
+
+  // ── Wave B hardening: items<2 short-circuit ────────────────────────────────
+
+  it("short-circuits to /v1-evaluate loop when v2Batch=true but only 1 item (no batch benefit)", async () => {
+    // Even with v2Batch=true the single-item case should skip the batch
+    // endpoint entirely — the round-trip cost isn't justified for one item.
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith("/v1-evaluate")) {
+        return Promise.resolve(evalResp("allow", "tok-solo"));
+      }
+      return Promise.reject(new Error(`unexpected url: ${url}`));
+    });
+    mockVerifyPermit.mockResolvedValueOnce({ verified: true, outcome: "ok" });
+
+    const out = await evaluateMany(
+      "https://api.test",
+      "k",
+      [{ action: "production.deploy", actor: "u" }],
+      true, // v2Batch=true
+    );
+
+    // batch endpoint was NOT hit
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "https://api.test/v1-evaluate/batch",
+      expect.anything(),
+    );
+    expect(out.batchId).toMatch(/^loop-/);
+    expect(out.decisions).toHaveLength(1);
+    expect(out.decisions[0].verified).toBe(true);
+  });
+
+  it("BATCH_MIN_ITEMS is 2 (documented contract)", () => {
+    expect(BATCH_MIN_ITEMS).toBe(2);
+  });
+
+  // ── Wave B hardening: 404 fallback ─────────────────────────────────────────
+
+  it("falls back to per-item loop on 404 from /v1-evaluate/batch (v2_batch flag off)", async () => {
+    // First call: batch 404 (tenant flag off)
+    // Subsequent calls: per-item /v1-evaluate loop
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith("/v1-evaluate/batch")) {
+        return Promise.resolve(new Response("not found", { status: 404 }));
+      }
+      if (url.endsWith("/v1-evaluate")) {
+        return Promise.resolve(evalResp("allow", "tok-fallback"));
+      }
+      return Promise.reject(new Error(`unexpected url: ${url}`));
+    });
+    mockVerifyPermit.mockResolvedValue({ verified: true, outcome: "ok" });
+
+    const out = await evaluateMany(
+      "https://api.test",
+      "k",
+      [
+        { action: "a", actor: "u" },
+        { action: "b", actor: "u" },
+      ],
+      true,
+    );
+
+    // 1 batch attempt + 2 per-item evaluate calls = 3 fetches total
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.test/v1-evaluate/batch");
+    expect(fetchMock.mock.calls[1][0]).toBe("https://api.test/v1-evaluate");
+    expect(fetchMock.mock.calls[2][0]).toBe("https://api.test/v1-evaluate");
+
+    // After fallback, batchId is the loop marker (NOT a server batchId).
+    expect(out.batchId).toMatch(/^loop-/);
+    expect(out.decisions).toHaveLength(2);
+    expect(out.decisions.every((d) => d.verified === true)).toBe(true);
+  });
+
+  it("does NOT fall back on non-404 batch errors (e.g. 500 is a real failure)", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("oops", { status: 500 }));
+
+    await expect(
+      evaluateMany(
+        "https://api.test",
+        "k",
+        [
+          { action: "a", actor: "u" },
+          { action: "b", actor: "u" },
+        ],
+        true,
+      ),
+    ).rejects.toThrow(/500/);
+
+    // 5xx fail-closed — must not silently fall back to the loop.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Wave B hardening: chunking when items > BATCH_MAX_ITEMS ────────────────
+
+  it("BATCH_MAX_ITEMS is 100 (V2-D3 server hard-cap)", () => {
+    expect(BATCH_MAX_ITEMS).toBe(100);
+  });
+
+  it("chunks into ≤100-item batches when items > BATCH_MAX_ITEMS", async () => {
+    // 150 items → 2 chunks (100 + 50)
+    const items = Array.from({ length: 150 }, (_, i) => ({
+      action: "production.deploy",
+      actor: `actor-${i}`,
+    }));
+
+    fetchMock
+      .mockResolvedValueOnce(batchResp(100, "chunk-a"))
+      .mockResolvedValueOnce(batchResp(50, "chunk-b"));
+    mockVerifyPermit.mockResolvedValue({ verified: true, outcome: "ok" });
+
+    const out = await evaluateMany("https://api.test", "k", items, true);
+
+    // Two batch calls, no per-item loop.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.test/v1-evaluate/batch");
+    expect(fetchMock.mock.calls[1][0]).toBe("https://api.test/v1-evaluate/batch");
+
+    // First chunk has 100 items, second has 50 (sliced in input order).
+    const firstBody = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    const secondBody = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
+    expect(firstBody.items).toHaveLength(100);
+    expect(secondBody.items).toHaveLength(50);
+    expect(firstBody.items[0].actor).toBe("actor-0");
+    expect(firstBody.items[99].actor).toBe("actor-99");
+    expect(secondBody.items[0].actor).toBe("actor-100");
+    expect(secondBody.items[49].actor).toBe("actor-149");
+
+    // All 150 decisions are present in input order.
+    expect(out.decisions).toHaveLength(150);
+    // Multi-chunk: batchId is a synthetic `chunked-*` marker so
+    // downstream audit refs aren't misleadingly pinned to chunk 0.
+    expect(out.batchId).toMatch(/^chunked-/);
+  });
+
+  it("single chunk (≤BATCH_MAX_ITEMS) returns the server batchId verbatim", async () => {
+    const items = Array.from({ length: 100 }, (_, i) => ({
+      action: "production.deploy",
+      actor: `actor-${i}`,
+    }));
+    fetchMock.mockResolvedValueOnce(batchResp(100, "server-batch-99"));
+    mockVerifyPermit.mockResolvedValue({ verified: true, outcome: "ok" });
+
+    const out = await evaluateMany("https://api.test", "k", items, true);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(out.batchId).toBe("server-batch-99");
+  });
+
+  it("chunked path falls back to per-item loop if FIRST chunk 404s (no partial state)", async () => {
+    // 120 items, but the very first batch call returns 404. We must NOT
+    // half-commit (i.e. ship chunk 0 to /v1-evaluate/batch and then fall
+    // back to the loop for the remaining 20 — that would mix transports
+    // mid-batch). Falling back means looping ALL 120.
+    const items = Array.from({ length: 120 }, (_, i) => ({
+      action: "production.deploy",
+      actor: `actor-${i}`,
+    }));
+
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith("/v1-evaluate/batch")) {
+        return Promise.resolve(new Response("not found", { status: 404 }));
+      }
+      if (url.endsWith("/v1-evaluate")) {
+        return Promise.resolve(evalResp("allow", "tok-loop"));
+      }
+      return Promise.reject(new Error(`unexpected url: ${url}`));
+    });
+    mockVerifyPermit.mockResolvedValue({ verified: true, outcome: "ok" });
+
+    const out = await evaluateMany("https://api.test", "k", items, true);
+
+    // 1 batch attempt + 120 per-item evaluate calls = 121 fetches
+    expect(fetchMock).toHaveBeenCalledTimes(121);
+    expect(out.decisions).toHaveLength(120);
+    expect(out.batchId).toMatch(/^loop-/);
   });
 });

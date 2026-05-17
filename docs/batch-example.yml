@@ -1,0 +1,92 @@
+# AtlaSent Batch Gate — example GitHub Actions workflow
+#
+# Demonstrates evaluating MULTIPLE protected actions in a single step
+# using the `evaluations:` input. The action posts the list to
+# /v1-evaluate/batch when `v2-batch: 'true'` is set, and verifies each
+# allow decision's permit before returning. The deploy job is gated on
+# `outputs.verified == 'true'` — which is only set when EVERY allow
+# decision passed permit verification.
+#
+# Auto-fallback behaviour (Wave B):
+#   • items.length < 2 → action skips the batch endpoint and uses the
+#     per-item /v1-evaluate loop directly (no batch benefit for 1 item).
+#   • /v1-evaluate/batch returns 404 → the action falls back to the
+#     per-item loop automatically (V2-D3: v2_batch is closed-by-default;
+#     a tenant without the flag flipped on gets a 404 and the workflow
+#     still succeeds via the loop transport).
+#   • items.length > 100 → the action chunks the batch client-side into
+#     ≤100-item POSTs (server hard-cap is 100 per request).
+#
+# Prerequisites:
+#   - Store your AtlaSent API key as a repository secret named
+#     ATLASENT_API_KEY.
+
+name: AtlaSent Batch Gate
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  multi-service-deploy:
+    name: Authorize + deploy three services in one batch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: AtlaSent Batch Authorization Gate
+        id: gate
+        uses: atlasent-systems-inc/atlasent-action@main
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+        with:
+          # `evaluations:` is a JSON array — one entry per protected
+          # action. When set, single-eval inputs (`action:`, `actor:`,
+          # `context:`) are ignored.
+          evaluations: |
+            [
+              {
+                "action": "production.deploy",
+                "actor": "${{ github.actor }}",
+                "environment": "live",
+                "context": { "service": "api", "ref": "${{ github.ref }}" }
+              },
+              {
+                "action": "production.deploy",
+                "actor": "${{ github.actor }}",
+                "environment": "live",
+                "context": { "service": "worker", "ref": "${{ github.ref }}" }
+              },
+              {
+                "action": "production.deploy",
+                "actor": "${{ github.actor }}",
+                "environment": "live",
+                "context": { "service": "web", "ref": "${{ github.ref }}" }
+              }
+            ]
+          # Opt in to the /v1-evaluate/batch endpoint. The action falls
+          # back to the per-item /v1-evaluate loop automatically if the
+          # endpoint returns 404 (tenant's v2_batch flag is off).
+          v2-batch: 'true'
+          # fail-on-deny=true (default) fails this step if ANY of the
+          # evaluations comes back deny/hold/escalate. The deploy job
+          # below is additionally gated on `verified == 'true'`.
+
+      - name: Inspect per-item decisions
+        if: always()
+        run: |
+          echo "Batch ID: ${{ steps.gate.outputs.batch-id }}"
+          echo "Verified (all-or-nothing): ${{ steps.gate.outputs.verified }}"
+          echo "Per-item decisions:"
+          echo '${{ steps.gate.outputs.decisions }}' | jq '.'
+
+      - name: Deploy all services
+        if: steps.gate.outputs.verified == 'true'
+        run: |
+          ./deploy.sh api
+          ./deploy.sh worker
+          ./deploy.sh web

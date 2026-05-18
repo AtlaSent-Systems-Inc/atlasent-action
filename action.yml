@@ -59,7 +59,7 @@ inputs:
     description: 'Currency code for the financial action value'
     required: false
     default: 'USD'
-  # ── Policy Sync ────────────────────────────────────────────────────────────
+  # ── Policy Sync ──────────────────────────────────────────────────────────────────
   policy-sync:
     description: |
       When "true", run in policy sync mode: read a JSON bundle file and post it
@@ -83,6 +83,20 @@ inputs:
       applying. Set to "false" on the default branch to apply changes live.
     required: false
     default: 'true'
+  # ── Behavior Insights ───────────────────────────────────────────────────────────
+  insights-org-id:
+    description: |
+      Organization ID for behavior insights campaign evaluation. When set,
+      the action runs a campaign evaluate call after a successful authorization
+      (best-effort: never blocks or reverses the gate decision).
+    required: false
+  insights-subject-id:
+    description: 'Subject ID for insights evaluation. Defaults to the actor value.'
+    required: false
+  insights-session-count:
+    description: 'Number of sessions for the subject, used by session_count trigger campaigns.'
+    required: false
+    default: ''
 outputs:
   decision:
     description: 'The evaluation decision (allow/deny/hold/escalate). Set for single-eval path only.'
@@ -111,7 +125,7 @@ outputs:
   audit-hash:
     description: 'SHA-256 audit chain hash'
     value: ${{ steps.gate.outputs.audit-hash }}
-  # ── Policy Sync outputs ────────────────────────────────────────────────────
+  # ── Policy Sync outputs ──────────────────────────────────────────────────────────
   sync-run-id:
     description: 'The policy sync run ID returned by v1-policy-sync. Set when policy-sync is "true".'
   sync-status:
@@ -120,6 +134,11 @@ outputs:
     description: 'Human-readable diff summary, e.g. "+3 added, ~1 updated, -2 removed". Set when policy-sync is "true".'
   sync-summary:
     description: 'JSON {added, updated, removed, status}. Set when policy-sync is "true".'
+  # ── Behavior Insights outputs ──────────────────────────────────────────────────────
+  insights-fired:
+    description: 'JSON array of behavior insights campaigns that fired for the subject. Empty array when insights-org-id is not set or the feature flag is disabled.'
+  insights-skipped:
+    description: 'JSON array of behavior insights campaigns that were skipped, with reasons.'
 runs:
   using: 'node24'
   main: 'dist/index.js'

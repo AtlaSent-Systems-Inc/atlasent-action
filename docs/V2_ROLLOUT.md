@@ -1,5 +1,15 @@
 # atlasent-action — v2.1 rollout
 
+> **Doctrine normalization header (2026-05-18).** This file is
+> preserved unchanged below per Doctrine 4 of
+> [`atlasent/VERSIONING_DOCTRINE.md`](https://github.com/AtlaSent-Systems-Inc/atlasent/blob/claude/normalize-roadmap-versioning-NWPuP/VERSIONING_DOCTRINE.md).
+> Under the current doctrine there is no "v2 product"; the work
+> described here is **Phase 1** (additive on the `AtlaSent v1`
+> contract). The "v2.1" label is the action's npm/Marketplace SemVer
+> (Doctrine 5), not a platform version. Filenames and code identifiers
+> (`v2_batch`, `v2_streaming`, `src/v21.ts`) are retained per
+> Doctrine 4.
+
 > **Reframing normalization header (2026-05-18).** This document
 > remains in scope and is preserved unchanged per the "do not rewrite
 > history" doctrine ([`atlasent/VERSIONING_DOCTRINE.md`](https://github.com/AtlaSent-Systems-Inc/atlasent/blob/main/VERSIONING_DOCTRINE.md)

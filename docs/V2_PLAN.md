@@ -1,5 +1,16 @@
 # atlasent-action V2 Plan
 
+> **Doctrine normalization header (2026-05-18).** This file is
+> preserved unchanged below per Doctrine 4 of
+> [`atlasent/VERSIONING_DOCTRINE.md`](https://github.com/AtlaSent-Systems-Inc/atlasent/blob/claude/normalize-roadmap-versioning-NWPuP/VERSIONING_DOCTRINE.md).
+> Under the current doctrine there is no "v2 product"; the action
+> workstreams described here are split between **Phase 1** (batch /
+> streaming / matrix-job ergonomics) and **Phase 2** (enterprise
+> distribution / GitHub App / check-run mode), all shipping additively
+> on the `AtlaSent v1` contract. The "Pillar 2/3/4" structure in the
+> body refers to the historical pre-reframing pillar layout. Filename
+> retained per Doctrine 4.
+
 > Companion to the canonical plan: **[atlasent-api/docs/V2_PLAN.md](https://github.com/AtlaSent-Systems-Inc/atlasent-api/blob/claude/v2-planning/docs/V2_PLAN.md)**.
 > This file enumerates only the GitHub Action workstreams. Product-level
 > rationale, non-goals, and timeline live in the canonical plan.

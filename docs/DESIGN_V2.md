@@ -1,5 +1,16 @@
 # atlasent-action v2 Design
 
+> **Doctrine normalization header (2026-05-18).** This file is
+> preserved unchanged below per Doctrine 4 of
+> [`atlasent/VERSIONING_DOCTRINE.md`](https://github.com/AtlaSent-Systems-Inc/atlasent/blob/claude/normalize-roadmap-versioning-NWPuP/VERSIONING_DOCTRINE.md).
+> The "v2" in this filename and body refers to the action's
+> package-major SemVer (the bundled-evaluator → remote-evaluator
+> migration), not a platform-version `v2`. Under the current doctrine
+> there is no platform `v2`; the design described here ships on the
+> stable `AtlaSent v1` contract via the action's own major bump
+> (Doctrine 5 — per-package SemVer independent of the platform).
+> Filename retained per Doctrine 4.
+
 ## Breaking Change
 
 `atlasent-action` v2 removes its bundled evaluator and calls `POST /v1-evaluate`

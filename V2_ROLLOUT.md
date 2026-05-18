@@ -1,5 +1,17 @@
 # atlasent-action — V2 Rollout
 
+> **Doctrine normalization header (2026-05-18).** This file is
+> preserved unchanged below per Doctrine 4 of
+> [`atlasent/VERSIONING_DOCTRINE.md`](https://github.com/AtlaSent-Systems-Inc/atlasent/blob/claude/normalize-roadmap-versioning-NWPuP/VERSIONING_DOCTRINE.md).
+> Under the current doctrine there is no "v2 product"; the work
+> described in this document is **Phase 1** (Stabilization & Pilot
+> Readiness — batch / streaming-wait / SDK pin) shipping additively on
+> the `AtlaSent v1` contract. The filename, `V2-D#` decision IDs, and
+> code-level identifiers (`v2_batch`, `v2_streaming`, action input
+> names) are retained per Doctrine 4. The body below — including the
+> earlier (now-superseded) reframing note — is left intact as
+> historical record.
+
 > **Reframing normalization header (2026-05-18).** This document
 > remains in scope and is preserved unchanged per the "do not rewrite
 > history" doctrine ([`atlasent/VERSIONING_DOCTRINE.md`](https://github.com/AtlaSent-Systems-Inc/atlasent/blob/main/VERSIONING_DOCTRINE.md)

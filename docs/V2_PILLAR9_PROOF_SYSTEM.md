@@ -1,5 +1,14 @@
 # Pillar 9 — Verifiable Proof System: Action workstreams
 
+> **Doctrine normalization header (2026-05-18).** This file is
+> preserved unchanged below per Doctrine 4 of
+> [`atlasent/VERSIONING_DOCTRINE.md`](https://github.com/AtlaSent-Systems-Inc/atlasent/blob/claude/normalize-roadmap-versioning-NWPuP/VERSIONING_DOCTRINE.md).
+> Under the current doctrine there is no "v2 product"; the verifiable
+> proof system described here belongs to **Phase 3** (Execution
+> Assurance & Operational Sovereignty), shipping additively on the
+> `AtlaSent v1` contract. The filename, "Pillar 9" identifier, and
+> code-level flag name (`v2_proof_system`) are retained per Doctrine 4.
+
 Companion to
 [`atlasent-api/docs/V2_PILLAR9_PROOF_SYSTEM.md`](https://github.com/AtlaSent-Systems-Inc/atlasent-api/pull/116).
 

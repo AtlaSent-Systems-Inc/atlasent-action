@@ -1,5 +1,7 @@
 # atlasent-action — v1 ship plan
 
+> **Reframing note (2026-05-18).** Per [`atlasent/VERSIONING_DOCTRINE.md`](https://github.com/AtlaSent-Systems-Inc/atlasent/blob/main/VERSIONING_DOCTRINE.md), platform generations were reframed: **v1** = pilot + cash-flowing capability layer (current scope of this repo's V2_ROLLOUT.md, preserved unchanged with a normalization header); **v2** = full enterprise surface ([`atlasent/ENTERPRISE_V2_ROLLOUT.md`](https://github.com/AtlaSent-Systems-Inc/atlasent/blob/main/ENTERPRISE_V2_ROLLOUT.md)); **v3** = execution assurance ([`atlasent/V3_ROLLOUT.md`](https://github.com/AtlaSent-Systems-Inc/atlasent/blob/main/V3_ROLLOUT.md), narrowed to Execution Assurance only). `V2-D#` decision IDs retained per doctrine 4; new decisions use `PROD-D#`. The full org matrix is in [`atlasent/ROADMAP.md`](https://github.com/AtlaSent-Systems-Inc/atlasent/blob/main/ROADMAP.md).
+
 GitHub Action that gates CI deploys on an AtlaSent `allow` decision. Distributed via the GitHub Marketplace.
 
 ## V1 Status — May 2026

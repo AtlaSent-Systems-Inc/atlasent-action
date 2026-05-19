@@ -1,0 +1,87 @@
+# AtlaSent batch deployment gate — evaluate multiple services in one step
+#
+# Gates three services simultaneously using the v2 batch endpoint.
+# All three must be allowed and verified before any deploy runs.
+#
+# Fail-closed: if ANY service returns deny/hold/escalate, or if the
+# batch endpoint is unavailable, the step fails and no deploys run.
+# The action falls back to per-item /v1-evaluate when the batch
+# endpoint returns 404 (tenant flag not yet enabled).
+
+name: Batch Deploy to Production
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Evaluate all services in one round-trip ────────────────────────────
+      - name: AtlaSent batch authorization gate
+        id: gate
+        uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+        with:
+          v2-batch: 'true'
+          evaluations: |
+            [
+              {
+                "action": "production.deploy",
+                "actor":  "${{ github.actor }}",
+                "environment": "live",
+                "context": {
+                  "service": "api",
+                  "commit":  "${{ github.sha }}",
+                  "signed_attestation": true
+                }
+              },
+              {
+                "action": "production.deploy",
+                "actor":  "${{ github.actor }}",
+                "environment": "live",
+                "context": {
+                  "service": "worker",
+                  "commit":  "${{ github.sha }}",
+                  "signed_attestation": true
+                }
+              },
+              {
+                "action": "production.deploy",
+                "actor":  "${{ github.actor }}",
+                "environment": "live",
+                "context": {
+                  "service": "web",
+                  "commit":  "${{ github.sha }}",
+                  "signed_attestation": true
+                }
+              }
+            ]
+
+      # ── Deploy all three services — only when all verified ─────────────────
+      - name: Deploy api
+        if: steps.gate.outputs.verified == 'true'
+        run: ./scripts/deploy.sh --service api --commit ${{ github.sha }}
+
+      - name: Deploy worker
+        if: steps.gate.outputs.verified == 'true'
+        run: ./scripts/deploy.sh --service worker --commit ${{ github.sha }}
+
+      - name: Deploy web
+        if: steps.gate.outputs.verified == 'true'
+        run: ./scripts/deploy.sh --service web --commit ${{ github.sha }}
+
+      - name: Batch authorization summary
+        if: always()
+        run: |
+          echo "## Batch authorization result" >> $GITHUB_STEP_SUMMARY
+          echo "Batch ID: ${{ steps.gate.outputs.batch-id }}" >> $GITHUB_STEP_SUMMARY
+          echo "Verified: ${{ steps.gate.outputs.verified }}" >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo 'Per-service decisions:' >> $GITHUB_STEP_SUMMARY
+          echo '${{ steps.gate.outputs.decisions }}' | jq -r '.[] | "- " + .decision + " " + (.evaluationId // "")' >> $GITHUB_STEP_SUMMARY

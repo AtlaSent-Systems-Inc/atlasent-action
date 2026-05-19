@@ -1,0 +1,78 @@
+# AtlaSent Production Deployment Gate — complete example
+#
+# Wraps a production deploy with the three-step authorization lifecycle:
+#   1. evaluate  — POST /v1-evaluate  → decision: allow | deny | hold | escalate
+#   2. permit    — single-use token issued on allow
+#   3. verify    — POST /v1-verify-permit → consumed=true → tamper-evident proof
+#
+# The action implements all three steps. Your deploy step only runs when
+# steps.gate.outputs.verified == 'true' — which requires both allow AND verify.
+#
+# Fail-closed guarantees:
+#   - Network error / timeout / 5xx → step fails, deploy does not run
+#   - decision != allow             → step fails, deploy does not run
+#   - permit replay / expired       → step fails, deploy does not run
+
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and attest
+        id: build
+        run: |
+          ./scripts/build.sh
+          # Generate a signed build attestation (cosign, sigstore, etc.)
+          ./scripts/attest.sh --commit ${{ github.sha }}
+          echo "attestation_ok=true" >> $GITHUB_OUTPUT
+
+      # ── Step 1+2+3: evaluate → permit → verify ────────────────────────────
+      - name: AtlaSent authorization gate
+        id: gate
+        uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+        with:
+          action: production.deploy
+          actor: ${{ github.actor }}
+          target-id: ${{ github.repository }}
+          environment: live
+          context: |
+            {
+              "commit":             "${{ github.sha }}",
+              "ref":                "${{ github.ref }}",
+              "workflow":           "${{ github.workflow }}",
+              "run_id":             "${{ github.run_id }}",
+              "signed_attestation": ${{ steps.build.outputs.attestation_ok }},
+              "region":             "us-east-1"
+            }
+
+      # ── Deploy: only runs when evaluate=allow AND permit verified ──────────
+      - name: Deploy to production
+        if: steps.gate.outputs.verified == 'true'
+        run: |
+          echo "Deploying commit ${{ github.sha }}"
+          echo "Permit:     ${{ steps.gate.outputs.permit-token }}"
+          echo "Audit hash: ${{ steps.gate.outputs.proof-hash }}"
+          echo "Risk score: ${{ steps.gate.outputs.risk-score }}"
+          ./scripts/deploy.sh --commit ${{ github.sha }}
+
+      # Optional: surface deny reason in the workflow summary
+      - name: Report authorization result
+        if: always()
+        run: |
+          echo "## Authorization result" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Decision     | ${{ steps.gate.outputs.decision }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Verified     | ${{ steps.gate.outputs.verified }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Evaluation   | ${{ steps.gate.outputs.evaluation-id }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Audit hash   | ${{ steps.gate.outputs.proof-hash }} |" >> $GITHUB_STEP_SUMMARY

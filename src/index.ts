@@ -20,6 +20,7 @@ import {
 } from "./financialGovernanceAdvisory";
 import type { FinancialAdvisoryInput } from "./financialGovernanceAdvisory";
 import { emitEvidenceEvent } from "./evidenceClient";
+import { buildEvidenceBundle } from "./evidenceBundle";
 import {
   LEGACY_PRODUCTION_DEPLOY_ALIAS,
   PRODUCTION_DEPLOY_ACTION,
@@ -491,6 +492,8 @@ export async function run(): Promise<void> {
         setOutput("audit-hash", "");
       }
       setOutput("verified", "false");
+      setOutput("evidence-receipt", JSON.stringify(null));
+      setOutput("evidence-bundle", JSON.stringify(null));
 
       emitFinancialGovernanceAdvisory(actionType, actor, orgId);
 
@@ -556,6 +559,8 @@ export async function run(): Promise<void> {
     setOutput("snapshot", JSON.stringify(null));
     setOutput("audit-hash", "");
     setOutput("verified", "false");
+    setOutput("evidence-receipt", JSON.stringify(null));
+    setOutput("evidence-bundle", JSON.stringify(null));
 
     emitFinancialGovernanceAdvisory(actionType, actor, orgId);
 
@@ -575,6 +580,43 @@ export async function run(): Promise<void> {
   info(`  Evaluation:   ${d.evaluationId ?? ""}`);
   if (d.riskScore !== undefined) info(`  Risk score:   ${d.riskScore}`);
   info(`  Verify:       ${verifyOutcome ?? "verified"}`);
+
+  // ── Build evidence bundle ─────────────────────────────────────────────────
+  // Best-effort: evidence output failures must never block the gate decision.
+  try {
+    const receiptSigningSecret = process.env["ATLASENT_RECEIPT_SIGNING_SECRET"];
+    const receiptSigningKeyId = getInput("receipt-signing-key-id");
+    const runUrl = `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`;
+
+    const bundle = buildEvidenceBundle({
+      evaluationId: d.evaluationId ?? "",
+      permitToken: d.permitToken ?? "",
+      auditHash: d.auditHash,
+      action: actionType,
+      actor: `github:${actor}`,
+      environment,
+      repository: gh.repository,
+      sha: gh.sha,
+      runId: gh.run_id,
+      runUrl,
+      signingSecret: receiptSigningSecret || undefined,
+      signingKeyId: receiptSigningKeyId || undefined,
+    });
+
+    setOutput("evidence-receipt", JSON.stringify(bundle.receipt));
+    setOutput("evidence-bundle", JSON.stringify(bundle));
+    info(
+      `  Evidence:     receipt=${bundle.receipt.receipt_id} algorithm=${bundle.receipt.algorithm}`,
+    );
+  } catch (bundleErr) {
+    warning(
+      `AtlaSent: evidence bundle build failed (advisory; gate decision unaffected): ${
+        bundleErr instanceof Error ? bundleErr.message : String(bundleErr)
+      }`,
+    );
+    setOutput("evidence-receipt", JSON.stringify(null));
+    setOutput("evidence-bundle", JSON.stringify(null));
+  }
 
   // ── B7: emit execution_started evidence event ────────────────────────────
   // Best-effort, fire-and-forget. Build outcome is already determined above.

@@ -789,6 +789,100 @@ function assessFinancialGovernance(input) {
   };
 }
 
+// src/evidenceBundle.ts
+var import_node_crypto = require("node:crypto");
+function genId() {
+  return (0, import_node_crypto.randomUUID)();
+}
+function hmacSha256(secret, input) {
+  return (0, import_node_crypto.createHmac)("sha256", secret).update(input, "utf8").digest("hex");
+}
+function sha256Hex(input) {
+  return (0, import_node_crypto.createHash)("sha256").update(input, "utf8").digest("hex");
+}
+function buildComplianceControls(hasAuditHash) {
+  return [
+    {
+      control_id: "CC7.2",
+      framework: "SOC2",
+      satisfied: true,
+      evidence_type: "audit_trail"
+    },
+    {
+      control_id: "CC8.1",
+      framework: "SOC2",
+      satisfied: true,
+      evidence_type: "change_management_gate"
+    },
+    {
+      control_id: "CC6.1",
+      framework: "SOC2",
+      satisfied: true,
+      evidence_type: "logical_access_control"
+    },
+    {
+      control_id: "CC3.2",
+      framework: "SOC2",
+      // CC3.2 (policy violations) requires the audit hash to be present.
+      satisfied: hasAuditHash,
+      evidence_type: "policy_evaluation_evidence"
+    }
+  ];
+}
+function buildEvidenceBundle(args) {
+  const receiptId = genId();
+  const bundleId = genId();
+  const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
+  const receiptPayload = {
+    receipt_id: receiptId,
+    evaluation_id: args.evaluationId,
+    permit_id: args.permitToken || null,
+    audit_hash: args.auditHash ?? null,
+    issued_at: generatedAt,
+    action: args.action,
+    actor: args.actor,
+    environment: args.environment,
+    repository: args.repository,
+    sha: args.sha,
+    run_id: args.runId,
+    decision: "allow"
+  };
+  let signature = null;
+  let algorithm = "none";
+  if (args.signingSecret) {
+    const sigInput = `${receiptId}
+${generatedAt}
+${JSON.stringify(receiptPayload)}`;
+    signature = hmacSha256(args.signingSecret, sigInput);
+    algorithm = "hmac-sha256";
+  }
+  const receipt = {
+    ...receiptPayload,
+    algorithm,
+    signature,
+    signing_key_id: args.signingKeyId ?? null
+  };
+  const hasAuditHash = Boolean(args.auditHash);
+  const complianceControls = buildComplianceControls(hasAuditHash);
+  const bundleBody = {
+    v: 1,
+    bundle_id: bundleId,
+    action: args.action,
+    actor: args.actor,
+    decision: "allow",
+    environment: args.environment,
+    repository: args.repository,
+    sha: args.sha,
+    run_id: args.runId,
+    run_url: args.runUrl,
+    receipt,
+    compliance_controls: complianceControls,
+    generated_at: generatedAt
+  };
+  const bundleHash = sha256Hex(JSON.stringify(bundleBody));
+  return { ...bundleBody, bundle_hash: bundleHash };
+}
+
 // src/index.ts
 function getApiKey() {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -1143,6 +1237,8 @@ async function run() {
         setOutput("audit-hash", "");
       }
       setOutput("verified", "false");
+      setOutput("evidence-receipt", JSON.stringify(null));
+      setOutput("evidence-bundle", JSON.stringify(null));
       emitFinancialGovernanceAdvisory(actionType, actor, orgId);
       if (err.phase === "verify" && !failOnDeny) {
         switch (err.decision?.decision) {
@@ -1204,6 +1300,8 @@ async function run() {
     setOutput("snapshot", JSON.stringify(null));
     setOutput("audit-hash", "");
     setOutput("verified", "false");
+    setOutput("evidence-receipt", JSON.stringify(null));
+    setOutput("evidence-bundle", JSON.stringify(null));
     emitFinancialGovernanceAdvisory(actionType, actor, orgId);
     setFailed(
       `AtlaSent Gate: Unexpected error: ${err instanceof Error ? err.message : String(err)}`
@@ -1220,6 +1318,36 @@ async function run() {
   if (d.riskScore !== void 0)
     info(`  Risk score:   ${d.riskScore}`);
   info(`  Verify:       ${verifyOutcome ?? "verified"}`);
+  try {
+    const receiptSigningSecret = process.env["ATLASENT_RECEIPT_SIGNING_SECRET"];
+    const receiptSigningKeyId = getInput("receipt-signing-key-id");
+    const runUrl = `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`;
+    const bundle = buildEvidenceBundle({
+      evaluationId: d.evaluationId ?? "",
+      permitToken: d.permitToken ?? "",
+      auditHash: d.auditHash,
+      action: actionType,
+      actor: `github:${actor}`,
+      environment,
+      repository: gh.repository,
+      sha: gh.sha,
+      runId: gh.run_id,
+      runUrl,
+      signingSecret: receiptSigningSecret || void 0,
+      signingKeyId: receiptSigningKeyId || void 0
+    });
+    setOutput("evidence-receipt", JSON.stringify(bundle.receipt));
+    setOutput("evidence-bundle", JSON.stringify(bundle));
+    info(
+      `  Evidence:     receipt=${bundle.receipt.receipt_id} algorithm=${bundle.receipt.algorithm}`
+    );
+  } catch (bundleErr) {
+    warning(
+      `AtlaSent: evidence bundle build failed (advisory; gate decision unaffected): ${bundleErr instanceof Error ? bundleErr.message : String(bundleErr)}`
+    );
+    setOutput("evidence-receipt", JSON.stringify(null));
+    setOutput("evidence-bundle", JSON.stringify(null));
+  }
   if (d.permitToken && d.evaluationId) {
     await emitEvidenceEvent(
       { apiKey, apiUrl },

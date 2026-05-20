@@ -1,6 +1,8 @@
 // AtlaSent Gate Action — GitHub Actions entry point.
 //
 // Routing (in priority order):
+//   release-mode set      → POST-deploy candidate registration + verify
+//                           against atlasent-control-plane /v1/release/*
 //   policy-sync=true      → v1-policy-sync (post bundle, fail CI on rejection)
 //   evaluations input set → v2.1 batch path via runV21()
 //   single action input   → @atlasent/enforce (canonical enforcement wrapper)
@@ -20,6 +22,7 @@ import {
 } from "./financialGovernanceAdvisory";
 import type { FinancialAdvisoryInput } from "./financialGovernanceAdvisory";
 import { emitEvidenceEvent } from "./evidenceClient";
+import { registerAndVerify, summarizeOutcome } from "./releaseCandidate";
 import { buildEvidenceBundle } from "./evidenceBundle";
 import {
   LEGACY_PRODUCTION_DEPLOY_ALIAS,
@@ -337,10 +340,132 @@ async function runPolicySyncStep(apiKey: string, apiUrl: string): Promise<void> 
 }
 
 // ---------------------------------------------------------------------------
+// Release-candidate post-deploy mode
+// ---------------------------------------------------------------------------
+
+async function runReleaseModeStep(): Promise<void> {
+  const cpUrl = getInput("control-plane-url", true);
+  const cpToken =
+    getInput("control-plane-token") || (process.env["ATLASENT_CP_TOKEN"] ?? "").trim();
+  if (!cpToken) {
+    setFailed(
+      "release-mode: control-plane-token input or ATLASENT_CP_TOKEN env var is required",
+    );
+    return;
+  }
+  maskValue(cpToken);
+
+  const targetUrl = getInput("release-target-runtime-url", true);
+  const gh = getGitHubContext();
+  const repo = getInput("release-repo") || gh.repository;
+  const commitSha = getInput("release-commit-sha") || gh.sha;
+  if (!commitSha) {
+    setFailed("release-mode: commit SHA is required (set release-commit-sha or GITHUB_SHA)");
+    return;
+  }
+  const imageDigest = getInput("release-image-digest") || undefined;
+  const semver = getInput("release-semver") || undefined;
+  const environment = getInput("release-environment", true) as
+    | "preview"
+    | "staging"
+    | "production";
+  if (!["preview", "staging", "production"].includes(environment)) {
+    setFailed(
+      `release-mode: release-environment must be preview | staging | production (got "${environment}")`,
+    );
+    return;
+  }
+  const failOnVerify = getInput("release-fail-on-verify").toLowerCase() !== "false";
+
+  info(
+    `AtlaSent release: registering candidate for ${repo}@${commitSha.slice(0, 8)} in ${environment} against ${targetUrl}`,
+  );
+
+  let result;
+  try {
+    result = await registerAndVerify({
+      controlPlaneUrl: cpUrl,
+      controlPlaneToken: cpToken,
+      targetRuntimeUrl: targetUrl,
+      repo,
+      commitSha,
+      imageDigest,
+      semver,
+      environment,
+    });
+  } catch (err) {
+    setOutput("release-candidate-id", "");
+    setOutput("release-runtime-status", "error");
+    setOutput("release-deploy-status", "error");
+    setOutput("release-runtime-result", "{}");
+    setOutput("release-deploy-result", "{}");
+    setFailed(
+      `AtlaSent release: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return;
+  }
+
+  setOutput("release-candidate-id", result.candidateId);
+  setOutput("release-runtime-status", result.runtime.status);
+  setOutput("release-deploy-status", result.deploy.status);
+  setOutput("release-runtime-result", JSON.stringify(result.runtime));
+  setOutput("release-deploy-result", JSON.stringify(result.deploy));
+
+  const runtimeSummary = summarizeOutcome(result.runtime);
+  const deploySummary = summarizeOutcome(result.deploy);
+
+  info(`  Candidate: ${result.candidateId}`);
+  info(`  Runtime verify: ${result.runtime.status}`);
+  for (const c of result.runtime.checks) {
+    info(`    • ${c.name}: ${c.status}${c.detail ? ` — ${c.detail}` : ""}`);
+  }
+  info(`  Deploy verify: ${result.deploy.status}`);
+  for (const c of result.deploy.checks) {
+    info(`    • ${c.name}: ${c.status}${c.detail ? ` — ${c.detail}` : ""}`);
+  }
+
+  appendToStepSummary(
+    [
+      "",
+      "## 🚀 AtlaSent Release Candidate",
+      "",
+      `| Field | Value |`,
+      `|---|---|`,
+      `| Candidate ID | \`${result.candidateId}\` |`,
+      `| Repo | \`${repo}\` |`,
+      `| Commit | \`${commitSha.slice(0, 8)}\` |`,
+      `| Environment | \`${environment}\` |`,
+      `| Runtime verify | ${runtimeSummary.level === "passed" ? "✅" : runtimeSummary.level === "warned" ? "⚠️" : "❌"} \`${result.runtime.status}\` |`,
+      `| Deploy verify | ${deploySummary.level === "passed" ? "✅" : deploySummary.level === "warned" ? "⚠️" : "❌"} \`${result.deploy.status}\` |`,
+      "",
+    ].join("\n"),
+  );
+
+  if (failOnVerify && (!runtimeSummary.ok || !deploySummary.ok)) {
+    const failed: string[] = [];
+    if (!runtimeSummary.ok) failed.push(`runtime=${result.runtime.status}`);
+    if (!deploySummary.ok) failed.push(`deploy=${result.deploy.status}`);
+    setFailed(
+      `AtlaSent release: verification failed (${failed.join(", ")}). Promotion should not proceed.`,
+    );
+    return;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 export async function run(): Promise<void> {
+  // ── Release-mode path (post-deploy verification) ───────────────────────────
+  // Runs against the control-plane, not the runtime — does NOT require
+  // ATLASENT_API_KEY. Routed first so it can short-circuit before the other
+  // paths' input requirements.
+  if (getInput("release-mode") === "register-and-verify") {
+    await runReleaseModeStep();
+    return;
+  }
+
   // 1. Read shared inputs
   const apiKey = getApiKey();
   maskValue(apiKey);

@@ -789,6 +789,67 @@ function assessFinancialGovernance(input) {
   };
 }
 
+// src/releaseCandidate.ts
+async function postJson(url, token, body, fetchFn = globalThis.fetch) {
+  const res = await fetchFn(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(body)
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`POST ${url} failed (${res.status}): ${text.slice(0, 400)}`);
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && "data" in parsed && parsed.success) {
+      return parsed.data;
+    }
+    return parsed;
+  } catch {
+    throw new Error(`POST ${url} returned non-JSON body: ${text.slice(0, 200)}`);
+  }
+}
+async function registerAndVerify(inputs, fetchFn = globalThis.fetch) {
+  const base = inputs.controlPlaneUrl.replace(/\/$/, "");
+  const registered = await postJson(
+    `${base}/v1/release/candidates`,
+    inputs.controlPlaneToken,
+    {
+      repo: inputs.repo,
+      commitSha: inputs.commitSha,
+      imageDigest: inputs.imageDigest,
+      semver: inputs.semver,
+      environment: inputs.environment,
+      targetRuntimeUrl: inputs.targetRuntimeUrl
+    },
+    fetchFn
+  );
+  const runtime = await postJson(
+    `${base}/v1/release/candidates/${registered.candidateId}/verify/runtime`,
+    inputs.controlPlaneToken,
+    {},
+    fetchFn
+  );
+  const deploy = await postJson(
+    `${base}/v1/release/candidates/${registered.candidateId}/verify/deploy`,
+    inputs.controlPlaneToken,
+    {},
+    fetchFn
+  );
+  return { candidateId: registered.candidateId, runtime, deploy };
+}
+function summarizeOutcome(o) {
+  if (o.status === "passed")
+    return { ok: true, level: "passed" };
+  if (o.status === "partial")
+    return { ok: true, level: "warned" };
+  return { ok: false, level: "failed" };
+}
+
 // src/evidenceBundle.ts
 var import_node_crypto = require("node:crypto");
 function genId() {
@@ -1111,7 +1172,109 @@ async function runPolicySyncStep(apiKey, apiUrl) {
     info(`  Run ID: ${run2.id}`);
   }
 }
+async function runReleaseModeStep() {
+  const cpUrl = getInput("control-plane-url", true);
+  const cpToken = getInput("control-plane-token") || (process.env["ATLASENT_CP_TOKEN"] ?? "").trim();
+  if (!cpToken) {
+    setFailed(
+      "release-mode: control-plane-token input or ATLASENT_CP_TOKEN env var is required"
+    );
+    return;
+  }
+  maskValue(cpToken);
+  const targetUrl = getInput("release-target-runtime-url", true);
+  const gh = getGitHubContext();
+  const repo = getInput("release-repo") || gh.repository;
+  const commitSha = getInput("release-commit-sha") || gh.sha;
+  if (!commitSha) {
+    setFailed("release-mode: commit SHA is required (set release-commit-sha or GITHUB_SHA)");
+    return;
+  }
+  const imageDigest = getInput("release-image-digest") || void 0;
+  const semver = getInput("release-semver") || void 0;
+  const environment = getInput("release-environment", true);
+  if (!["preview", "staging", "production"].includes(environment)) {
+    setFailed(
+      `release-mode: release-environment must be preview | staging | production (got "${environment}")`
+    );
+    return;
+  }
+  const failOnVerify = getInput("release-fail-on-verify").toLowerCase() !== "false";
+  info(
+    `AtlaSent release: registering candidate for ${repo}@${commitSha.slice(0, 8)} in ${environment} against ${targetUrl}`
+  );
+  let result;
+  try {
+    result = await registerAndVerify({
+      controlPlaneUrl: cpUrl,
+      controlPlaneToken: cpToken,
+      targetRuntimeUrl: targetUrl,
+      repo,
+      commitSha,
+      imageDigest,
+      semver,
+      environment
+    });
+  } catch (err) {
+    setOutput("release-candidate-id", "");
+    setOutput("release-runtime-status", "error");
+    setOutput("release-deploy-status", "error");
+    setOutput("release-runtime-result", "{}");
+    setOutput("release-deploy-result", "{}");
+    setFailed(
+      `AtlaSent release: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return;
+  }
+  setOutput("release-candidate-id", result.candidateId);
+  setOutput("release-runtime-status", result.runtime.status);
+  setOutput("release-deploy-status", result.deploy.status);
+  setOutput("release-runtime-result", JSON.stringify(result.runtime));
+  setOutput("release-deploy-result", JSON.stringify(result.deploy));
+  const runtimeSummary = summarizeOutcome(result.runtime);
+  const deploySummary = summarizeOutcome(result.deploy);
+  info(`  Candidate: ${result.candidateId}`);
+  info(`  Runtime verify: ${result.runtime.status}`);
+  for (const c of result.runtime.checks) {
+    info(`    \u2022 ${c.name}: ${c.status}${c.detail ? ` \u2014 ${c.detail}` : ""}`);
+  }
+  info(`  Deploy verify: ${result.deploy.status}`);
+  for (const c of result.deploy.checks) {
+    info(`    \u2022 ${c.name}: ${c.status}${c.detail ? ` \u2014 ${c.detail}` : ""}`);
+  }
+  appendToStepSummary(
+    [
+      "",
+      "## \u{1F680} AtlaSent Release Candidate",
+      "",
+      `| Field | Value |`,
+      `|---|---|`,
+      `| Candidate ID | \`${result.candidateId}\` |`,
+      `| Repo | \`${repo}\` |`,
+      `| Commit | \`${commitSha.slice(0, 8)}\` |`,
+      `| Environment | \`${environment}\` |`,
+      `| Runtime verify | ${runtimeSummary.level === "passed" ? "\u2705" : runtimeSummary.level === "warned" ? "\u26A0\uFE0F" : "\u274C"} \`${result.runtime.status}\` |`,
+      `| Deploy verify | ${deploySummary.level === "passed" ? "\u2705" : deploySummary.level === "warned" ? "\u26A0\uFE0F" : "\u274C"} \`${result.deploy.status}\` |`,
+      ""
+    ].join("\n")
+  );
+  if (failOnVerify && (!runtimeSummary.ok || !deploySummary.ok)) {
+    const failed = [];
+    if (!runtimeSummary.ok)
+      failed.push(`runtime=${result.runtime.status}`);
+    if (!deploySummary.ok)
+      failed.push(`deploy=${result.deploy.status}`);
+    setFailed(
+      `AtlaSent release: verification failed (${failed.join(", ")}). Promotion should not proceed.`
+    );
+    return;
+  }
+}
 async function run() {
+  if (getInput("release-mode") === "register-and-verify") {
+    await runReleaseModeStep();
+    return;
+  }
   const apiKey = getApiKey();
   maskValue(apiKey);
   const apiUrl = getInput("api-url") || "https://api.atlasent.io";

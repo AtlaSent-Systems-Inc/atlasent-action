@@ -105,6 +105,49 @@ inputs:
     description: 'Number of sessions for the subject, used by session_count trigger campaigns.'
     required: false
     default: ''
+  # ── Release-candidate post-deploy verification ────────────────────────────────
+  release-mode:
+    description: |
+      When "register-and-verify", run as a POST-deploy step against the
+      atlasent-control-plane release-verification surface:
+        1. POST /v1/release/candidates           (register the candidate)
+        2. POST /v1/release/candidates/:id/verify/runtime
+        3. POST /v1/release/candidates/:id/verify/deploy
+      Mutually exclusive with the evaluate/policy-sync paths — when set,
+      single-eval and batch inputs are ignored.
+    required: false
+    default: ''
+  control-plane-url:
+    description: 'atlasent-control-plane base URL (release-mode only).'
+    required: false
+  control-plane-token:
+    description: |
+      Bearer token for the control-plane. Either set this input or the
+      ATLASENT_CP_TOKEN env var. Distinct from ATLASENT_API_KEY (which
+      authenticates against the runtime). Required when release-mode is set.
+    required: false
+  release-target-runtime-url:
+    description: 'URL of the deployed atlasent-api runtime to probe (release-mode only).'
+    required: false
+  release-repo:
+    description: 'Repository identifier registered with the candidate. Defaults to ${{ github.repository }}.'
+    required: false
+  release-commit-sha:
+    description: 'Commit SHA registered with the candidate. Defaults to ${{ github.sha }}.'
+    required: false
+  release-image-digest:
+    description: 'Optional image digest (e.g. sha256:...) registered with the candidate.'
+    required: false
+  release-semver:
+    description: 'Optional semver string registered with the candidate.'
+    required: false
+  release-environment:
+    description: 'preview | staging | production. Required when release-mode is set.'
+    required: false
+  release-fail-on-verify:
+    description: 'When "true" (default), fail the step if either verify/runtime or verify/deploy returns failed/error. "false" leaves the outcome in outputs without failing.'
+    required: false
+    default: 'true'
 outputs:
   decision:
     description: 'The evaluation decision (allow/deny/hold/escalate). Set for single-eval path only.'
@@ -167,6 +210,17 @@ outputs:
     description: 'JSON array of behavior insights campaigns that fired for the subject. Empty array when insights-org-id is not set or the feature flag is disabled.'
   insights-skipped:
     description: 'JSON array of behavior insights campaigns that were skipped, with reasons.'
+  # ── Release-candidate outputs ────────────────────────────────────────────────
+  release-candidate-id:
+    description: 'Candidate ID returned by POST /v1/release/candidates (release-mode only).'
+  release-runtime-status:
+    description: 'Outcome status of the runtime verification: passed | failed | partial | error (release-mode only).'
+  release-deploy-status:
+    description: 'Outcome status of the deploy verification: passed | failed | partial | error (release-mode only).'
+  release-runtime-result:
+    description: 'Full JSON result of the runtime verification (release-mode only).'
+  release-deploy-result:
+    description: 'Full JSON result of the deploy verification (release-mode only).'
 runs:
   using: 'node24'
   main: 'dist/index.js'

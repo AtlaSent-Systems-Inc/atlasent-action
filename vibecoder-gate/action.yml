@@ -1,0 +1,89 @@
+name: 'Vibecoder Deploy Gate'
+description: 'AI-powered deploy gate — evaluates code quality, security, test coverage, and deploy readiness via Claude'
+branding:
+  icon: 'zap'
+  color: 'purple'
+
+inputs:
+  pr-number:
+    description: 'Pull request number to evaluate'
+    required: true
+  min-vibe-score:
+    description: 'Minimum overall vibe score (0–10) required to pass the gate'
+    required: false
+    default: '6'
+  diff-max-chars:
+    description: 'Maximum diff characters sent to Claude (longer diffs are truncated)'
+    required: false
+    default: '15000'
+  post-comment:
+    description: 'Post the vibe report as a PR comment (true/false)'
+    required: false
+    default: 'true'
+  anthropic-api-key:
+    description: 'Anthropic API key for Claude'
+    required: true
+  github-token:
+    description: 'GitHub token used to fetch the diff and post PR comments'
+    required: false
+    default: '${{ github.token }}'
+
+outputs:
+  vibe-score:
+    description: 'Overall vibe score (0–10)'
+    value: ${{ steps.vibe.outputs.vibe-score }}
+  passed:
+    description: '"true" when the gate passed'
+    value: ${{ steps.vibe.outputs.passed }}
+  verdict:
+    description: 'PASS or FAIL'
+    value: ${{ steps.vibe.outputs.verdict }}
+  report:
+    description: 'Full JSON vibe report'
+    value: ${{ steps.vibe.outputs.report }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install Anthropic SDK
+      shell: bash
+      run: pip install anthropic --quiet
+
+    - name: Fetch PR diff
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        gh pr diff "${{ inputs.pr-number }}" \
+          --repo "${{ github.repository }}" \
+          > "${{ github.action_path }}/pr.diff" 2>/dev/null || true
+        echo "Diff fetched: $(wc -c < "${{ github.action_path }}/pr.diff") bytes"
+
+    - name: Run vibe check
+      id: vibe
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        MIN_VIBE_SCORE: ${{ inputs.min-vibe-score }}
+        DIFF_MAX_CHARS: ${{ inputs.diff-max-chars }}
+        DIFF_FILE: ${{ github.action_path }}/pr.diff
+        COMMENT_FILE: ${{ github.action_path }}/vibe_comment.md
+      run: python "${{ github.action_path }}/vibe_check.py"
+
+    - name: Post vibe report as PR comment
+      if: ${{ always() && inputs.post-comment == 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        comment_file="${{ github.action_path }}/vibe_comment.md"
+        if [ -f "$comment_file" ]; then
+          gh pr comment "${{ inputs.pr-number }}" \
+            --repo "${{ github.repository }}" \
+            --body-file "$comment_file"
+        fi

@@ -59,6 +59,14 @@ inputs:
     description: 'Currency code for the financial action value'
     required: false
     default: 'USD'
+  receipt-signing-key-id:
+    description: |
+      Key ID recorded in the evidence receipt for rotation tracking.
+      Paired with the ATLASENT_RECEIPT_SIGNING_SECRET Actions secret so
+      offline verifiers know which key to use. Omit if you do not rotate
+      signing keys or do not need signed receipts.
+    required: false
+    default: ''
   # ── Policy Sync ──────────────────────────────────────────────────────────────────
   policy-sync:
     description: |
@@ -125,6 +133,26 @@ outputs:
   audit-hash:
     description: 'SHA-256 audit chain hash'
     value: ${{ steps.gate.outputs.audit-hash }}
+  evidence-receipt:
+    description: |
+      Signed per-decision authorization receipt (JSON). Contains evaluation ID,
+      permit ID, audit-trail hash, actor, action, environment, repository, and
+      SHA. HMAC-SHA256 signed when ATLASENT_RECEIPT_SIGNING_SECRET is set as an
+      Actions secret; algorithm: "none" otherwise. Store alongside the
+      deployment record for offline verification. null on denial.
+  evidence-bundle:
+    description: |
+      Full compliance evidence bundle (JSON, v1 envelope). Wraps the receipt
+      with SOC 2 control coverage (CC7.2 audit trail, CC8.1 change management,
+      CC6.1 logical access, CC3.2 policy violations) and a bundle-level SHA-256
+      integrity hash. Upload as a job artifact for auditors:
+
+        - uses: actions/upload-artifact@v4
+          with:
+            name: atlasent-evidence-bundle
+            path: evidence-bundle.json
+
+      null on denial.
   # ── Policy Sync outputs ──────────────────────────────────────────────────────────
   sync-run-id:
     description: 'The policy sync run ID returned by v1-policy-sync. Set when policy-sync is "true".'

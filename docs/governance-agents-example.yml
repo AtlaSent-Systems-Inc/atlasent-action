@@ -1,0 +1,75 @@
+# AtlaSent Governance Agents — advisory PR-check workflow
+#
+# Invokes one or more constrained advisory governance agents against a
+# governed change and posts findings to the job summary. Findings are
+# signal, not authorization: required gates remain on the governance
+# authority surface in the runtime DB.
+#
+# This workflow is intentionally NON-BLOCKING. The `governance-fail-on-severity`
+# input is omitted so findings never fail the step. Convert to gating by
+# setting that input to `medium`, `high`, or `blocker` once you trust the
+# agents' signal in your environment.
+#
+# Prerequisites:
+#   - ATLASENT_API_KEY: API key with the governance:read + governance:write
+#                       scopes, stored as a repo secret.
+#   - A governed_change row in the runtime DB whose subject_kind matches
+#     each agent's applicable_subject_kinds. The change_id is supplied via
+#     the governance-change-id input.
+#
+# Auto-discovery (no governance-artifact-file needed) covers:
+#   - migration_review:        scans supabase/migrations*/**.sql
+#   - runtime_contract_drift:  scans openapi.yaml + supabase/functions/v1-* +
+#                              packages/types/src/index.ts type exports
+#
+# For the other three registered agents (authority_boundary,
+# operational_readiness, compliance_semantics), supply a JSON artifact map
+# via governance-artifact-file. See docs/governance-agents-artifact.json
+# (a stub example).
+
+name: AtlaSent Governance Agents
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  # The action reports findings to the job summary; it does NOT need
+  # statuses: write because findings are not gating checks.
+
+jobs:
+  governance-agents:
+    name: governance-agents (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve governed change id
+        id: change
+        run: |
+          # In practice this is looked up from a PR comment, a label, or a
+          # call to /v1/governed-changes?subject_ref=github:owner-repo#PR.
+          # For example purposes, treat it as a repository variable.
+          echo "id=${{ vars.GOVERNED_CHANGE_ID }}" >> "$GITHUB_OUTPUT"
+
+      - name: Run advisory governance agents
+        uses: AtlaSent-Systems-Inc/atlasent-action@v2
+        with:
+          api-url: https://api.atlasent.io
+          governance-agents: migration_review,runtime_contract_drift
+          governance-change-id: ${{ steps.change.outputs.id }}
+          # Advisory by default — findings post to the step summary but
+          # never fail the check. Flip on when ready:
+          #   governance-fail-on-severity: high
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+
+      # Optional: surface the highest severity as a workflow-visible output
+      # so downstream jobs can branch on it without re-querying the API.
+      - name: Note highest severity
+        if: always()
+        run: |
+          echo "Highest severity: ${{ steps.governance-agents.outputs.governance-highest-severity || 'none' }}"
+          echo "Total findings:   ${{ steps.governance-agents.outputs.governance-findings-count || '0' }}"

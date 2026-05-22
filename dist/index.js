@@ -42,7 +42,7 @@ var require_transport = __commonJS({
     var node_https_1 = __importDefault(require("node:https"));
     var node_http_1 = __importDefault(require("node:http"));
     function post(url, body, headers) {
-      return new Promise((resolve2, reject) => {
+      return new Promise((resolve3, reject) => {
         const parsed = new URL(url);
         const transport = parsed.protocol === "https:" ? node_https_1.default : node_http_1.default;
         const req = transport.request({
@@ -59,7 +59,7 @@ var require_transport = __commonJS({
         }, (res) => {
           const chunks = [];
           res.on("data", (chunk) => chunks.push(chunk));
-          res.on("end", () => resolve2({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf-8") }));
+          res.on("end", () => resolve3({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf-8") }));
           res.on("error", reject);
         });
         req.on("error", reject);
@@ -719,6 +719,304 @@ function formatSyncDiff(run2) {
   return parts.length > 0 ? parts.join(", ") : "no changes";
 }
 
+// src/governanceAgents.ts
+var import_node_crypto = require("node:crypto");
+var fs2 = __toESM(require("node:fs"));
+var path2 = __toESM(require("node:path"));
+var SEVERITY_RANK = {
+  info: 1,
+  low: 2,
+  medium: 3,
+  high: 4,
+  blocker: 5
+};
+async function runGovernanceAgents(opts) {
+  if (!opts.apiKey)
+    throw new Error("apiKey is required");
+  if (!opts.apiUrl)
+    throw new Error("apiUrl is required");
+  if (!opts.changeId) {
+    throw new Error("changeId is required \u2014 set governance-change-id input");
+  }
+  if (opts.agentSlugs.length === 0) {
+    throw new Error("agentSlugs must be non-empty");
+  }
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const fs_ = opts.fileSystem ?? defaultFs();
+  const workspace = opts.workspace ?? process.env["GITHUB_WORKSPACE"] ?? process.cwd();
+  const artifactMap = opts.artifactFile ? readArtifactFile(opts.artifactFile, workspace, fs_) : {};
+  const evaluations = [];
+  const findings = [];
+  for (const slug of opts.agentSlugs) {
+    const artifact = artifactMap[slug] ?? autoDiscoverArtifact(slug, workspace, fs_);
+    if (!artifact) {
+      throw new Error(
+        `No artifact for agent "${slug}". Either supply one via governance-artifact-file (a JSON object keyed by agent slug) or use a slug that supports auto-discovery (migration_review, runtime_contract_drift).`
+      );
+    }
+    const result = await invokeAgent(
+      {
+        apiKey: opts.apiKey,
+        apiUrl: opts.apiUrl,
+        changeId: opts.changeId,
+        slug,
+        artifact,
+        invokedBy: opts.invokedBy ?? "github-action",
+        fetchImpl
+      }
+    );
+    evaluations.push(result.evaluation);
+    findings.push(...result.findings);
+  }
+  const highest = highestSeverity(findings);
+  const failed = !!opts.failOnSeverity && !!highest && SEVERITY_RANK[highest] >= SEVERITY_RANK[opts.failOnSeverity];
+  return { evaluations, findings, highest_severity: highest, failed };
+}
+async function invokeAgent(args) {
+  const url = `${args.apiUrl.replace(/\/$/, "")}/v1/governance/agents/${encodeURIComponent(args.slug)}/evaluate`;
+  const body = JSON.stringify({
+    change_id: args.changeId,
+    input_hash: hashArtifact(args.artifact),
+    artifact: args.artifact,
+    invoked_by_kind: "service_account",
+    invoked_by: args.invokedBy
+  });
+  let resp;
+  try {
+    resp = await args.fetchImpl(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${args.apiKey}`
+      },
+      body
+    });
+  } catch (err) {
+    throw new Error(
+      `governance agent ${args.slug}: network error: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    if (resp.status === 501) {
+      throw new Error(
+        `governance agent ${args.slug}: registered in the DB but no in-process implementation is deployed (501). Skip this slug or upgrade the API.`
+      );
+    }
+    throw new Error(
+      `governance agent ${args.slug}: HTTP ${resp.status} ${resp.statusText} \u2014 ${text.slice(0, 500)}`
+    );
+  }
+  const parsed = await resp.json();
+  if (!parsed.evaluation || !Array.isArray(parsed.findings)) {
+    throw new Error(`governance agent ${args.slug}: malformed response`);
+  }
+  return parsed;
+}
+var MIGRATION_DIRS = [
+  "supabase/migrations",
+  "supabase/migrations-runtime",
+  "supabase/migrations-console",
+  "supabase/migrations-shared"
+];
+function defaultFs() {
+  return {
+    readFileSync: (p, enc) => fs2.readFileSync(p, enc),
+    existsSync: (p) => fs2.existsSync(p),
+    readdirSync: (p) => fs2.readdirSync(p),
+    statSync: (p) => fs2.statSync(p)
+  };
+}
+function autoDiscoverArtifact(slug, workspace, fs_) {
+  if (slug === "migration_review")
+    return discoverMigrationArtifact(workspace, fs_);
+  if (slug === "runtime_contract_drift")
+    return discoverRuntimeContractArtifact(workspace, fs_);
+  return null;
+}
+function discoverMigrationArtifact(workspace, fs_) {
+  const files = [];
+  for (const dir of MIGRATION_DIRS) {
+    const abs = path2.resolve(workspace, dir);
+    if (!fs_.existsSync(abs))
+      continue;
+    if (!fs_.statSync(abs).isDirectory())
+      continue;
+    for (const entry of fs_.readdirSync(abs)) {
+      if (!entry.endsWith(".sql"))
+        continue;
+      const full = path2.join(abs, entry);
+      if (!fs_.statSync(full).isFile())
+        continue;
+      files.push({
+        path: path2.relative(workspace, full),
+        content: fs_.readFileSync(full, "utf-8")
+      });
+    }
+  }
+  return { migrations: files };
+}
+function discoverRuntimeContractArtifact(workspace, fs_) {
+  const openapiPath = ["openapi.yaml", "openapi-v1.yaml", "openapi.yml"].map((p) => path2.resolve(workspace, p)).find((p) => fs_.existsSync(p));
+  if (!openapiPath)
+    return null;
+  const openapi = parseOpenApiPaths(fs_.readFileSync(openapiPath, "utf-8"));
+  const routesDir = path2.resolve(workspace, "supabase/functions");
+  const routes = fs_.existsSync(routesDir) ? discoverRuntimeRoutes(routesDir, fs_) : [];
+  const typeNames = [];
+  const typesIndex = path2.resolve(workspace, "packages/types/src/index.ts");
+  if (fs_.existsSync(typesIndex)) {
+    const content = fs_.readFileSync(typesIndex, "utf-8");
+    for (const m of content.matchAll(/export\s+(?:type|interface)\s+([A-Z][A-Za-z0-9_]*)/g)) {
+      typeNames.push(m[1]);
+    }
+  }
+  return {
+    openapi: { paths: openapi },
+    runtime: { routes },
+    sdk: { type_names: typeNames }
+  };
+}
+function parseOpenApiPaths(yaml) {
+  const out = [];
+  const lines = yaml.split("\n");
+  let inPaths = false;
+  let currentPath = null;
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    if (!inPaths) {
+      if (/^paths:\s*$/.test(line))
+        inPaths = true;
+      continue;
+    }
+    if (/^[A-Za-z]/.test(line)) {
+      inPaths = false;
+      if (currentPath) {
+        out.push(currentPath);
+        currentPath = null;
+      }
+      continue;
+    }
+    const pathMatch = /^  (\/[\w/{}.-]+):/.exec(line);
+    if (pathMatch) {
+      if (currentPath)
+        out.push(currentPath);
+      currentPath = { path: pathMatch[1], methods: [] };
+      continue;
+    }
+    const methodMatch = /^    (get|post|put|patch|delete):/i.exec(line);
+    if (methodMatch && currentPath) {
+      currentPath.methods.push(methodMatch[1].toLowerCase());
+    }
+  }
+  if (currentPath)
+    out.push(currentPath);
+  return out;
+}
+function discoverRuntimeRoutes(routesDir, fs_) {
+  const routes = [];
+  for (const entry of fs_.readdirSync(routesDir)) {
+    if (!entry.startsWith("v1-"))
+      continue;
+    const dir = path2.join(routesDir, entry);
+    if (!fs_.statSync(dir).isDirectory())
+      continue;
+    const inferredPath = "/" + entry.replace(/-/g, "/").replace(/^\//, "");
+    routes.push({
+      path: inferredPath,
+      // Methods unknown without parsing the handler; leave empty so the
+      // drift agent treats per-method as "not asserted by runtime" and
+      // only flags path-level drift.
+      methods: [],
+      function_name: entry
+    });
+  }
+  return routes;
+}
+function readArtifactFile(artifactPath, workspace, fs_) {
+  const abs = path2.isAbsolute(artifactPath) ? artifactPath : path2.resolve(workspace, artifactPath);
+  if (!fs_.existsSync(abs)) {
+    throw new Error(`governance-artifact-file not found: ${artifactPath}`);
+  }
+  const raw = fs_.readFileSync(abs, "utf-8");
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `governance-artifact-file is not valid JSON: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(
+      "governance-artifact-file must be a JSON object keyed by agent slug"
+    );
+  }
+  return parsed;
+}
+function hashArtifact(artifact) {
+  const canonical = canonicalJson(artifact);
+  return "sha256:" + (0, import_node_crypto.createHash)("sha256").update(canonical).digest("hex");
+}
+function canonicalJson(value) {
+  if (value === null || typeof value !== "object")
+    return JSON.stringify(value);
+  if (Array.isArray(value))
+    return "[" + value.map(canonicalJson).join(",") + "]";
+  const keys = Object.keys(value).sort();
+  return "{" + keys.map((k) => JSON.stringify(k) + ":" + canonicalJson(value[k])).join(",") + "}";
+}
+function highestSeverity(findings) {
+  let best = null;
+  let rank = 0;
+  for (const f of findings) {
+    if (SEVERITY_RANK[f.severity] > rank) {
+      rank = SEVERITY_RANK[f.severity];
+      best = f.severity;
+    }
+  }
+  return best;
+}
+function renderStepSummary(result) {
+  const lines = [];
+  lines.push("## Constrained Governance Agents \u2014 findings");
+  lines.push("");
+  lines.push(
+    "> Findings are advisory. They produce signal, not authorization. Required gates remain on the governance authority surface."
+  );
+  lines.push("");
+  for (const e of result.evaluations) {
+    lines.push(`### ${e.agent_slug} \`${e.agent_version}\``);
+    lines.push("");
+    lines.push(
+      `Status: **${e.status}** \u2014 findings: **${e.findings_count}** \u2014 highest: **${e.highest_severity ?? "\u2014"}**`
+    );
+    if (e.summary)
+      lines.push(`> ${e.summary}`);
+    lines.push("");
+    const own = result.findings.filter((f) => f.agent_slug === e.agent_slug);
+    if (own.length === 0) {
+      lines.push("_No findings._");
+      lines.push("");
+      continue;
+    }
+    lines.push("| Severity | Type | Authority | Summary |");
+    lines.push("|---|---|---|---|");
+    for (const f of own) {
+      const auth = f.required_authority ?? "\u2014";
+      const summary = f.summary.replace(/\|/g, "\\|").replace(/\n+/g, " ");
+      lines.push(`| ${f.severity} | \`${f.finding_type}\` | ${auth} | ${summary} |`);
+    }
+    lines.push("");
+  }
+  if (result.highest_severity) {
+    lines.push(`**Overall highest severity:** \`${result.highest_severity}\``);
+  } else {
+    lines.push("**No findings.**");
+  }
+  return lines.join("\n") + "\n";
+}
+
 // src/financialGovernanceAdvisory.ts
 var USD_EQUIVALENT_CURRENCIES = /* @__PURE__ */ new Set(["USD", "USDC", "USDT", "DAI"]);
 var REGULATORY_ACTION_TYPES = /* @__PURE__ */ new Set(["wire_transfer", "trading_execution"]);
@@ -851,15 +1149,15 @@ function summarizeOutcome(o) {
 }
 
 // src/evidenceBundle.ts
-var import_node_crypto = require("node:crypto");
+var import_node_crypto2 = require("node:crypto");
 function genId() {
-  return (0, import_node_crypto.randomUUID)();
+  return (0, import_node_crypto2.randomUUID)();
 }
 function hmacSha256(secret, input) {
-  return (0, import_node_crypto.createHmac)("sha256", secret).update(input, "utf8").digest("hex");
+  return (0, import_node_crypto2.createHmac)("sha256", secret).update(input, "utf8").digest("hex");
 }
 function sha256Hex(input) {
-  return (0, import_node_crypto.createHash)("sha256").update(input, "utf8").digest("hex");
+  return (0, import_node_crypto2.createHash)("sha256").update(input, "utf8").digest("hex");
 }
 function buildComplianceControls(hasAuditHash) {
   return [
@@ -974,8 +1272,8 @@ function getInput(name, required2 = false) {
 function setOutput(name, value) {
   const outputFile = process.env["GITHUB_OUTPUT"];
   if (outputFile) {
-    const fs2 = require("node:fs");
-    fs2.appendFileSync(outputFile, `${name}=${value}
+    const fs3 = require("node:fs");
+    fs3.appendFileSync(outputFile, `${name}=${value}
 `);
   }
 }
@@ -1033,8 +1331,8 @@ function appendToStepSummary(content) {
   const summaryFile = process.env["GITHUB_STEP_SUMMARY"];
   if (summaryFile) {
     try {
-      const fs2 = require("node:fs");
-      fs2.appendFileSync(summaryFile, content);
+      const fs3 = require("node:fs");
+      fs3.appendFileSync(summaryFile, content);
     } catch {
     }
   }
@@ -1097,6 +1395,80 @@ function emitFinancialGovernanceAdvisory(actionType, actor, orgId) {
     ""
   ].join("\n");
   appendToStepSummary(summaryBlock);
+}
+var VALID_SEVERITIES = [
+  "info",
+  "low",
+  "medium",
+  "high",
+  "blocker"
+];
+async function runGovernanceAgentsStep(apiKey, apiUrl) {
+  const slugsRaw = getInput("governance-agents", true);
+  const agentSlugs = slugsRaw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  if (agentSlugs.length === 0) {
+    setFailed("governance-agents input is empty after trimming");
+    return;
+  }
+  const changeId = getInput("governance-change-id", true);
+  const artifactFile = getInput("governance-artifact-file") || void 0;
+  const failOnBlocker = getInput("governance-fail-on-blocker").toLowerCase() === "true";
+  const failOnSeverityRaw = getInput("governance-fail-on-severity");
+  let failOnSeverity;
+  if (failOnSeverityRaw) {
+    if (!VALID_SEVERITIES.includes(failOnSeverityRaw)) {
+      setFailed(
+        `governance-fail-on-severity must be one of ${VALID_SEVERITIES.join("|")} (got "${failOnSeverityRaw}")`
+      );
+      return;
+    }
+    failOnSeverity = failOnSeverityRaw;
+  } else if (failOnBlocker) {
+    failOnSeverity = "blocker";
+  }
+  const gh = getGitHubContext();
+  info(
+    `AtlaSent Governance Agents: running [${agentSlugs.join(", ")}] against change ${changeId} (commit ${gh.sha.slice(0, 8)})`
+  );
+  let result;
+  try {
+    result = await runGovernanceAgents({
+      apiKey,
+      apiUrl,
+      changeId,
+      agentSlugs,
+      artifactFile,
+      failOnSeverity,
+      invokedBy: `github-action:${gh.repository}@${gh.sha.slice(0, 8)}`
+    });
+  } catch (err) {
+    setOutput("governance-findings-count", "0");
+    setOutput("governance-highest-severity", "");
+    setOutput("governance-evaluations", "[]");
+    setOutput("governance-findings", "[]");
+    setFailed(
+      `AtlaSent Governance Agents: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return;
+  }
+  setOutput("governance-findings-count", String(result.findings.length));
+  setOutput("governance-highest-severity", result.highest_severity ?? "");
+  setOutput("governance-evaluations", JSON.stringify(result.evaluations));
+  setOutput("governance-findings", JSON.stringify(result.findings));
+  appendToStepSummary(renderStepSummary(result));
+  if (result.failed) {
+    setFailed(
+      `Governance findings at or above severity "${failOnSeverity}" \u2014 highest emitted: ${result.highest_severity}`
+    );
+    return;
+  }
+  if (result.highest_severity) {
+    warning(
+      `Governance Agents: highest severity ${result.highest_severity} (advisory; not gating)`
+    );
+  } else {
+    info("Governance Agents: no findings.");
+  }
 }
 async function runPolicySyncStep(apiKey, apiUrl) {
   const bundlePath = getInput("policy-bundle", true);
@@ -1282,6 +1654,10 @@ async function run() {
   maskValue(apiKey);
   if (getInput("policy-sync").toLowerCase() === "true") {
     await runPolicySyncStep(apiKey, apiUrl);
+    return;
+  }
+  if (getInput("governance-agents")) {
+    await runGovernanceAgentsStep(apiKey, apiUrl);
     return;
   }
   const evaluationsRaw = getInput("evaluations");

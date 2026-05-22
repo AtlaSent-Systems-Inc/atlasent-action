@@ -148,6 +148,47 @@ inputs:
     description: 'When "true" (default), fail the step if either verify/runtime or verify/deploy returns failed/error. "false" leaves the outcome in outputs without failing.'
     required: false
     default: 'true'
+  # ── Governance Agents (advisory PR-check mode) ────────────────────────────────
+  governance-agents:
+    description: |
+      Comma-separated list of constrained advisory governance-agent slugs to
+      run against the current change, e.g. "migration_review,runtime_contract_drift".
+      When set, the action invokes the governance-agents path and posts
+      findings to the job summary as advisory signal. Findings are NOT
+      authorization — required gates remain on the governance authority
+      surface. Cannot be combined with policy-sync, evaluations, action,
+      or release-mode inputs.
+    required: false
+    default: ''
+  governance-change-id:
+    description: |
+      Governed change UUID to attach findings to. Required when
+      governance-agents is set. The change must exist in the runtime DB
+      (governed_changes table) and belong to the API key's org.
+    required: false
+    default: ''
+  governance-artifact-file:
+    description: |
+      Optional path to a JSON file mapping agent slug to a pre-built
+      artifact. Required for agents whose artifact cannot be auto-discovered
+      from standard locations. migration_review and runtime_contract_drift
+      auto-discover from the repo when no artifact is supplied.
+    required: false
+    default: ''
+  governance-fail-on-severity:
+    description: |
+      Minimum severity (info|low|medium|high|blocker) that fails the step.
+      Findings are advisory by default — omit this input to never fail on
+      severity. Setting it converts the agents path from advisory to gating
+      and is opt-in by design.
+    required: false
+    default: ''
+  governance-fail-on-blocker:
+    description: |
+      Shortcut for `governance-fail-on-severity: blocker`. Ignored when
+      governance-fail-on-severity is set explicitly.
+    required: false
+    default: 'false'
 outputs:
   decision:
     description: 'The evaluation decision (allow/deny/hold/escalate). Set for single-eval path only.'
@@ -221,6 +262,15 @@ outputs:
     description: 'Full JSON result of the runtime verification (release-mode only).'
   release-deploy-result:
     description: 'Full JSON result of the deploy verification (release-mode only).'
+  # ── Governance Agents outputs ──────────────────────────────────────────────────
+  governance-findings-count:
+    description: 'Total number of findings emitted across all invoked governance agents (governance-agents path only).'
+  governance-highest-severity:
+    description: 'Highest severity emitted across all findings (info|low|medium|high|blocker), or empty when no findings (governance-agents path only).'
+  governance-evaluations:
+    description: 'JSON array of evaluation summaries — one per invoked agent — with status, findings_count, and highest_severity (governance-agents path only).'
+  governance-findings:
+    description: 'JSON array of all findings across all invoked agents (governance-agents path only).'
 runs:
   using: 'node24'
   main: 'dist/index.js'

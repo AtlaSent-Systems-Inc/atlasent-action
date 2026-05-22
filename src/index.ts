@@ -18,6 +18,11 @@ import { GateInfraError } from "./gate";
 import { runV21 } from "./v21";
 import { runPolicySync } from "./policySync";
 import {
+  type AgentSeverity,
+  renderStepSummary,
+  runGovernanceAgents,
+} from "./governanceAgents";
+import {
   assessFinancialGovernance,
 } from "./financialGovernanceAdvisory";
 import type { FinancialAdvisoryInput } from "./financialGovernanceAdvisory";
@@ -253,6 +258,111 @@ function emitFinancialGovernanceAdvisory(
 // Policy Sync step handler
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Governance Agents step — advisory PR-check mode
+// ---------------------------------------------------------------------------
+//
+// Findings are signal, not authorization. The step:
+//   1. Parses the comma-separated `governance-agents` slug list.
+//   2. Invokes each agent via /v1/governance/agents/<slug>/evaluate.
+//   3. Renders a job-summary table per agent with severity / type /
+//      authority / one-line summary.
+//   4. Optionally fails the step when `governance-fail-on-severity` is set
+//      and a finding meets or exceeds that severity. Default: never fails.
+//
+// Outputs:
+//   governance-findings-count   total findings across agents
+//   governance-highest-severity worst severity emitted (or empty)
+//   governance-evaluations      JSON-encoded evaluation summaries
+//   governance-findings         JSON-encoded findings array
+
+const VALID_SEVERITIES: readonly AgentSeverity[] = [
+  "info",
+  "low",
+  "medium",
+  "high",
+  "blocker",
+];
+
+async function runGovernanceAgentsStep(apiKey: string, apiUrl: string): Promise<void> {
+  const slugsRaw = getInput("governance-agents", true);
+  const agentSlugs = slugsRaw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (agentSlugs.length === 0) {
+    setFailed("governance-agents input is empty after trimming");
+    return;
+  }
+
+  const changeId = getInput("governance-change-id", true);
+  const artifactFile = getInput("governance-artifact-file") || undefined;
+  const failOnBlocker = getInput("governance-fail-on-blocker").toLowerCase() === "true";
+  const failOnSeverityRaw = getInput("governance-fail-on-severity");
+  let failOnSeverity: AgentSeverity | undefined;
+  if (failOnSeverityRaw) {
+    if (!VALID_SEVERITIES.includes(failOnSeverityRaw as AgentSeverity)) {
+      setFailed(
+        `governance-fail-on-severity must be one of ${VALID_SEVERITIES.join("|")} (got "${failOnSeverityRaw}")`,
+      );
+      return;
+    }
+    failOnSeverity = failOnSeverityRaw as AgentSeverity;
+  } else if (failOnBlocker) {
+    failOnSeverity = "blocker";
+  }
+
+  const gh = getGitHubContext();
+  info(
+    `AtlaSent Governance Agents: running [${agentSlugs.join(", ")}] against change ${changeId} ` +
+      `(commit ${gh.sha.slice(0, 8)})`,
+  );
+
+  let result;
+  try {
+    result = await runGovernanceAgents({
+      apiKey,
+      apiUrl,
+      changeId,
+      agentSlugs,
+      artifactFile,
+      failOnSeverity,
+      invokedBy: `github-action:${gh.repository}@${gh.sha.slice(0, 8)}`,
+    });
+  } catch (err) {
+    setOutput("governance-findings-count", "0");
+    setOutput("governance-highest-severity", "");
+    setOutput("governance-evaluations", "[]");
+    setOutput("governance-findings", "[]");
+    setFailed(
+      `AtlaSent Governance Agents: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return;
+  }
+
+  setOutput("governance-findings-count", String(result.findings.length));
+  setOutput("governance-highest-severity", result.highest_severity ?? "");
+  setOutput("governance-evaluations", JSON.stringify(result.evaluations));
+  setOutput("governance-findings", JSON.stringify(result.findings));
+
+  appendToStepSummary(renderStepSummary(result));
+
+  if (result.failed) {
+    setFailed(
+      `Governance findings at or above severity "${failOnSeverity}" — highest emitted: ${result.highest_severity}`,
+    );
+    return;
+  }
+
+  if (result.highest_severity) {
+    warning(
+      `Governance Agents: highest severity ${result.highest_severity} (advisory; not gating)`,
+    );
+  } else {
+    info("Governance Agents: no findings.");
+  }
+}
+
 async function runPolicySyncStep(apiKey: string, apiUrl: string): Promise<void> {
   const bundlePath = getInput("policy-bundle", true);
   const source = getInput("policy-source") || "github-action";
@@ -478,6 +588,16 @@ export async function run(): Promise<void> {
   // ── Policy sync path ────────────────────────────────────────────────────────
   if (getInput("policy-sync").toLowerCase() === "true") {
     await runPolicySyncStep(apiKey, apiUrl);
+    return;
+  }
+
+  // ── Governance agents path ──────────────────────────────────────────────────
+  //
+  // Advisory mode: invoke one or more constrained governance agents and post
+  // findings as a non-required step result. Does NOT gate by default; the
+  // `governance-fail-on-severity` input is opt-in.
+  if (getInput("governance-agents")) {
+    await runGovernanceAgentsStep(apiKey, apiUrl);
     return;
   }
 

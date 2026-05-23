@@ -1,5 +1,7 @@
 # AtlaSent Gate Action
 
+GitHub Action for the **CI/CD deployment authorization** domain of [AtlaSent](https://www.atlasent.io/) — execution-time authorization infrastructure for governed computational action.
+
 Require execution-time authorization before critical CI/CD actions run. Drop AtlaSent into any GitHub Actions workflow with a single step.
 
 ```

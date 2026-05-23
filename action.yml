@@ -189,6 +189,24 @@ inputs:
       governance-fail-on-severity is set explicitly.
     required: false
     default: 'false'
+  # ── Post-deploy compliance evidence bundle ────────────────────────────────
+  evidence-bundle:
+    description: |
+      When set to "true" or a regime identifier, call POST /v1/orgs/{orgId}/evidence-exports
+      after a successful authorization gate and expose the bundle SHA-256 and export ID as
+      step outputs. Set to "false" (default) to skip the call.
+      Accepted values: 'false' | 'true' | 'soc2_type_ii' | 'hipaa' | 'gdpr'
+      When 'true', defaults to 'soc2_type_ii'.
+      Requires the API key to have the evidence:write scope and the organization to be
+      on the enterprise plan (HTTP 402 degrades gracefully with a warning).
+    required: false
+    default: 'false'
+  evidence-bundle-days:
+    description: |
+      Lookback window in days for the evidence bundle (default: 90).
+      The window is [now - days, now].
+    required: false
+    default: '90'
 outputs:
   decision:
     description: 'The evaluation decision (allow/deny/hold/escalate). Set for single-eval path only.'
@@ -271,6 +289,15 @@ outputs:
     description: 'JSON array of evaluation summaries — one per invoked agent — with status, findings_count, and highest_severity (governance-agents path only).'
   governance-findings:
     description: 'JSON array of all findings across all invoked agents (governance-agents path only).'
+  # ── Post-deploy compliance evidence bundle outputs ─────────────────────────
+  evidence-bundle-sha256:
+    description: |
+      SHA-256 hex digest of the generated compliance evidence bundle.
+      Empty string when evidence-bundle is 'false' or the call was skipped / failed.
+  evidence-bundle-id:
+    description: |
+      Evidence export record ID returned by POST /v1/orgs/{orgId}/evidence-exports.
+      Empty string when evidence-bundle is 'false' or the call was skipped / failed.
 runs:
   using: 'node24'
   main: 'dist/index.js'

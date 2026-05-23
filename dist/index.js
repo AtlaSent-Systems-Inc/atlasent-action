@@ -1242,6 +1242,69 @@ ${JSON.stringify(receiptPayload)}`;
   return { ...bundleBody, bundle_hash: bundleHash };
 }
 
+// src/postDeployEvidenceBundle.ts
+var VALID_EVIDENCE_REGIMES = /* @__PURE__ */ new Set([
+  "soc2_type_ii",
+  "hipaa",
+  "gdpr"
+]);
+function isoNow() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function isoOffsetDays(days) {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1e3).toISOString();
+}
+async function callPostDeployEvidenceBundle(args, log, timeoutMs = 3e4) {
+  const empty = { sha256: "", exportId: "" };
+  const url = `${args.apiUrl.replace(/\/$/, "")}/v1/orgs/${encodeURIComponent(args.orgId)}/evidence-exports`;
+  const windowTo = isoNow();
+  const windowFrom = isoOffsetDays(args.days);
+  const body = {
+    regime: args.regime,
+    window: { from: windowFrom, to: windowTo }
+  };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${args.apiKey}`,
+        "Content-Type": "application/json",
+        ...args.actor ? { "X-AtlaSent-Actor": args.actor } : {}
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    if (res.status === 402) {
+      log.warning(
+        "AtlaSent evidence-bundle: organization is not on the enterprise plan (HTTP 402). Upgrade to generate compliance evidence bundles from CI."
+      );
+      return empty;
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      log.warning(
+        `AtlaSent evidence-bundle: POST ${url} \u2192 HTTP ${res.status} (advisory; build not affected). ${text}`.trim()
+      );
+      return empty;
+    }
+    const data = await res.json();
+    const exportId = data.export?.id ?? "";
+    const sha256 = data.sha256 ?? data.export?.bundle_sha256 ?? "";
+    log.info(`AtlaSent evidence-bundle: export ${exportId} sha256=${sha256}`);
+    return { sha256, exportId };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warning(
+      `AtlaSent evidence-bundle: request failed (advisory; build not affected): ${msg}`
+    );
+    return empty;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // src/index.ts
 function getApiKey() {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -1912,6 +1975,47 @@ async function run() {
     );
   }
   emitFinancialGovernanceAdvisory(actionType, actor, orgId);
+  await runPostDeployEvidenceBundleStep(apiKey, apiUrl, orgId, actor);
+}
+async function runPostDeployEvidenceBundleStep(apiKey, apiUrl, orgId, actor) {
+  const bundleInput = getInput("evidence-bundle").toLowerCase();
+  const setEmptyBundleOutputs = () => {
+    setOutput("evidence-bundle-sha256", "");
+    setOutput("evidence-bundle-id", "");
+  };
+  if (!bundleInput || bundleInput === "false") {
+    setEmptyBundleOutputs();
+    return;
+  }
+  const regime = bundleInput === "true" ? "soc2_type_ii" : bundleInput;
+  if (!VALID_EVIDENCE_REGIMES.has(regime)) {
+    warning(
+      `AtlaSent evidence-bundle: unrecognized regime "${regime}". Expected one of: ${Array.from(VALID_EVIDENCE_REGIMES).join(", ")}. Skipping.`
+    );
+    setEmptyBundleOutputs();
+    return;
+  }
+  const rawDays = getInput("evidence-bundle-days") || "90";
+  const days = parseInt(rawDays, 10);
+  if (Number.isNaN(days) || days < 1) {
+    warning(
+      `AtlaSent evidence-bundle: evidence-bundle-days must be a positive integer (got "${rawDays}"). Skipping.`
+    );
+    setEmptyBundleOutputs();
+    return;
+  }
+  info(
+    `AtlaSent evidence-bundle: generating ${regime} bundle (${days}-day window) for org ${orgId}`
+  );
+  const result = await callPostDeployEvidenceBundle(
+    { apiUrl, apiKey, orgId, regime, days, actor: `github:${actor}` },
+    { info, warning }
+  );
+  setOutput("evidence-bundle-sha256", result.sha256);
+  setOutput("evidence-bundle-id", result.exportId);
+  if (result.sha256) {
+    info(`AtlaSent evidence-bundle: bundle_sha256=${result.sha256}`);
+  }
 }
 if (require.main === module) {
   run().catch((err) => {

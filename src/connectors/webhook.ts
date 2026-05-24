@@ -177,8 +177,11 @@ async function evaluateWebhookPayload(
     await verifyPermit(enforceConfig, decision);
   } catch (err) {
     if (err instanceof EnforceError) {
+      // Permit verification failed on an allow decision: treat as authorization
+      // denied (403), not an infra error (500). The evaluation said allow but
+      // the permit chain is invalid — caller must be blocked.
       return {
-        decision: 'error',
+        decision: 'allow',
         verified: false,
         evaluationId: decision.evaluationId,
         reason: err.message,

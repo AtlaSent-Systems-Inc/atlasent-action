@@ -93,11 +93,15 @@ describe('AgentGuard.call()', () => {
   });
 
   it('throws AgentGuardError with decision=deny on deny', async () => {
-    mockEvaluate.mockResolvedValueOnce({
+    const denyDecision = {
       decision: 'deny',
       evaluationId: 'ev-deny',
       denyReason: 'not allowed by policy',
-    });
+    };
+    // Both assertions call guard.call(), so queue two identical responses.
+    mockEvaluate
+      .mockResolvedValueOnce(denyDecision)
+      .mockResolvedValueOnce(denyDecision);
 
     const tool = makeTool('delete_database');
     const guard = new AgentGuard({ apiKey: 'ask_test_key' });
@@ -111,11 +115,15 @@ describe('AgentGuard.call()', () => {
   });
 
   it('throws AgentGuardError with decision=hold on hold (blockOnHold=true, default)', async () => {
-    mockEvaluate.mockResolvedValueOnce({
+    const holdDecision = {
       decision: 'hold',
       evaluationId: 'ev-hold',
       holdReason: 'pending approval',
-    });
+    };
+    // Both assertions call guard.call(), so queue two identical responses.
+    mockEvaluate
+      .mockResolvedValueOnce(holdDecision)
+      .mockResolvedValueOnce(holdDecision);
 
     const tool = makeTool('send_email');
     const guard = new AgentGuard({ apiKey: 'ask_test_key' });

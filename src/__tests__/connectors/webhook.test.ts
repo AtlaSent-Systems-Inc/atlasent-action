@@ -93,7 +93,7 @@ describe('webhookGuard.evaluate()', () => {
     expect(result.riskScore).toBe(10);
   });
 
-  it('returns verified=false and decision=error when verifyPermit fails', async () => {
+  it('returns allow+verified=false when verifyPermit fails (permit chain invalid = authorization denied)', async () => {
     mockEvaluate.mockResolvedValueOnce(allowDecision());
     mockVerify.mockReturnValueOnce(undefined);
     mockVerifyPermit.mockRejectedValueOnce(
@@ -103,7 +103,9 @@ describe('webhookGuard.evaluate()', () => {
     const guard = webhookGuard({ apiKey: 'ask_test_key' });
     const result = await guard.evaluate({ action_type: 'production.deploy', actor_id: 'u' });
 
-    expect(result.decision).toBe('error');
+    // An allow decision with a broken permit chain is authorization-denied
+    // (403 in middleware), not an infra error (500). Distinguish via verified=false.
+    expect(result.decision).toBe('allow');
     expect(result.verified).toBe(false);
     expect(result.reason).toContain('permit_consumed');
   });

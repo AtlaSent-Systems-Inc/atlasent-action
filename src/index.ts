@@ -30,6 +30,11 @@ import { emitEvidenceEvent } from "./evidenceClient";
 import { registerAndVerify, summarizeOutcome } from "./releaseCandidate";
 import { buildEvidenceBundle } from "./evidenceBundle";
 import {
+  callPostDeployEvidenceBundle,
+  VALID_EVIDENCE_REGIMES,
+  type EvidenceBundleRegime,
+} from "./postDeployEvidenceBundle";
+import {
   LEGACY_PRODUCTION_DEPLOY_ALIAS,
   PRODUCTION_DEPLOY_ACTION,
   normalizeProtectedAction,
@@ -891,6 +896,76 @@ export async function run(): Promise<void> {
   }
 
   emitFinancialGovernanceAdvisory(actionType, actor, orgId);
+
+  // ── Post-deploy compliance evidence bundle (optional) ───────────────────
+  // Only fires when the gate passed (decision=allow + verified=true).
+  // Gracefully degrades on 402 (enterprise only) or network errors.
+  await runPostDeployEvidenceBundleStep(apiKey, apiUrl, orgId, actor);
+}
+
+// ---------------------------------------------------------------------------
+// Post-deploy evidence bundle step
+// ---------------------------------------------------------------------------
+
+async function runPostDeployEvidenceBundleStep(
+  apiKey: string,
+  apiUrl: string,
+  orgId: string,
+  actor: string,
+): Promise<void> {
+  const bundleInput = getInput("evidence-bundle").toLowerCase();
+
+  // Always set outputs so downstream steps can reference them unconditionally.
+  const setEmptyBundleOutputs = (): void => {
+    setOutput("evidence-bundle-sha256", "");
+    setOutput("evidence-bundle-id", "");
+  };
+
+  if (!bundleInput || bundleInput === "false") {
+    setEmptyBundleOutputs();
+    return;
+  }
+
+  // Resolve regime: 'true' → 'soc2_type_ii', else treat as literal regime id.
+  const regime: EvidenceBundleRegime =
+    bundleInput === "true"
+      ? "soc2_type_ii"
+      : (bundleInput as EvidenceBundleRegime);
+
+  if (!VALID_EVIDENCE_REGIMES.has(regime)) {
+    warning(
+      `AtlaSent evidence-bundle: unrecognized regime "${regime}". ` +
+        `Expected one of: ${Array.from(VALID_EVIDENCE_REGIMES).join(", ")}. Skipping.`,
+    );
+    setEmptyBundleOutputs();
+    return;
+  }
+
+  const rawDays = getInput("evidence-bundle-days") || "90";
+  const days = parseInt(rawDays, 10);
+  if (Number.isNaN(days) || days < 1) {
+    warning(
+      `AtlaSent evidence-bundle: evidence-bundle-days must be a positive integer (got "${rawDays}"). Skipping.`,
+    );
+    setEmptyBundleOutputs();
+    return;
+  }
+
+  info(
+    `AtlaSent evidence-bundle: generating ${regime} bundle (${days}-day window) for org ${orgId}`,
+  );
+
+  const result = await callPostDeployEvidenceBundle(
+    { apiUrl, apiKey, orgId, regime, days, actor: `github:${actor}` },
+    { info, warning },
+  );
+
+  setOutput("evidence-bundle-sha256", result.sha256);
+  setOutput("evidence-bundle-id", result.exportId);
+
+  if (result.sha256) {
+    info(`AtlaSent evidence-bundle: bundle_sha256=${result.sha256}`);
+  }
 }
 
 if (require.main === module) {

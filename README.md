@@ -40,7 +40,7 @@ Push to main → AtlaSent evaluates → permit issued → deploy
 ## Using Outputs
 
 The action sets several outputs you can reference in subsequent steps.
-**Always gate on `verified`, not `decision`** — `verified=true` means the evaluation returned `allow` AND the server confirmed the permit token hasn’t been replayed.
+**Always gate on `verified`, not `decision`** — `verified=true` means the evaluation returned `allow` AND the server confirmed the permit token hasn't been replayed.
 
 ```yaml
 - name: Authorization Gate
@@ -183,11 +183,208 @@ the action falls back automatically:
 batches, `chunked-<ts>` when the action chunked client-side, and `loop-<ts>`
 for the per-item fallback.
 
+## Phase B7 Connectors
+
+The GitHub Actions step is the reference connector. Phase B7 ships two additional
+connectors — **webhook** and **AI-agent** — that implement the same
+`evaluate → verify → verifyPermit` contract and are importable from
+`@atlasent/action/connectors` (or from the package root).
+
+### Webhook connector
+
+Gates incoming webhook payloads in any Express/Hono/Node.js server.
+
+```typescript
+import { webhookGuard } from '@atlasent/action/connectors';
+
+const guard = webhookGuard({
+  apiKey: process.env.ATLASENT_API_KEY!,
+  // apiUrl: 'https://api.atlasent.io',   // default
+  // environment: 'live',
+  // failClosed: true,                    // default — 403/500 on deny/error
+});
+```
+
+**Standalone evaluation** — call `guard.evaluate(payload)` directly and handle
+the result yourself. Useful in Hono, raw `http.createServer`, or any
+non-Express framework:
+
+```typescript
+app.post('/hooks/deploy', async (c) => {
+  const payload = await c.req.json();
+  const result = await guard.evaluate(payload);
+
+  if (result.decision !== 'allow' || !result.verified) {
+    return c.json({ error: result.reason ?? 'denied' }, 403);
+  }
+
+  // Safe to proceed — permit verified
+  await executeDeploy(payload);
+  return c.json({ status: 'executed' });
+});
+```
+
+**Express middleware** — mount `guard.middleware` to block automatically:
+
+```typescript
+import express from 'express';
+const app = express();
+app.use(express.json());
+
+// The middleware responds 403/500 on deny/hold/error and calls next() on allow.
+// req.atlasent holds the full result for downstream handlers.
+app.post('/hooks/deploy', guard.middleware, (req, res) => {
+  const { evaluationId, riskScore } = req.atlasent!;
+  res.json({ status: 'executed', evaluationId });
+});
+```
+
+**Custom payload extraction** — when your payload uses different field names:
+
+```typescript
+const guard = webhookGuard({
+  apiKey: process.env.ATLASENT_API_KEY!,
+  extractor: (payload) => ({
+    action_type: payload.event_type as string,
+    actor_id:    `user:${payload.triggered_by as string}`,
+    context:     { repo: payload.repository },
+  }),
+});
+```
+
+**Result shape** — `guard.evaluate()` always resolves (never throws on
+infra errors):
+
+```typescript
+interface WebhookGuardResult {
+  decision: 'allow' | 'deny' | 'hold' | 'escalate' | 'error';
+  verified: boolean;      // true only when decision=allow AND verifyPermit passed
+  evaluationId?: string;
+  proofHash?: string;
+  riskScore?: number;
+  reason?: string;        // deny/hold reason or infra error message
+  error?: EnforceError;   // present on decision='error'
+}
+```
+
+> **Always gate on `verified`, not `decision`.**  
+> `verified=true` means the evaluation returned `allow` AND the permit token
+> was confirmed server-side. An `allow` without `verified` means permit
+> verification failed — the connector treats this as a block.
+
+### AI-agent connector
+
+Guards LangChain-style tool execution. Before any tool call, the guard
+evaluates the call against AtlaSent and blocks (`AgentGuardError`) on
+deny or hold.
+
+**AgentGuard class:**
+
+```typescript
+import { AgentGuard, AgentGuardError } from '@atlasent/action/connectors';
+
+const guard = new AgentGuard({
+  apiKey: process.env.ATLASENT_API_KEY!,
+  // defaultActorId: 'service:my-agent',
+  // environment: 'live',
+  // blockOnHold: true,   // default — hold blocks like deny
+});
+
+try {
+  const result = await guard.call(
+    webSearchTool,
+    { query: 'latest CVEs' },
+    { agentId: 'security-scanner', sessionId: 'sess-42' },
+  );
+} catch (err) {
+  if (err instanceof AgentGuardError) {
+    console.error(`Blocked: ${err.decision} — ${err.message}`);
+    // err.toolName      → 'web_search'
+    // err.evaluationId  → AtlaSent evaluation id for audit
+  }
+}
+```
+
+**Wrap a tool** so every call is automatically guarded:
+
+```typescript
+const guardedSearch = guard.wrap(webSearchTool, { agentId: 'planner' });
+// guardedSearch has the same interface as webSearchTool
+const results = await guardedSearch.call({ query: 'hello' });
+```
+
+**Wrap an entire toolkit** at once:
+
+```typescript
+const tools = guard.wrapAll(
+  [webSearchTool, codeExecutorTool, fileReadTool],
+  { agentId: 'executor', sessionId: currentSessionId },
+);
+// Pass `tools` to your LangChain agent — every call goes through AtlaSent
+```
+
+**agentGuard() factory** — convenience shorthand:
+
+```typescript
+import { agentGuard } from '@atlasent/action/connectors';
+
+const guard = agentGuard({ apiKey: process.env.ATLASENT_API_KEY! });
+
+// Direct call:
+const result = await guard.call(tool, args, { agentId: 'planner-v2' });
+
+// Wrap:
+const wrapped = guard.wrap(tool, { agentId: 'planner-v2' });
+
+// Underlying AgentGuard instance:
+console.log(guard.guard instanceof AgentGuard); // true
+```
+
+**Actor resolution** — the connector resolves the actor forwarded to AtlaSent
+in the following priority order:
+
+1. `ctx.agentId` → `"agent:<agentId>"`
+2. `ctx.userId` → `"user:<userId>"`
+3. `config.defaultActorId`
+4. `"agent:unknown"` (default fallback)
+
+**AgentGuardError** fields:
+
+```typescript
+class AgentGuardError extends Error {
+  decision:    'deny' | 'hold' | 'escalate' | 'error';
+  toolName:    string;   // tool.name that was blocked
+  evaluationId?: string; // AtlaSent evaluation id for the audit trail
+}
+```
+
+### Connector import paths
+
+```typescript
+// Subpath (preferred for tree-shaking):
+import { webhookGuard, AgentGuard, agentGuard, AgentGuardError }
+  from '@atlasent/action/connectors';
+
+// Or from the package root:
+import { webhookGuard, AgentGuard, agentGuard, AgentGuardError }
+  from '@atlasent/action';
+```
+
+### Enforcement contract
+
+All B7 connectors implement the same contract as the GitHub Actions reference:
+
+1. **Evaluate** — POST `/v1-evaluate` with `action_type`, `actor_id`, and context.
+2. **Decide** — non-`allow` decisions block immediately (no verifyPermit call).
+3. **Verify permit** — POST `/v1-verify-permit` to confirm the token hasn't
+   been replayed. Fail-closed: a missing permit token or failed verification blocks.
+4. **Execute** — only reached when all three steps pass.
+
 ## How It Works
 
 1. **Evaluate** — POST `/v1-evaluate` with `action_type`, `actor_id`, `target_id`, and a context object populated from GitHub workflow metadata (repo, ref, sha, workflow, run id, PR number, optional user-supplied `context`).
 2. **Decide** — Server returns `allow` / `deny` / `hold` / `escalate` plus a single-use `permit_token` (only when `allow`) and an optional `risk-score`.
-3. **Verify permit** — POST `/v1-verify-permit` to confirm the token hasn’t been replayed. `verified=true` only when both steps pass.
+3. **Verify permit** — POST `/v1-verify-permit` to confirm the token hasn't been replayed. `verified=true` only when both steps pass.
 4. **Proceed or block** — `fail-on-deny: true` (default) surfaces deny/hold/escalate as a failing step. `false` demotes them to a workflow `::warning`.
 5. **Audit** — Every evaluation writes to the AtlaSent append-only, hash-chained audit log. The `evaluation-id` and `proof-hash` outputs reference the record.
 

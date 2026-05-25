@@ -1353,6 +1353,41 @@ function info(message) {
 function maskValue(value) {
   console.log(`::add-mask::${value}`);
 }
+async function postCommitStatus(args) {
+  const token = process.env["GITHUB_TOKEN"];
+  if (!token || !args.sha || !args.repository)
+    return;
+  const apiBase = process.env["GITHUB_API_URL"] ?? "https://api.github.com";
+  const url = `${apiBase}/repos/${args.repository}/statuses/${args.sha}`;
+  const body = {
+    state: args.state,
+    description: args.description.slice(0, 140),
+    // GitHub caps at 140 chars
+    context: args.context ?? "AtlaSent Policy Gate"
+  };
+  if (args.targetUrl)
+    body.target_url = args.targetUrl;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "<unreadable>");
+      warning(`AtlaSent: commit status post failed (${res.status}): ${text}`);
+    }
+  } catch (err) {
+    warning(
+      `AtlaSent: commit status post error (advisory, non-blocking): ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
 function getGitHubContext() {
   return {
     repository: process.env["GITHUB_REPOSITORY"] ?? "",
@@ -1841,6 +1876,28 @@ async function run() {
       setOutput("verified", "false");
       setOutput("evidence-receipt", JSON.stringify(null));
       setOutput("evidence-bundle", JSON.stringify(null));
+      {
+        const decision = err.decision?.decision;
+        let statusState = "error";
+        let statusDesc = `AtlaSent: gate error \u2014 ${err.message.slice(0, 100)}`;
+        if (decision === "deny") {
+          statusState = "failure";
+          statusDesc = `AtlaSent: denied \u2014 ${err.decision?.denyReason ?? actionType}`.slice(0, 140);
+        } else if (decision === "hold") {
+          statusState = "pending";
+          statusDesc = `AtlaSent: on hold \u2014 awaiting approval (${actionType})`;
+        } else if (decision === "escalate") {
+          statusState = "pending";
+          statusDesc = `AtlaSent: escalated \u2014 manual review required (${actionType})`;
+        }
+        await postCommitStatus({
+          repository: gh.repository,
+          sha: gh.sha,
+          state: statusState,
+          description: statusDesc,
+          targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`
+        });
+      }
       emitFinancialGovernanceAdvisory(actionType, actor, orgId);
       if (err.phase === "verify" && !failOnDeny) {
         switch (err.decision?.decision) {
@@ -1904,6 +1961,13 @@ async function run() {
     setOutput("verified", "false");
     setOutput("evidence-receipt", JSON.stringify(null));
     setOutput("evidence-bundle", JSON.stringify(null));
+    await postCommitStatus({
+      repository: gh.repository,
+      sha: gh.sha,
+      state: "error",
+      description: `AtlaSent: unexpected error \u2014 ${(err instanceof Error ? err.message : String(err)).slice(0, 100)}`,
+      targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`
+    });
     emitFinancialGovernanceAdvisory(actionType, actor, orgId);
     setFailed(
       `AtlaSent Gate: Unexpected error: ${err instanceof Error ? err.message : String(err)}`
@@ -1913,6 +1977,13 @@ async function run() {
   const { decision: d, verifyOutcome } = enforceResult;
   setDecisionOutputs(d);
   setOutput("verified", "true");
+  await postCommitStatus({
+    repository: gh.repository,
+    sha: gh.sha,
+    state: "success",
+    description: `AtlaSent: authorized \u2014 ${actionType}`,
+    targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`
+  });
   info(`Authorization GRANTED (evaluate + verify)`);
   info(`  Permit token: (set as 'permit-token' output, masked in logs)`);
   info(`  Proof hash:   (set as 'proof-hash' output, masked in logs)`);

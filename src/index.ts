@@ -111,6 +111,65 @@ function maskValue(value: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// GitHub commit status — fallback for orgs without the full App installation
+// ---------------------------------------------------------------------------
+//
+// When GITHUB_TOKEN is available (always set in GitHub Actions) and
+// GITHUB_SHA + GITHUB_REPOSITORY are set, we post a commit status so the
+// PR checks UI reflects the AtlaSent gate result even without the App.
+//
+// This is intentionally best-effort: any network failure is logged as a
+// warning and never blocks the gate decision.
+
+type CommitStatusState = "success" | "failure" | "pending" | "error";
+
+async function postCommitStatus(args: {
+  repository: string;
+  sha: string;
+  state: CommitStatusState;
+  description: string;
+  context?: string;
+  targetUrl?: string;
+}): Promise<void> {
+  const token = process.env["GITHUB_TOKEN"];
+  if (!token || !args.sha || !args.repository) return;
+
+  const apiBase =
+    process.env["GITHUB_API_URL"] ?? "https://api.github.com";
+  const url = `${apiBase}/repos/${args.repository}/statuses/${args.sha}`;
+
+  const body: Record<string, string> = {
+    state: args.state,
+    description: args.description.slice(0, 140), // GitHub caps at 140 chars
+    context: args.context ?? "AtlaSent Policy Gate",
+  };
+  if (args.targetUrl) body.target_url = args.targetUrl;
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "<unreadable>");
+      warning(`AtlaSent: commit status post failed (${res.status}): ${text}`);
+    }
+  } catch (err) {
+    warning(
+      `AtlaSent: commit status post error (advisory, non-blocking): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // GitHub context
 // ---------------------------------------------------------------------------
 
@@ -745,6 +804,30 @@ export async function run(): Promise<void> {
       setOutput("evidence-receipt", JSON.stringify(null));
       setOutput("evidence-bundle", JSON.stringify(null));
 
+      // Fallback commit status for orgs without the full GitHub App installation.
+      {
+        const decision = err.decision?.decision;
+        let statusState: CommitStatusState = "error";
+        let statusDesc = `AtlaSent: gate error — ${err.message.slice(0, 100)}`;
+        if (decision === "deny") {
+          statusState = "failure";
+          statusDesc = `AtlaSent: denied — ${err.decision?.denyReason ?? actionType}`.slice(0, 140);
+        } else if (decision === "hold") {
+          statusState = "pending";
+          statusDesc = `AtlaSent: on hold — awaiting approval (${actionType})`;
+        } else if (decision === "escalate") {
+          statusState = "pending";
+          statusDesc = `AtlaSent: escalated — manual review required (${actionType})`;
+        }
+        await postCommitStatus({
+          repository: gh.repository,
+          sha: gh.sha,
+          state: statusState,
+          description: statusDesc,
+          targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+        });
+      }
+
       emitFinancialGovernanceAdvisory(actionType, actor, orgId);
 
       if (err.phase === "verify" && !failOnDeny) {
@@ -812,6 +895,17 @@ export async function run(): Promise<void> {
     setOutput("evidence-receipt", JSON.stringify(null));
     setOutput("evidence-bundle", JSON.stringify(null));
 
+    // Fallback commit status — unexpected error path.
+    await postCommitStatus({
+      repository: gh.repository,
+      sha: gh.sha,
+      state: "error",
+      description: `AtlaSent: unexpected error — ${
+        (err instanceof Error ? err.message : String(err)).slice(0, 100)
+      }`,
+      targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+    });
+
     emitFinancialGovernanceAdvisory(actionType, actor, orgId);
 
     setFailed(
@@ -823,6 +917,16 @@ export async function run(): Promise<void> {
   const { decision: d, verifyOutcome } = enforceResult;
   setDecisionOutputs(d);
   setOutput("verified", "true");
+
+  // Fallback commit status for orgs without the full GitHub App installation.
+  // Best-effort: failure to post never blocks the gate.
+  await postCommitStatus({
+    repository: gh.repository,
+    sha: gh.sha,
+    state: "success",
+    description: `AtlaSent: authorized — ${actionType}`,
+    targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+  });
 
   info(`Authorization GRANTED (evaluate + verify)`);
   info(`  Permit token: (set as 'permit-token' output, masked in logs)`);

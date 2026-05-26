@@ -15,6 +15,7 @@ Push to main → AtlaSent evaluates → permit issued → deploy
 - uses: AtlaSent-Systems-Inc/atlasent-action@v1
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
   with:
     action: production.deploy
     target-id: ${{ github.repository }}
@@ -28,6 +29,7 @@ Push to main → AtlaSent evaluates → permit issued → deploy
   uses: AtlaSent-Systems-Inc/atlasent-action@v1
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
   with:
     action: production.deploy
     actor: ${{ github.actor }}
@@ -48,6 +50,7 @@ The action sets several outputs you can reference in subsequent steps.
   uses: AtlaSent-Systems-Inc/atlasent-action@v1
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
   with:
     action: production.deploy
     target-id: api-service
@@ -85,13 +88,14 @@ The action sets several outputs you can reference in subsequent steps.
 
 | Input          | Required | Default                | Description                                             |
 |----------------|----------|------------------------|---------------------------------------------------------|
-| `ATLASENT_API_KEY` env | Yes | — | AtlaSent API key (`ask_live_*` or `ask_test_*`). This is the only required secret. |
+| `ATLASENT_API_KEY` env | Yes | — | AtlaSent API key (`ask_live_*` or `ask_test_*`). |
+| `ATLASENT_BASE_URL` env | Yes (pilot profile) | — | Runtime base URL for your AtlaSent V1 authority service. |
 | `action`       | Yes*     | —                      | Action type to evaluate (e.g. `production.deploy`). Ignored when `evaluations` is set. |
 | `actor`        | No       | `${{ github.actor }}`  | Actor identity                                          |
 | `target-id`    | No       | —                      | Target resource being acted on (service, artifact, etc) |
 | `environment`  | No       | Auto-detected          | `live` for `main`/`master`, `test` otherwise            |
-| `api-url`      | No       | `https://api.atlasent.io` | AtlaSent API base URL                               |
-| `fail-on-deny` | No       | `true`                 | Fail the step on deny/hold/escalate                     |
+| `api-url`      | No       | `ATLASENT_BASE_URL` or `https://api.atlasent.io` | AtlaSent API base URL override. |
+| `fail-on-deny` | No       | `true`                 | Deprecated for pilot mode; deny/hold/escalate still fail closed. |
 | `context`      | No       | `{}`                   | Additional JSON context for evaluation                  |
 
 ### Batch inputs (v2.1)
@@ -112,6 +116,7 @@ For long-running approvals such as change-window gates, enable `v2-streaming` to
 - uses: AtlaSent-Systems-Inc/atlasent-action@v1
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
   with:
     action: production.deploy
     actor: ${{ github.actor }}
@@ -133,6 +138,7 @@ To branch on GitHub identity, write your AtlaSent policy against the `actor` fie
 - uses: AtlaSent-Systems-Inc/atlasent-action@v1
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
   with:
     action: production.deploy
     # actor defaults to ${{ github.actor }} — no extra config needed
@@ -148,6 +154,7 @@ Evaluate multiple actions in a single step:
   uses: AtlaSent-Systems-Inc/atlasent-action@v1
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
   with:
     v2-batch: 'true'
     evaluations: |
@@ -385,14 +392,14 @@ All B7 connectors implement the same contract as the GitHub Actions reference:
 1. **Evaluate** — POST `/v1-evaluate` with `action_type`, `actor_id`, `target_id`, and a context object populated from GitHub workflow metadata (repo, ref, sha, workflow, run id, PR number, optional user-supplied `context`).
 2. **Decide** — Server returns `allow` / `deny` / `hold` / `escalate` plus a single-use `permit_token` (only when `allow`) and an optional `risk-score`.
 3. **Verify permit** — POST `/v1-verify-permit` to confirm the token hasn't been replayed. `verified=true` only when both steps pass.
-4. **Proceed or block** — `fail-on-deny: true` (default) surfaces deny/hold/escalate as a failing step. `false` demotes them to a workflow `::warning`.
+4. **Proceed or block** — deny/hold/escalate are fail-closed outcomes and fail the step in pilot mode.
 5. **Audit** — Every evaluation writes to the AtlaSent append-only, hash-chained audit log. The `evaluation-id` and `proof-hash` outputs reference the record.
 
 ## Protecting `main`
 
 Add the action as a required check:
 
-1. Add secret `ATLASENT_API_KEY` in **Settings → Secrets and variables → Actions**
+1. Add secrets `ATLASENT_API_KEY` and `ATLASENT_BASE_URL` in **Settings → Secrets and variables → Actions**
 2. Wire the step into `.github/workflows/deploy.yaml`
 3. Enable **Settings → Branches → Branch protection rules** and mark the workflow as required
 
@@ -400,7 +407,7 @@ Add the action as a required check:
 
 If the action cannot reach the AtlaSent API (DNS, timeout, 5xx, 401/403, 429), it fails the step with `decision=error`. A security gate that silently lets deploys through when its authority source is unreachable is worse than no gate, so this is the default and recommended behaviour.
 
-This is distinct from `fail-on-deny`, which controls only how *policy* decisions (`deny` / `hold` / `escalate`) are surfaced. Infrastructure failures are not policy decisions and always fail closed.
+Infrastructure failures and non-allow policy decisions (`deny` / `hold` / `escalate`) are all fail-closed in pilot mode.
 
 ## Documentation
 

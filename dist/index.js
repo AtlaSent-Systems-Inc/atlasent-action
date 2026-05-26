@@ -357,7 +357,7 @@ function assertProtectedAction(raw) {
 // src/inputs.ts
 function parseInputs(env) {
   const apiKey = required(env, "ATLASENT_API_KEY");
-  const apiUrl = env["INPUT_API-URL"] || "https://api.atlasent.io";
+  const apiUrl = env["INPUT_API-URL"] || env["ATLASENT_BASE_URL"] || "https://api.atlasent.io";
   const failOnDeny = (env["INPUT_FAIL-ON-DENY"] || "true") === "true";
   const policySyncEnabled = (env["INPUT_POLICY-SYNC"] ?? "").toLowerCase() === "true";
   if (policySyncEnabled) {
@@ -631,7 +631,9 @@ async function runV21(env, flags) {
     apiKey: inputs.apiKey,
     apiUrl: inputs.apiUrl
   });
-  const failed = inputs.failOnDeny && decisions.some((d) => d.decision === "deny" || d.decision === "hold" || d.decision === "escalate");
+  const failed = decisions.some(
+    (d) => d.decision === "deny" || d.decision === "hold" || d.decision === "escalate"
+  );
   return { decisions, failed, batchId: batch.batchId };
 }
 
@@ -1747,8 +1749,13 @@ async function run() {
   }
   const apiKey = getApiKey();
   maskValue(apiKey);
-  const apiUrl = getInput("api-url") || "https://api.atlasent.io";
+  const apiUrl = getInput("api-url") || (process.env["ATLASENT_BASE_URL"] ?? "").trim() || "https://api.atlasent.io";
   const failOnDeny = getInput("fail-on-deny") !== "false";
+  if (!failOnDeny) {
+    warning(
+      "Input fail-on-deny=false is deprecated for Deploy Gate V1 pilot readiness; deny/hold/escalate now fail closed."
+    );
+  }
   maskValue(apiKey);
   if (getInput("policy-sync").toLowerCase() === "true") {
     await runPolicySyncStep(apiKey, apiUrl);
@@ -1899,22 +1906,6 @@ async function run() {
         });
       }
       emitFinancialGovernanceAdvisory(actionType, actor, orgId);
-      if (err.phase === "verify" && !failOnDeny) {
-        switch (err.decision?.decision) {
-          case "deny":
-            warning(`Authorization DENIED: ${err.decision.denyReason ?? "no reason provided"}`);
-            break;
-          case "hold":
-            warning(`Authorization on HOLD: ${err.decision.holdReason ?? "awaiting approval"}`);
-            break;
-          case "escalate":
-            warning("Authorization ESCALATED \u2014 manual review required");
-            break;
-          default:
-            warning(`Authorization ${err.decision?.decision ?? "unknown"}`);
-        }
-        return;
-      }
       switch (err.phase) {
         case "evaluate":
           setFailed(

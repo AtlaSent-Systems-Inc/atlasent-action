@@ -8,11 +8,6 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      fail_on_deny:
-        description: 'Fail the job if the gate denies the deploy (default: true)'
-        required: false
-        type: boolean
-        default: true
       environment:
         description: 'Target environment'
         required: false
@@ -36,11 +31,11 @@ jobs:
         uses: ./
         env:
           ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
         with:
           action: production.deploy
           actor: ${{ github.actor }}
           environment: ${{ inputs.environment || 'prod' }}
-          fail-on-deny: ${{ inputs.fail_on_deny == false && 'false' || 'true' }}
 
       # Only reached if AtlaSent authorized the deploy (verified=true)
       - name: Deploy to ${{ inputs.environment || 'prod' }}

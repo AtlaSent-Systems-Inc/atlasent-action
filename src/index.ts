@@ -644,8 +644,16 @@ export async function run(): Promise<void> {
   const apiKey = getApiKey();
   maskValue(apiKey);
 
-  const apiUrl = getInput("api-url") || "https://api.atlasent.io";
+  const apiUrl =
+    getInput("api-url") ||
+    (process.env["ATLASENT_BASE_URL"] ?? "").trim() ||
+    "https://api.atlasent.io";
   const failOnDeny = getInput("fail-on-deny") !== "false";
+  if (!failOnDeny) {
+    warning(
+      "Input fail-on-deny=false is deprecated for Deploy Gate V1 pilot readiness; deny/hold/escalate now fail closed.",
+    );
+  }
 
   maskValue(apiKey);
 
@@ -829,23 +837,6 @@ export async function run(): Promise<void> {
       }
 
       emitFinancialGovernanceAdvisory(actionType, actor, orgId);
-
-      if (err.phase === "verify" && !failOnDeny) {
-        switch (err.decision?.decision) {
-          case "deny":
-            warning(`Authorization DENIED: ${err.decision.denyReason ?? "no reason provided"}`);
-            break;
-          case "hold":
-            warning(`Authorization on HOLD: ${err.decision.holdReason ?? "awaiting approval"}`);
-            break;
-          case "escalate":
-            warning("Authorization ESCALATED — manual review required");
-            break;
-          default:
-            warning(`Authorization ${err.decision?.decision ?? "unknown"}`);
-        }
-        return;
-      }
 
       switch (err.phase) {
         case "evaluate":

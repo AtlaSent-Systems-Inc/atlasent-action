@@ -2,6 +2,33 @@
 
 **Release date:** 2026-04-30
 
+## V1 Pilot Readiness Update (draft, not released) — 2026-05-26
+
+This repository now enforces a strict Deploy Gate V1 fail-closed posture for production deploy authorization.
+
+### Readiness hardening
+
+- Enforced fail-closed behavior on policy outcomes across single and batch flows.
+  deny, hold, and escalate now fail the workflow even when fail-on-deny is set false.
+- Added ATLASENT_BASE_URL environment support as the default API base URL source.
+  api-url input still overrides it when set.
+- Kept API routing V1-only: evaluate uses /v1-evaluate and permit verification uses /v1-verify-permit.
+- Clarified action metadata and README quickstart around required pilot secrets:
+  ATLASENT_API_KEY and ATLASENT_BASE_URL.
+
+### Compliance and trust fixes
+
+- Aligned license artifacts to Apache-2.0 across repository metadata and package metadata.
+- Removed deprecated demo workflow toggles that could imply non-fail-closed operation.
+
+### Verification status for this draft
+
+- typecheck: passing
+- build: passing
+- tests: 180 passing
+
+Do not publish this as a release until GitHub checks are green on main and the fail-closed behavior is validated in CI logs.
+
 ## AtlaSent GitHub Action Gate v1.3.0
 
 This release aligns the public release notes with the shipped `action.yml` contract and the v2.1 batch/verification flow.

@@ -265,7 +265,7 @@ describe("deny decision", () => {
     expect(outputs["verified"]).toBe("false");
   });
 
-  it("does NOT call process.exit when fail-on-deny=false and decision is deny", async () => {
+  it("still fails closed when fail-on-deny=false and decision is deny", async () => {
     setApiKey();
     setInput("action", "production.deploy");
     setInput("fail-on-deny", "false");
@@ -275,9 +275,8 @@ describe("deny decision", () => {
       new EnforceError("Denied: informational only", "verify", denyDecision),
     );
 
-    await run();
-
-    expect(getExitCalls()).toHaveLength(0);
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    expect(getExitCalls()).toContain(1);
   });
 });
 

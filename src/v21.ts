@@ -141,9 +141,9 @@ export async function runV21(
     apiUrl: inputs.apiUrl,
   });
 
-  const failed =
-    inputs.failOnDeny &&
-    decisions.some((d) => d.decision === "deny" || d.decision === "hold" || d.decision === "escalate");
+  const failed = decisions.some(
+    (d) => d.decision === "deny" || d.decision === "hold" || d.decision === "escalate",
+  );
 
   return { decisions, failed, batchId: batch.batchId };
 }

@@ -112,13 +112,13 @@ it("failed=true when any decision is escalate and failOnDeny=true", async () => 
   expect(out.failed).toBe(true);
 });
 
-it("failed=false when non-allow but failOnDeny=false", async () => {
+it("failed=true when non-allow even if failOnDeny=false", async () => {
   mockEvaluateMany.mockResolvedValueOnce({
     decisions: [decision("deny"), decision("hold", "ev-2"), decision("escalate", "ev-3")],
     batchId: "b1",
   });
   const out = await runV21({ ...BASE_ENV, "INPUT_FAIL-ON-DENY": "false" }, FLAGS);
-  expect(out.failed).toBe(false);
+  expect(out.failed).toBe(true);
 });
 
 // ── wait-for-id path ──────────────────────────────────────────────────────────

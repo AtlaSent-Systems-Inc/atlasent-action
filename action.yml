@@ -18,11 +18,11 @@ inputs:
     description: 'Environment (defaults to live for main branch, test otherwise)'
     required: false
   api-url:
-    description: 'AtlaSent API URL base (defaults to production). The enforcement wrapper appends /v1-evaluate and /v1-verify-permit.'
+    description: 'AtlaSent API URL base. Defaults to ATLASENT_BASE_URL when set, otherwise https://api.atlasent.io. The action only calls /v1-evaluate and /v1-verify-permit runtime routes.'
     required: false
     default: 'https://api.atlasent.io'
   fail-on-deny:
-    description: 'Fail the workflow step if the action is denied (default: true)'
+    description: 'Deprecated in V1 pilot mode: deny/hold/escalate always fail closed regardless of this value.'
     required: false
     default: 'true'
   context:
@@ -223,7 +223,7 @@ outputs:
   decisions:
     description: 'JSON array of per-item decision results for the batch path. Each item: {decision, verified, evaluationId, permitToken, reasons, verifyOutcome}.'
   batch-id:
-    description: 'Batch identifier for the v2.1 batch path (either the server-assigned batchId or loop-<ts> for the sequential fallback).'
+    description: 'Batch identifier for batch evaluations (either the server-assigned batchId or loop-<ts> for the sequential fallback).'
   financial-governance-advice:
     description: 'JSON advisory output from financial governance assessment'
   chain-entry:

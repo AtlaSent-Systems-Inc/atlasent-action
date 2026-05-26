@@ -10,11 +10,16 @@ on:
         description: 'Branch or tag to build'
         default: 'main'
 
+permissions:
+  contents: write
+  id-token: write   # required for cosign keyless signing (Sigstore OIDC)
+
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write   # required for cosign keyless signing (Sigstore OIDC)
     steps:
       - uses: actions/checkout@v6
         with:
@@ -35,3 +40,38 @@ jobs:
           git add dist/index.js
           git diff --staged --quiet || git commit -m "chore: build dist/index.js"
           git push
+
+      # ── R4: cosign keyless signing ────────────────────────────────────────
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Sign dist/index.js (keyless, Sigstore Fulcio + Rekor)
+        # cosign uses the GitHub Actions OIDC token — no long-lived key secret.
+        # The resulting bundle (dist/index.js.bundle) contains the certificate
+        # chain and transparency-log entry needed to verify the signature.
+        run: |
+          cosign sign-blob \
+            --yes \
+            --bundle=dist/index.js.bundle \
+            dist/index.js
+
+      - name: Verify signature
+        # Smoke-test: re-verify using the bundle we just produced.
+        run: |
+          cosign verify-blob \
+            --bundle=dist/index.js.bundle \
+            --certificate-identity-regexp='https://github.com/AtlaSent-Systems-Inc/atlasent-action/.github/workflows/release.yml@refs/tags/v.*' \
+            --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
+            dist/index.js
+
+      - name: Upload signature bundle to GitHub release
+        # Only upload when triggered by a tag push (i.e. a real release).
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            dist/index.js.bundle \
+            --clobber

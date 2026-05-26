@@ -130,10 +130,10 @@ inputs:
     description: 'URL of the deployed atlasent-api runtime to probe (release-mode only).'
     required: false
   release-repo:
-    description: 'Repository identifier registered with the candidate. Defaults to ${{ github.repository }}.'
+    description: 'Repository identifier registered with the candidate. Defaults to the current repository.'
     required: false
   release-commit-sha:
-    description: 'Commit SHA registered with the candidate. Defaults to ${{ github.sha }}.'
+    description: 'Commit SHA registered with the candidate. Defaults to the current commit SHA.'
     required: false
   release-image-digest:
     description: 'Optional image digest (e.g. sha256:...) registered with the candidate.'

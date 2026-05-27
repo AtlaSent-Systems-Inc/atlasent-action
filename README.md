@@ -387,6 +387,30 @@ All B7 connectors implement the same contract as the GitHub Actions reference:
    been replayed. Fail-closed: a missing permit token or failed verification blocks.
 4. **Execute** — only reached when all three steps pass.
 
+## SDK 2.11.0 Sub-clients
+
+As of `@atlasent/sdk@2.11.0`, action authors have access to typed sub-clients on the top-level `AtlaSentClient` instance. These are available wherever the SDK client is imported:
+
+| Sub-client | Description |
+|---|---|
+| `client.auth` | Token refresh and IdP connection listing. Use to exchange short-lived tokens or enumerate configured identity providers. |
+| `client.scim` | SCIM 2.0 user and group provisioning. Manage users and groups in the AtlaSent directory via a standards-compliant interface. |
+| `client.evidenceBundles` | Generate and download evidence bundles for audit and compliance workflows. Bundles are Ed25519-signed and chain back to the append-only audit log. |
+
+In addition, `verifyEvidenceBundle(bundle)` is now exported from the SDK root for **offline bundle verification** — confirm the cryptographic integrity of a bundle without a network call. Useful in regulated environments where evidence artifacts are archived and re-verified later.
+
+```typescript
+import { AtlaSentClient, verifyEvidenceBundle } from '@atlasent/sdk';
+
+const client = new AtlaSentClient({ apiKey: process.env.ATLASENT_API_KEY! });
+
+// Generate an evidence bundle after a governed deploy
+const bundle = await client.evidenceBundles.generate({ evaluationId: 'eval-xyz' });
+
+// Verify offline at any future point
+const ok = await verifyEvidenceBundle(bundle);
+```
+
 ## How It Works
 
 1. **Evaluate** — POST `/v1-evaluate` with `action_type`, `actor_id`, `target_id`, and a context object populated from GitHub workflow metadata (repo, ref, sha, workflow, run id, PR number, optional user-supplied `context`).

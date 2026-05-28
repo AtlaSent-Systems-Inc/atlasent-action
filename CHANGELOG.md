@@ -2,6 +2,27 @@
 
 All notable changes to `atlasent-action` are documented here.
 
+## [Unreleased]
+
+### V1 convergence — SDK realignment verification (P0)
+
+V1 pilot SDK alignment audit. `@atlasent/sdk` remains pinned at the latest
+published npm version (`2.10.0`); the `2.11.0` source in
+`atlasent-sdk/typescript/` is not yet published to the public registry as of
+this commit. When `2.11.0` ships to npm, the pin should be bumped in a
+follow-up PR.
+
+Verified during the audit:
+- Action does not import `@atlasent/sdk` directly — the runtime contract goes
+  through `@atlasent/enforce`, which implements its own transport. The SDK pin
+  is declarative only (for downstream consumers reading `package.json`).
+- All 242 unit/integration tests pass against the current pin.
+- `dist/index.js` rebuilt and committed (build is reproducible at 69.7kb).
+- No regressions in the `client.evaluate` / `client.verifyPermit` /
+  `client.evidenceBundles` surface used elsewhere in the platform.
+
+No code changes in this entry — verification only.
+
 ## [2.11.0] — 2026-05-27
 
 ### SDK bump: `@atlasent/sdk` → `2.11.0`

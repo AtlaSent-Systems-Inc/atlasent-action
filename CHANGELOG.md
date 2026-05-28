@@ -2,6 +2,26 @@
 
 All notable changes to `atlasent-action` are documented here.
 
+## [2.11.0] — 2026-05-27
+
+### SDK bump: `@atlasent/sdk` → `2.11.0`
+
+Pins `@atlasent/sdk` at `2.11.0` (B.AC1 from V2_ROLLOUT.md). This release adds
+three typed sub-clients available to action authors on the top-level SDK client:
+
+- **`client.auth`** — token refresh and IdP connection listing.
+- **`client.scim`** — SCIM 2.0 user and group provisioning.
+- **`client.evidenceBundles`** — generate and download Ed25519-signed evidence
+  bundles for audit and compliance workflows.
+
+Also exports **`verifyEvidenceBundle(bundle)`** from the SDK root for offline
+bundle integrity verification — no network call required. Useful in GxP and
+regulated environments where evidence artifacts are archived and re-verified
+against the original hash chain.
+
+No action logic was changed; this is a dependency version bump and documentation
+update only.
+
 ## [unreleased] — 2026-05-18
 
 ### Platform-generation reframing (doc-only, no code change)

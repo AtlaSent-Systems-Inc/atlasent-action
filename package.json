@@ -12,7 +12,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@atlasent/enforce": "^2.0.0"
+    "@atlasent/enforce": "^2.0.0",
+    "@atlasent/sdk": "2.10.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

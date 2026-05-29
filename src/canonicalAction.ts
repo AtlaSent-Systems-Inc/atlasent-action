@@ -28,6 +28,44 @@ export const SECRET_ROTATION_PRODUCTION_ACTION = "secret.rotation.production";
 export const LEGACY_PRODUCTION_DEPLOY_ALIAS = "deployment.production";
 
 // ---------------------------------------------------------------------------
+// Phase 1–6 catalog (informational — not an enforcement whitelist)
+//
+// Lists the 19 built-in action types with SDK helpers, governance kits, and
+// policy templates. The gate accepts any well-formed action type string;
+// this catalog is a reference for tooling and documentation.
+// ---------------------------------------------------------------------------
+
+export const PROTECTED_ACTIONS_CATALOG: ReadonlySet<string> = new Set([
+  // Phase 1 — Deploy
+  "production.deploy",
+  // Phase 4 — HR
+  "hr.employee.offboard",
+  "hr.access.revoke",
+  "hr.role.escalate",
+  // Phase 4 — Model governance
+  "ml.model.promote",
+  "ml.model.retire",
+  "ml.model.fine_tune",
+  // Phase 4 — Data & contracts
+  "customer.data.delete",
+  "contract.execute",
+  "contract.amend",
+  // Phase 4 — Pricing
+  "pricing.rule.publish",
+  "pricing.discount.approve",
+  // Phase 5 — Security & access
+  "security.incident.escalate",
+  "security.access.quarantine",
+  "access.cert.revoke",
+  // Phase 5 — Finance
+  "period.close.certify",
+  // Phase 6 — Database
+  "database.migration.apply",
+  "database.schema.drop",
+  "database.table.delete",
+]);
+
+// ---------------------------------------------------------------------------
 // Normalization
 // ---------------------------------------------------------------------------
 

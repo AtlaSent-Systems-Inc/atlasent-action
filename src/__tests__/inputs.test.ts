@@ -84,13 +84,13 @@ describe("parseInputs", () => {
     expect(out.apiKey).toBe("ask_test_env");
   });
 
-  it("throws on wrong protected action", () => {
+  it("throws on malformed action type", () => {
     expect(() =>
       parseInputs({
         ATLASENT_API_KEY: "ask_test_env",
-        INPUT_ACTION: "deploy.staging",
+        INPUT_ACTION: "INVALID_ACTION_FORMAT",
       }),
-    ).toThrow(/production\.deploy/);
+    ).toThrow(/Invalid action type/);
   });
 
   // ── V1 alias-window tolerance ───────────────────────────────────────

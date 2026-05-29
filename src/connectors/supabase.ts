@@ -222,14 +222,11 @@ export class SupabaseMigrationGuard {
       action: actionType,
       actor: actorId,
       environment: config.environment,
-      resource: {
-        type: 'database',
-        id: config.database,
-      },
-      current_state: transition.current_state,
-      proposed_state: transition.proposed_state,
       context: {
         source: 'supabase-migration',
+        resource: { type: 'database', id: config.database },
+        current_state: transition.current_state,
+        proposed_state: transition.proposed_state,
         migration_name: migrationName,
         database: config.database,
         has_destructive_ops: hasDestructiveOps,

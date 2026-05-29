@@ -345,13 +345,20 @@ function normalizeProtectedAction(raw) {
   }
   return { canonical: raw, wasLegacyAlias: false };
 }
-function assertProtectedAction(raw) {
+var ACTION_TYPE_PATTERN = /^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*){1,3}$/;
+function isValidActionType(raw) {
+  return ACTION_TYPE_PATTERN.test(raw);
+}
+function assertValidActionType(raw) {
   const { canonical } = normalizeProtectedAction(raw);
-  if (canonical !== PRODUCTION_DEPLOY_ACTION) {
+  if (!isValidActionType(canonical)) {
     throw new Error(
-      `Unsupported protected action "${raw}". Deploy Gate V1 only permits "${PRODUCTION_DEPLOY_ACTION}" (legacy alias "${LEGACY_PRODUCTION_DEPLOY_ALIAS}" is accepted during the V1 alias window).`
+      `Invalid action type "${raw}". Expected dot-separated lowercase identifiers, 2\u20134 segments (e.g. "production.deploy", "database.migration.apply").`
     );
   }
+}
+function assertProtectedAction(raw) {
+  assertValidActionType(raw);
 }
 
 // src/inputs.ts

@@ -111,4 +111,83 @@ describe("evaluate", () => {
     await evaluate({ ...BASE_CONFIG, apiUrl: "https://api.test/" });
     expect(mockPost.mock.calls[0][0]).toBe("https://api.test/v1-evaluate");
   });
+
+  // ── State transition context forwarding ────────────────────────────────────
+
+  it("forwards current_state and proposed_state as top-level POST body fields", async () => {
+    mockResponse(200, { decision: "allow" });
+    await evaluate({
+      ...BASE_CONFIG,
+      current_state: { description: "running v1.2", attributes: { sha: "abc" } },
+      proposed_state: { description: "running v1.3", attributes: { sha: "def" } },
+    });
+    const body = JSON.parse(mockPost.mock.calls[0][1] as string) as Record<string, unknown>;
+    expect(body["current_state"]).toEqual({ description: "running v1.2", attributes: { sha: "abc" } });
+    expect(body["proposed_state"]).toEqual({ description: "running v1.3", attributes: { sha: "def" } });
+  });
+
+  it("forwards resource as top-level field and omits target_id when resource is set", async () => {
+    mockResponse(200, { decision: "allow" });
+    await evaluate({
+      ...BASE_CONFIG,
+      resource: { type: "database", id: "prod-db", attributes: { region: "us-east-1" } },
+    });
+    const body = JSON.parse(mockPost.mock.calls[0][1] as string) as Record<string, unknown>;
+    expect(body["resource"]).toEqual({ type: "database", id: "prod-db", attributes: { region: "us-east-1" } });
+    expect(body["target_id"]).toBeUndefined();
+  });
+
+  it("falls back to target_id when resource is absent (backward compat)", async () => {
+    mockResponse(200, { decision: "allow" });
+    await evaluate({ ...BASE_CONFIG, targetId: "svc-legacy" });
+    const body = JSON.parse(mockPost.mock.calls[0][1] as string) as Record<string, unknown>;
+    expect(body["target_id"]).toBe("svc-legacy");
+    expect(body["resource"]).toBeUndefined();
+  });
+
+  it("forwards execution_binding as a top-level POST body field", async () => {
+    mockResponse(200, { decision: "allow" });
+    await evaluate({
+      ...BASE_CONFIG,
+      execution_binding: { kind: "supabase-migration", adapter_version: "1.0.0", resource_id: "prod-db" },
+    });
+    const body = JSON.parse(mockPost.mock.calls[0][1] as string) as Record<string, unknown>;
+    expect(body["execution_binding"]).toEqual({
+      kind: "supabase-migration",
+      adapter_version: "1.0.0",
+      resource_id: "prod-db",
+    });
+  });
+
+  // ── Response field extraction ──────────────────────────────────────────────
+
+  it("surfaces risk_class and authority_basis from the response", async () => {
+    mockResponse(200, {
+      decision: "allow",
+      risk_class: "high",
+      authority_basis: { kind: "quorum", reference: "qr-001", granted_by: "approver@org" },
+    });
+    const d = await evaluate(BASE_CONFIG);
+    expect(d.risk_class).toBe("high");
+    expect(d.authority_basis).toEqual({ kind: "quorum", reference: "qr-001", granted_by: "approver@org" });
+  });
+
+  it("surfaces escalation_id from a hold response", async () => {
+    mockResponse(200, {
+      decision: "hold",
+      hold_reason: "awaiting quorum",
+      escalation_id: "esc-abc123",
+    });
+    const d = await evaluate(BASE_CONFIG);
+    expect(d.decision).toBe("hold");
+    expect(d.escalation_id).toBe("esc-abc123");
+  });
+
+  it("leaves risk_class, authority_basis, escalation_id undefined when absent", async () => {
+    mockResponse(200, { decision: "allow" });
+    const d = await evaluate(BASE_CONFIG);
+    expect(d.risk_class).toBeUndefined();
+    expect(d.authority_basis).toBeUndefined();
+    expect(d.escalation_id).toBeUndefined();
+  });
 });

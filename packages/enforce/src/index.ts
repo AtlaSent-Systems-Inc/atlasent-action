@@ -21,6 +21,19 @@ export interface EnforceConfig {
   actor: string;
   environment?: string;
   targetId?: string;
+  resource?: {
+    type: string;
+    id?: string;
+    attributes?: Record<string, unknown>;
+  };
+  current_state?: { description: string; attributes?: Record<string, unknown> };
+  proposed_state?: { description: string; attributes?: Record<string, unknown> };
+  execution_binding?: {
+    kind: string;
+    adapter_version?: string;
+    resource_id?: string;
+    enforcement_point?: string;
+  };
   context?: Record<string, unknown>;
 }
 
@@ -32,6 +45,15 @@ export interface Decision {
   riskScore?: number;
   denyReason?: string;
   holdReason?: string;
+  /** Resolved risk class from the evaluation (critical / high / medium / low). */
+  risk_class?: string;
+  /** WHY this was allowed — kind + reference ID (policy, quorum, emergency, etc.). */
+  authority_basis?: { kind: string; reference?: string; granted_by?: string; rationale?: string };
+  /**
+   * Present iff decision === "hold". ID of the HITL escalation auto-created by
+   * the control plane. Poll GET /v1/hitl/{id} for resolution.
+   */
+  escalation_id?: string;
   /** v1.1 audit chain fields — present when the API returns them. */
   chainEntry?: Record<string, unknown> | null;
   snapshot?: Record<string, unknown> | null;
@@ -68,12 +90,19 @@ export async function evaluate(config: EnforceConfig): Promise<Decision> {
     action_type: config.action,
     actor_id: config.actor,
     context: {
+      // Keep environment in context for backward compat with older control plane versions.
       ...(config.environment ? { environment: config.environment } : {}),
       ...(config.targetId ? { target_id: config.targetId } : {}),
       ...config.context,
     },
   };
-  if (config.targetId) payload["target_id"] = config.targetId;
+  // Top-level fields forwarded to the control plane's EvaluateRequest.
+  if (config.environment != null) payload["environment"] = config.environment;
+  if (config.resource != null) payload["resource"] = config.resource;
+  else if (config.targetId) payload["target_id"] = config.targetId;
+  if (config.current_state != null) payload["current_state"] = config.current_state;
+  if (config.proposed_state != null) payload["proposed_state"] = config.proposed_state;
+  if (config.execution_binding != null) payload["execution_binding"] = config.execution_binding;
 
   let status: number;
   let body: string;
@@ -250,6 +279,9 @@ function mapDecision(raw: Record<string, unknown>): Decision {
     riskScore: extractRiskScore(raw),
     denyReason: raw["deny_reason"] as string | undefined,
     holdReason: raw["hold_reason"] as string | undefined,
+    risk_class: raw["risk_class"] as string | undefined,
+    authority_basis: raw["authority_basis"] as Decision["authority_basis"],
+    escalation_id: raw["escalation_id"] as string | undefined,
     chainEntry: (raw["chain_entry"] as Record<string, unknown> | null | undefined) ?? null,
     snapshot: (raw["snapshot"] as Record<string, unknown> | null | undefined) ?? null,
     auditHash: raw["audit_hash"] as string | undefined,

@@ -11,7 +11,7 @@
 import type { EvaluateRequest } from "./types";
 import {
   PRODUCTION_DEPLOY_ACTION,
-  assertProtectedAction,
+  assertValidActionType,
   normalizeProtectedAction,
 } from "./canonicalAction";
 
@@ -87,7 +87,7 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
     // `production.deploy` on the wire — even when the workflow author
     // passed the legacy alias.
     for (const item of evaluations) {
-      assertProtectedAction(item.action);
+      assertValidActionType(item.action);
       item.action = normalizeProtectedAction(item.action).canonical;
     }
     return {
@@ -102,7 +102,7 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
 
   // ── Single-eval mode (v2.0 fallback) ────────────────────────────────────────
   const rawAction = required(env, "INPUT_ACTION");
-  assertProtectedAction(rawAction);
+  assertValidActionType(rawAction);
   // Normalize before forwarding: callers that pass the legacy alias
   // (`deployment.production`) get rewritten to the canonical
   // (`production.deploy`) here, so every downstream surface — the

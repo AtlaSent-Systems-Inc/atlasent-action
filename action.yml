@@ -207,6 +207,48 @@ inputs:
       The window is [now - days, now].
     required: false
     default: '90'
+  # ── VQP Re-Derivation Verify ──────────────────────────────────────────────
+  vqp-snapshot-id:
+    description: |
+      UUID of the VQP snapshot to re-derive and audit. When set, the action
+      runs in vqp-verify mode: re-derives the VQP prompt from DB rules,
+      computes a SHA-256 hash, and compares it to the stored prompt_hash.
+      Fails the job when hash_match=false (integrity violation) or
+      verdict_changed=true (AI score drift with verdict flip).
+      Mutually exclusive with evaluate, policy-sync, release-mode, and
+      governance-agents paths. Does NOT require ATLASENT_API_KEY.
+    required: false
+    default: ''
+  vqp-supabase-url:
+    description: |
+      Supabase project URL for the VQP edge functions
+      (e.g. https://xxxxxxxxxxx.supabase.co). Required when vqp-snapshot-id
+      is set. Falls back to the ATLASENT_SUPABASE_URL env var.
+    required: false
+    default: ''
+  vqp-service-role-key:
+    description: |
+      Supabase service role key — server-side only, must be stored as an
+      Actions secret (never expose in workflow YAML). Required when
+      vqp-snapshot-id is set. Falls back to the
+      ATLASENT_SUPABASE_SERVICE_ROLE_KEY env var.
+    required: false
+    default: ''
+  vqp-rerun:
+    description: |
+      When "true", re-run the AI engine on the re-derived prompt to detect
+      score drift (emits score_delta and verdict_changed outputs).
+      Default: "false" (hash integrity check only).
+    required: false
+    default: 'false'
+  vqp-fail-on-drift:
+    description: |
+      When "true" (default), fail the job if hash_match=false (integrity
+      violation) or verdict_changed=true (score drift with verdict flip).
+      Set to "false" to surface outputs without failing — useful for
+      advisory monitoring workflows.
+    required: false
+    default: 'true'
 outputs:
   decision:
     description: 'The evaluation decision (allow/deny/hold/escalate). Set for single-eval path only.'
@@ -298,6 +340,15 @@ outputs:
     description: |
       Evidence export record ID returned by POST /v1/orgs/{orgId}/evidence-exports.
       Empty string when evidence-bundle is 'false' or the call was skipped / failed.
+  # ── VQP Re-Derivation outputs ─────────────────────────────────────────────
+  vqp-hash-match:
+    description: '"true" when the re-derived SHA-256 hash matches the stored prompt_hash; "false" on integrity violation (vqp-verify mode only).'
+  vqp-score-delta:
+    description: 'Numeric score delta between the rerun score and the original snapshot score. Empty string when vqp-rerun is "false" (vqp-verify mode only).'
+  vqp-verdict-changed:
+    description: '"true" when the verdict flipped between the original snapshot and the AI rerun (vqp-verify mode only).'
+  vqp-audit-id:
+    description: 'Audit log entry ID written by v1-verify-vqp for this re-derivation run (vqp-verify mode only).'
 runs:
   using: 'node24'
   main: 'dist/index.js'

@@ -357,9 +357,6 @@ function assertValidActionType(raw) {
     );
   }
 }
-function assertProtectedAction(raw) {
-  assertValidActionType(raw);
-}
 
 // src/inputs.ts
 function parseInputs(env) {
@@ -399,7 +396,7 @@ function parseInputs(env) {
     }
     const evaluations = parsed;
     for (const item of evaluations) {
-      assertProtectedAction(item.action);
+      assertValidActionType(item.action);
       item.action = normalizeProtectedAction(item.action).canonical;
     }
     return {
@@ -412,7 +409,7 @@ function parseInputs(env) {
     };
   }
   const rawAction = required(env, "INPUT_ACTION");
-  assertProtectedAction(rawAction);
+  assertValidActionType(rawAction);
   const action = normalizeProtectedAction(rawAction).canonical;
   const actor = env["INPUT_ACTOR"] || env["GITHUB_ACTOR"] || "unknown";
   const environment = env["INPUT_ENVIRONMENT"];

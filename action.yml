@@ -5,7 +5,7 @@ branding:
   color: 'green'
 inputs:
   action:
-    description: 'Action type to evaluate (e.g., production.deploy). Used for single-eval path. Ignored when evaluations or policy-sync is set.'
+    description: 'Protected action type (e.g., production.deploy, database.migration.apply, hr.employee.offboard). See the AtlaSent catalog for all 19 built-in types. Used for single-eval path; ignored when evaluations or policy-sync is set.'
     required: false
   actor:
     description: 'Actor identity (defaults to github.actor). Used for single-eval path.'

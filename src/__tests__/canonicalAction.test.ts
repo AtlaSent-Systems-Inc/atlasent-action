@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   LEGACY_PRODUCTION_DEPLOY_ALIAS,
   PRODUCTION_DEPLOY_ACTION,
+  PROTECTED_ACTIONS_CATALOG,
   assertProtectedAction,
   normalizeProtectedAction,
 } from "../canonicalAction";
@@ -36,19 +37,38 @@ describe("canonicalAction", () => {
       expect(() => assertProtectedAction(LEGACY_PRODUCTION_DEPLOY_ALIAS)).not.toThrow();
     });
 
-    it("rejects unrelated action strings", () => {
-      expect(() => assertProtectedAction("deploy.staging")).toThrow(
-        /Deploy Gate V1 only permits "production\.deploy"/,
+    it("rejects malformed action strings", () => {
+      // Uppercase is not a valid format
+      expect(() => assertProtectedAction("DEPLOY.STAGING")).toThrow(
+        /Invalid action type/,
       );
     });
 
-    it("error message names both the canonical and the legacy alias", () => {
-      expect(() => assertProtectedAction("nope")).toThrow(
-        new RegExp(
-          `${PRODUCTION_DEPLOY_ACTION}.*${LEGACY_PRODUCTION_DEPLOY_ALIAS}`,
-          "s",
-        ),
+    it("error message describes format requirements", () => {
+      expect(() => assertProtectedAction("BAD_FORMAT")).toThrow(
+        /dot-separated lowercase/,
       );
+    });
+
+    it("accepts any well-formed action type (format-only validation)", () => {
+      // These are valid dot-separated lowercase strings — format passes regardless of catalog
+      expect(() => assertProtectedAction("deploy.staging")).not.toThrow();
+      expect(() => assertProtectedAction("custom.action.type")).not.toThrow();
+    });
+
+    it("accepts representative Phase 4–6 catalog actions", () => {
+      // Phase 6 — database
+      expect(() => assertProtectedAction("database.migration.apply")).not.toThrow();
+      // Phase 4 — HR
+      expect(() => assertProtectedAction("hr.employee.offboard")).not.toThrow();
+      // Phase 5 — security
+      expect(() => assertProtectedAction("security.incident.escalate")).not.toThrow();
+      // Phase 5 — access
+      expect(() => assertProtectedAction("access.cert.revoke")).not.toThrow();
+    });
+
+    it("PROTECTED_ACTIONS_CATALOG contains exactly 19 entries", () => {
+      expect(PROTECTED_ACTIONS_CATALOG.size).toBe(19);
     });
   });
 });

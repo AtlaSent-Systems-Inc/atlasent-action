@@ -3,6 +3,8 @@
 // Routing (in priority order):
 //   release-mode set      → POST-deploy candidate registration + verify
 //                           against atlasent-control-plane /v1/release/*
+//   vqp-snapshot-id set   → VQP re-derivation audit (hash check + optional
+//                           AI rerun drift detection) via v1-verify-vqp
 //   policy-sync=true      → v1-policy-sync (post bundle, fail CI on rejection)
 //   evaluations input set → v2.1 batch path via runV21()
 //   single action input   → @atlasent/enforce (canonical enforcement wrapper)
@@ -39,6 +41,7 @@ import {
   PRODUCTION_DEPLOY_ACTION,
   normalizeProtectedAction,
 } from "./canonicalAction";
+import { runVqpVerify } from "./vqpVerify";
 
 function getApiKey(): string {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -627,6 +630,126 @@ async function runReleaseModeStep(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// VQP re-derivation audit step
+// ---------------------------------------------------------------------------
+
+async function runVqpVerifyStep(): Promise<void> {
+  const snapshotId = getInput("vqp-snapshot-id", true);
+  const supabaseUrl =
+    getInput("vqp-supabase-url") ||
+    (process.env["ATLASENT_SUPABASE_URL"] ?? "").trim();
+  if (!supabaseUrl) {
+    setFailed(
+      "vqp-verify: vqp-supabase-url input or ATLASENT_SUPABASE_URL env var is required",
+    );
+    return;
+  }
+  const serviceRoleKey =
+    getInput("vqp-service-role-key") ||
+    (process.env["ATLASENT_SUPABASE_SERVICE_ROLE_KEY"] ?? "").trim();
+  if (!serviceRoleKey) {
+    setFailed(
+      "vqp-verify: vqp-service-role-key input or ATLASENT_SUPABASE_SERVICE_ROLE_KEY env var is required",
+    );
+    return;
+  }
+  maskValue(serviceRoleKey);
+
+  const rerun = getInput("vqp-rerun").toLowerCase() === "true";
+  const failOnDrift = getInput("vqp-fail-on-drift").toLowerCase() !== "false";
+
+  info(
+    `AtlaSent VQP verify: re-deriving snapshot ${snapshotId}` +
+      (rerun ? " (with AI rerun)" : " (hash check only)"),
+  );
+
+  const setEmptyVqpOutputs = (): void => {
+    setOutput("vqp-hash-match", "false");
+    setOutput("vqp-score-delta", "");
+    setOutput("vqp-verdict-changed", "false");
+    setOutput("vqp-audit-id", "");
+  };
+
+  let result;
+  try {
+    result = await runVqpVerify({ supabaseUrl, serviceRoleKey, snapshotId, rerun });
+  } catch (err) {
+    setEmptyVqpOutputs();
+    setFailed(
+      `AtlaSent VQP verify: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return;
+  }
+
+  setOutput("vqp-hash-match", result.hashMatch ? "true" : "false");
+  setOutput(
+    "vqp-score-delta",
+    result.scoreDelta !== null ? String(result.scoreDelta) : "",
+  );
+  setOutput("vqp-verdict-changed", result.verdictChanged ? "true" : "false");
+  setOutput("vqp-audit-id", result.auditId);
+
+  info(`  Hash match:      ${result.hashMatch}`);
+  if (result.scoreDelta !== null) {
+    info(`  Score delta:     ${result.scoreDelta}`);
+    info(`  Verdict changed: ${result.verdictChanged}`);
+  }
+  info(`  Audit ID:        ${result.auditId}`);
+
+  appendToStepSummary(
+    [
+      "",
+      "## 🧬 AtlaSent VQP Re-Derivation Audit",
+      "",
+      `| Field | Value |`,
+      `|---|---|`,
+      `| Snapshot ID | \`${snapshotId}\` |`,
+      `| Hash Match | ${result.hashMatch ? "✅ \`true\`" : "❌ \`false\`"} |`,
+      result.scoreDelta !== null
+        ? `| Score Delta | \`${result.scoreDelta}\` |`
+        : "| Score Delta | N/A (rerun not requested) |",
+      result.scoreDelta !== null
+        ? `| Verdict Changed | ${result.verdictChanged ? "⚠️ \`true\`" : "✅ \`false\`"} |`
+        : "| Verdict Changed | N/A |",
+      `| Audit ID | \`${result.auditId || "—"}\` |`,
+      "",
+    ].join("\n"),
+  );
+
+  if (!failOnDrift) {
+    if (!result.hashMatch) {
+      warning(
+        `VQP hash mismatch for snapshot ${snapshotId} (advisory; vqp-fail-on-drift=false)`,
+      );
+    }
+    return;
+  }
+
+  if (!result.hashMatch) {
+    setFailed(
+      `AtlaSent VQP verify: hash mismatch for snapshot ${snapshotId} — ` +
+        `prompt was mutated after snapshot creation (integrity violation). ` +
+        `Investigate vqp_snapshots and vqp_audit_log for root cause.`,
+    );
+    return;
+  }
+
+  if (result.verdictChanged) {
+    setFailed(
+      `AtlaSent VQP verify: verdict changed for snapshot ${snapshotId} — ` +
+        `score drift detected (rerun verdict differs from original). ` +
+        `Review score_delta in vqp_audit_log.`,
+    );
+    return;
+  }
+
+  info(
+    `AtlaSent VQP verify: integrity confirmed for snapshot ${snapshotId}` +
+      (rerun ? " — no score drift" : ""),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -637,6 +760,14 @@ export async function run(): Promise<void> {
   // paths' input requirements.
   if (getInput("release-mode") === "register-and-verify") {
     await runReleaseModeStep();
+    return;
+  }
+
+  // ── VQP re-derivation audit path ────────────────────────────────────────────
+  // Runs directly against the Supabase edge functions via service role key.
+  // Does NOT require ATLASENT_API_KEY.
+  if (getInput("vqp-snapshot-id")) {
+    await runVqpVerifyStep();
     return;
   }
 

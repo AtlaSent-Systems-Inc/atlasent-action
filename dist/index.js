@@ -1311,6 +1311,40 @@ async function callPostDeployEvidenceBundle(args, log, timeoutMs = 3e4) {
   }
 }
 
+// src/vqpVerify.ts
+async function runVqpVerify(inputs, fetchFn = globalThis.fetch) {
+  const base = inputs.supabaseUrl.replace(/\/$/, "");
+  const url = `${base}/functions/v1/v1-verify-vqp`;
+  const res = await fetchFn(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${inputs.serviceRoleKey}`
+    },
+    body: JSON.stringify({
+      snapshot_id: inputs.snapshotId,
+      rerun: inputs.rerun
+    })
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`v1-verify-vqp failed (${res.status}): ${text.slice(0, 400)}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`v1-verify-vqp returned non-JSON: ${text.slice(0, 200)}`);
+  }
+  const body = parsed.success && parsed.data ? parsed.data : parsed;
+  return {
+    hashMatch: body.hash_match === true,
+    scoreDelta: body.score_delta !== void 0 ? body.score_delta : null,
+    verdictChanged: body.verdict_changed === true,
+    auditId: body.audit_id ?? ""
+  };
+}
+
 // src/index.ts
 function getApiKey() {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -1746,9 +1780,103 @@ async function runReleaseModeStep() {
     return;
   }
 }
+async function runVqpVerifyStep() {
+  const snapshotId = getInput("vqp-snapshot-id", true);
+  const supabaseUrl = getInput("vqp-supabase-url") || (process.env["ATLASENT_SUPABASE_URL"] ?? "").trim();
+  if (!supabaseUrl) {
+    setFailed(
+      "vqp-verify: vqp-supabase-url input or ATLASENT_SUPABASE_URL env var is required"
+    );
+    return;
+  }
+  const serviceRoleKey = getInput("vqp-service-role-key") || (process.env["ATLASENT_SUPABASE_SERVICE_ROLE_KEY"] ?? "").trim();
+  if (!serviceRoleKey) {
+    setFailed(
+      "vqp-verify: vqp-service-role-key input or ATLASENT_SUPABASE_SERVICE_ROLE_KEY env var is required"
+    );
+    return;
+  }
+  maskValue(serviceRoleKey);
+  const rerun = getInput("vqp-rerun").toLowerCase() === "true";
+  const failOnDrift = getInput("vqp-fail-on-drift").toLowerCase() !== "false";
+  info(
+    `AtlaSent VQP verify: re-deriving snapshot ${snapshotId}` + (rerun ? " (with AI rerun)" : " (hash check only)")
+  );
+  const setEmptyVqpOutputs = () => {
+    setOutput("vqp-hash-match", "false");
+    setOutput("vqp-score-delta", "");
+    setOutput("vqp-verdict-changed", "false");
+    setOutput("vqp-audit-id", "");
+  };
+  let result;
+  try {
+    result = await runVqpVerify({ supabaseUrl, serviceRoleKey, snapshotId, rerun });
+  } catch (err) {
+    setEmptyVqpOutputs();
+    setFailed(
+      `AtlaSent VQP verify: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return;
+  }
+  setOutput("vqp-hash-match", result.hashMatch ? "true" : "false");
+  setOutput(
+    "vqp-score-delta",
+    result.scoreDelta !== null ? String(result.scoreDelta) : ""
+  );
+  setOutput("vqp-verdict-changed", result.verdictChanged ? "true" : "false");
+  setOutput("vqp-audit-id", result.auditId);
+  info(`  Hash match:      ${result.hashMatch}`);
+  if (result.scoreDelta !== null) {
+    info(`  Score delta:     ${result.scoreDelta}`);
+    info(`  Verdict changed: ${result.verdictChanged}`);
+  }
+  info(`  Audit ID:        ${result.auditId}`);
+  appendToStepSummary(
+    [
+      "",
+      "## \u{1F9EC} AtlaSent VQP Re-Derivation Audit",
+      "",
+      `| Field | Value |`,
+      `|---|---|`,
+      `| Snapshot ID | \`${snapshotId}\` |`,
+      `| Hash Match | ${result.hashMatch ? "\u2705 `true`" : "\u274C `false`"} |`,
+      result.scoreDelta !== null ? `| Score Delta | \`${result.scoreDelta}\` |` : "| Score Delta | N/A (rerun not requested) |",
+      result.scoreDelta !== null ? `| Verdict Changed | ${result.verdictChanged ? "\u26A0\uFE0F `true`" : "\u2705 `false`"} |` : "| Verdict Changed | N/A |",
+      `| Audit ID | \`${result.auditId || "\u2014"}\` |`,
+      ""
+    ].join("\n")
+  );
+  if (!failOnDrift) {
+    if (!result.hashMatch) {
+      warning(
+        `VQP hash mismatch for snapshot ${snapshotId} (advisory; vqp-fail-on-drift=false)`
+      );
+    }
+    return;
+  }
+  if (!result.hashMatch) {
+    setFailed(
+      `AtlaSent VQP verify: hash mismatch for snapshot ${snapshotId} \u2014 prompt was mutated after snapshot creation (integrity violation). Investigate vqp_snapshots and vqp_audit_log for root cause.`
+    );
+    return;
+  }
+  if (result.verdictChanged) {
+    setFailed(
+      `AtlaSent VQP verify: verdict changed for snapshot ${snapshotId} \u2014 score drift detected (rerun verdict differs from original). Review score_delta in vqp_audit_log.`
+    );
+    return;
+  }
+  info(
+    `AtlaSent VQP verify: integrity confirmed for snapshot ${snapshotId}` + (rerun ? " \u2014 no score drift" : "")
+  );
+}
 async function run() {
   if (getInput("release-mode") === "register-and-verify") {
     await runReleaseModeStep();
+    return;
+  }
+  if (getInput("vqp-snapshot-id")) {
+    await runVqpVerifyStep();
     return;
   }
   const apiKey = getApiKey();

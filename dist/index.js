@@ -2059,6 +2059,43 @@ async function run() {
     setOutput("decisions", decisionsJson);
     setOutput("verified", allVerified ? "true" : "false");
     if (result.failed) {
+      {
+        const gh2 = getGitHubContext();
+        const runUrl = `${gh2.server_url}/${gh2.repository}/actions/runs/${gh2.run_id}`;
+        const slackWebhook = getInput("slack-webhook");
+        const prCommentEnabled = getInput("pr-comment-on-deny").toLowerCase() !== "false";
+        const blockedDecisions = result.decisions.filter(
+          (d2) => d2.decision === "deny" || d2.decision === "hold" || d2.decision === "escalate"
+        );
+        const worstDecision = blockedDecisions.some((d2) => d2.decision === "deny") ? "deny" : blockedDecisions.some((d2) => d2.decision === "escalate") ? "escalate" : "hold";
+        const batchActor = getInput("actor") || "unknown";
+        const batchEnv = resolveEnvironment(getInput("environment"), gh2.ref, apiKey);
+        const reasonSummary = `${blockedDecisions.length} of ${result.decisions.length} evaluation(s) blocked (${worstDecision})`;
+        if (slackWebhook) {
+          await notifySlack(slackWebhook, {
+            decision: worstDecision,
+            action: "batch evaluation",
+            actor: batchActor,
+            environment: batchEnv,
+            reason: reasonSummary,
+            runUrl
+          });
+        }
+        if (prCommentEnabled && gh2.pr_number) {
+          await postPRComment({
+            repository: gh2.repository,
+            prNumber: gh2.pr_number,
+            body: buildGateDenyComment({
+              decision: worstDecision,
+              reason: reasonSummary,
+              action: "batch evaluation",
+              actor: batchActor,
+              environment: batchEnv,
+              runUrl
+            })
+          });
+        }
+      }
       setFailed(
         `AtlaSent Gate: one or more evaluations were not allowed (deny/hold/escalate). See 'decisions' output for details.`
       );

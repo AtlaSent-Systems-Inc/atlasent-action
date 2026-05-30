@@ -173,6 +173,28 @@ inputs:
     description: 'Shortcut for governance-fail-on-severity: blocker.'
     required: false
     default: 'false'
+  # ── Outbound notifications ───────────────────────────────────────────────────────────
+  slack-webhook:
+    description: |
+      Slack Incoming Webhook URL. When set, the action posts an informational
+      Block Kit message to this URL whenever the deploy gate returns deny,
+      hold, or escalate. This is outbound notification only — no interactive
+      approval buttons. For in-flow approvals, use the AtlaSent Slack Approval
+      Bot instead (configured in the AtlaSent console).
+      Best-effort: webhook failures are logged as warnings and never block or
+      alter the gate decision.
+    required: false
+    default: ''
+  pr-comment-on-deny:
+    description: |
+      When "true" (default), post a comment to the pull request when the gate
+      returns deny, hold, or escalate and a PR number is detected in the
+      workflow context. Requires: permissions: pull-requests: write in the
+      workflow, and GITHUB_TOKEN must be available.
+      Best-effort: comment failures are logged as warnings and never block or
+      alter the gate decision. Set to "false" to suppress PR comments.
+    required: false
+    default: 'true'
   # ── Post-deploy compliance evidence bundle ────────────────────────────────────────────
   evidence-bundle:
     description: |

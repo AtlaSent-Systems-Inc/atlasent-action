@@ -1428,6 +1428,124 @@ async function postCommitStatus(args) {
     );
   }
 }
+async function notifySlack(webhookUrl, opts) {
+  const emoji = opts.decision === "deny" ? ":no_entry:" : opts.decision === "hold" ? ":hourglass_flowing_sand:" : opts.decision === "escalate" ? ":rotating_light:" : ":warning:";
+  const label = opts.decision === "deny" ? "DENIED" : opts.decision === "hold" ? "ON HOLD" : opts.decision === "escalate" ? "ESCALATED" : "BLOCKED";
+  const fields = [
+    { type: "mrkdwn", text: `*Actor:*
+${opts.actor}` },
+    { type: "mrkdwn", text: `*Environment:*
+${opts.environment}` }
+  ];
+  if (opts.evaluationId) {
+    fields.push({ type: "mrkdwn", text: `*Evaluation ID:*
+${opts.evaluationId}` });
+  }
+  if (opts.auditHash) {
+    fields.push({
+      type: "mrkdwn",
+      text: `*Audit hash:*
+\`${opts.auditHash.slice(0, 16)}\u2026\``
+    });
+  }
+  const payload = {
+    text: `${emoji} AtlaSent Deploy Gate ${label}: ${opts.action} (${opts.environment})`,
+    blocks: [
+      {
+        type: "header",
+        text: { type: "plain_text", text: `${emoji} AtlaSent: Deploy ${label}`, emoji: true }
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Action:* \`${opts.action}\`
+*Reason:* ${opts.reason}`
+        }
+      },
+      { type: "section", fields },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "View Run", emoji: false },
+            url: opts.runUrl
+          }
+        ]
+      }
+    ]
+  };
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      warning(`AtlaSent: Slack notification failed (${res.status}) \u2014 advisory, non-blocking`);
+    }
+  } catch (err) {
+    warning(
+      `AtlaSent: Slack notification error (advisory, non-blocking): ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+function buildGateDenyComment(opts) {
+  const icon = opts.decision === "deny" ? "\u{1F534}" : opts.decision === "hold" ? "\u{1F7E1}" : opts.decision === "escalate" ? "\u{1F6A8}" : "\u274C";
+  const label = opts.decision === "deny" ? "DENIED" : opts.decision === "hold" ? "ON HOLD" : opts.decision === "escalate" ? "ESCALATED" : "BLOCKED";
+  const lines = [
+    `## ${icon} AtlaSent Deploy Gate \u2014 ${label}`,
+    "",
+    `The AtlaSent gate blocked \`${opts.action}\` for actor **${opts.actor}** in **${opts.environment}**.`,
+    "",
+    `**Decision:** \`${opts.decision}\``,
+    `**Reason:** ${opts.reason}`
+  ];
+  if (opts.evaluationId) {
+    lines.push(`**Evaluation ID:** \`${opts.evaluationId}\``);
+  }
+  if (opts.auditHash) {
+    lines.push(`**Audit hash:** \`${opts.auditHash.slice(0, 24)}\u2026\``);
+  }
+  lines.push("", `[View workflow run](${opts.runUrl})`);
+  if (opts.decision === "hold" || opts.decision === "escalate") {
+    lines.push(
+      "",
+      "> **Next step:** An authorized reviewer must approve this deployment in the [AtlaSent console](https://console.atlasent.io/approvals) or via the Slack Approval Bot."
+    );
+  }
+  return lines.join("\n");
+}
+async function postPRComment(args) {
+  const token = process.env["GITHUB_TOKEN"];
+  if (!token || !args.repository || !args.prNumber)
+    return;
+  const apiBase = process.env["GITHUB_API_URL"] ?? "https://api.github.com";
+  const url = `${apiBase}/repos/${args.repository}/issues/${args.prNumber}/comments`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      },
+      body: JSON.stringify({ body: args.body })
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "<unreadable>");
+      warning(
+        `AtlaSent: PR comment post failed (${res.status}): ${text.slice(0, 200)} \u2014 advisory, non-blocking`
+      );
+    }
+  } catch (err) {
+    warning(
+      `AtlaSent: PR comment post error (advisory, non-blocking): ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
 function getGitHubContext() {
   return {
     repository: process.env["GITHUB_REPOSITORY"] ?? "",
@@ -1437,7 +1555,7 @@ function getGitHubContext() {
     run_number: process.env["GITHUB_RUN_NUMBER"] ?? "",
     workflow: process.env["GITHUB_WORKFLOW"] ?? "",
     event_name: process.env["GITHUB_EVENT_NAME"] ?? "",
-    pr_number: process.env["GITHUB_REF"]?.match(/^\/refs\/pull\/(\d+)\//)?.[1],
+    pr_number: process.env["GITHUB_REF"]?.match(/^refs\/pull\/(\d+)\//)?.[1],
     server_url: process.env["GITHUB_SERVER_URL"] ?? "https://github.com"
   };
 }
@@ -1941,6 +2059,43 @@ async function run() {
     setOutput("decisions", decisionsJson);
     setOutput("verified", allVerified ? "true" : "false");
     if (result.failed) {
+      {
+        const gh2 = getGitHubContext();
+        const runUrl = `${gh2.server_url}/${gh2.repository}/actions/runs/${gh2.run_id}`;
+        const slackWebhook = getInput("slack-webhook");
+        const prCommentEnabled = getInput("pr-comment-on-deny").toLowerCase() !== "false";
+        const blockedDecisions = result.decisions.filter(
+          (d2) => d2.decision === "deny" || d2.decision === "hold" || d2.decision === "escalate"
+        );
+        const worstDecision = blockedDecisions.some((d2) => d2.decision === "deny") ? "deny" : blockedDecisions.some((d2) => d2.decision === "escalate") ? "escalate" : "hold";
+        const batchActor = getInput("actor") || "unknown";
+        const batchEnv = resolveEnvironment(getInput("environment"), gh2.ref, apiKey);
+        const reasonSummary = `${blockedDecisions.length} of ${result.decisions.length} evaluation(s) blocked (${worstDecision})`;
+        if (slackWebhook) {
+          await notifySlack(slackWebhook, {
+            decision: worstDecision,
+            action: "batch evaluation",
+            actor: batchActor,
+            environment: batchEnv,
+            reason: reasonSummary,
+            runUrl
+          });
+        }
+        if (prCommentEnabled && gh2.pr_number) {
+          await postPRComment({
+            repository: gh2.repository,
+            prNumber: gh2.pr_number,
+            body: buildGateDenyComment({
+              decision: worstDecision,
+              reason: reasonSummary,
+              action: "batch evaluation",
+              actor: batchActor,
+              environment: batchEnv,
+              runUrl
+            })
+          });
+        }
+      }
       setFailed(
         `AtlaSent Gate: one or more evaluations were not allowed (deny/hold/escalate). See 'decisions' output for details.`
       );
@@ -2038,6 +2193,42 @@ async function run() {
         });
       }
       emitFinancialGovernanceAdvisory(actionType, actor, orgId);
+      {
+        const slackWebhook = getInput("slack-webhook");
+        const runUrl = `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`;
+        const decisionStr = err.decision?.decision ?? "error";
+        const isActionable = decisionStr === "deny" || decisionStr === "hold" || decisionStr === "escalate";
+        const reason = decisionStr === "deny" ? err.decision?.denyReason ?? "no reason provided" : decisionStr === "hold" ? err.decision?.holdReason ?? "awaiting approval" : decisionStr === "escalate" ? "escalated \u2014 manual review required" : err.message.slice(0, 200);
+        if (slackWebhook && isActionable) {
+          await notifySlack(slackWebhook, {
+            decision: decisionStr,
+            action: actionType,
+            actor,
+            environment,
+            reason,
+            runUrl,
+            evaluationId: err.decision?.evaluationId,
+            auditHash: err.decision?.auditHash
+          });
+        }
+        const prCommentEnabled = getInput("pr-comment-on-deny").toLowerCase() !== "false";
+        if (prCommentEnabled && gh.pr_number && isActionable) {
+          await postPRComment({
+            repository: gh.repository,
+            prNumber: gh.pr_number,
+            body: buildGateDenyComment({
+              decision: decisionStr,
+              reason,
+              action: actionType,
+              actor,
+              environment,
+              runUrl,
+              evaluationId: err.decision?.evaluationId,
+              auditHash: err.decision?.auditHash
+            })
+          });
+        }
+      }
       switch (err.phase) {
         case "evaluate":
           setFailed(

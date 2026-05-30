@@ -82,7 +82,7 @@ beforeEach(() => {
     },
   ) as unknown as ReturnType<typeof vi.spyOn>;
 
-  consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+  consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {}) as unknown as ReturnType<typeof vi.spyOn>;
 
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
@@ -232,7 +232,7 @@ describe("buildGateDenyComment", () => {
 
     // Find the PR comment call: it targets /issues/{n}/comments
     const prCommentCall = fetchMock.mock.calls.find(
-      ([url]: [string]) => url.includes("/issues/") && url.includes("/comments"),
+      ([url]) => url.includes("/issues/") && url.includes("/comments"),
     );
     expect(prCommentCall).toBeDefined();
 
@@ -290,7 +290,7 @@ describe("buildGateDenyComment", () => {
     await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
 
     const prCommentCall = fetchMock.mock.calls.find(
-      ([url]: [string]) => url.includes("/issues/") && url.includes("/comments"),
+      ([url]) => url.includes("/issues/") && url.includes("/comments"),
     );
     const body = JSON.parse((prCommentCall![1] as RequestInit).body as string);
     expect(body.body).not.toContain("Evaluation ID");
@@ -385,7 +385,7 @@ describe("notifySlack", () => {
     await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
 
     const slackCalls = fetchMock.mock.calls.filter(
-      ([url]: [string]) => url === webhookUrl,
+      ([url]) => url === webhookUrl,
     ) as Array<[string, RequestInit]>;
 
     return { calls: slackCalls };
@@ -459,7 +459,7 @@ describe("notifySlack", () => {
     await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
 
     const slackCalls = fetchMock.mock.calls.filter(
-      ([url]: [string]) => url === "https://hooks.slack.com/test-webhook",
+      ([url]) => url === "https://hooks.slack.com/test-webhook",
     );
     expect(slackCalls).toHaveLength(1);
     const payload = JSON.parse(slackCalls[0][1].body as string);
@@ -588,7 +588,7 @@ describe("notifySlack", () => {
 
     // Only the commit status call should have gone out — no Slack
     // (commit status URL contains /statuses/, Slack URL would be the webhook)
-    const allUrls = fetchMock.mock.calls.map(([url]: [string]) => url);
+    const allUrls = fetchMock.mock.calls.map(([url]) => url);
     expect(allUrls.every((u) => u.includes("statuses"))).toBe(true);
   });
 });
@@ -632,7 +632,7 @@ describe("postPRComment", () => {
 
   function getPrCommentCall() {
     return fetchMock.mock.calls.find(
-      ([url]: [string]) => url.includes("/issues/") && url.includes("/comments"),
+      ([url]) => url.includes("/issues/") && url.includes("/comments"),
     ) as [string, RequestInit] | undefined;
   }
 
@@ -828,7 +828,7 @@ describe("batch-deny integration (v2.1 path)", () => {
     await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
 
     const slackCalls = fetchMock.mock.calls.filter(
-      ([url]: [string]) => url === "https://hooks.slack.com/batch-webhook",
+      ([url]) => url === "https://hooks.slack.com/batch-webhook",
     );
     expect(slackCalls).toHaveLength(1);
     const payload = JSON.parse(slackCalls[0][1].body as string);
@@ -849,7 +849,7 @@ describe("batch-deny integration (v2.1 path)", () => {
     await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
 
     const prCommentCall = fetchMock.mock.calls.find(
-      ([url]: [string]) => url.includes("/issues/77/comments"),
+      ([url]) => url.includes("/issues/77/comments"),
     );
     expect(prCommentCall).toBeDefined();
     const body = JSON.parse((prCommentCall![1] as RequestInit).body as string);
@@ -875,7 +875,7 @@ describe("batch-deny integration (v2.1 path)", () => {
     await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
 
     const slackCalls = fetchMock.mock.calls.filter(
-      ([url]: [string]) => url === "https://hooks.slack.com/batch-webhook",
+      ([url]) => url === "https://hooks.slack.com/batch-webhook",
     );
     expect(slackCalls).toHaveLength(1);
     const payload = JSON.parse(slackCalls[0][1].body as string);
@@ -900,7 +900,7 @@ describe("batch-deny integration (v2.1 path)", () => {
     await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
 
     const slackCalls = fetchMock.mock.calls.filter(
-      ([url]: [string]) => url === "https://hooks.slack.com/batch-webhook",
+      ([url]) => url === "https://hooks.slack.com/batch-webhook",
     );
     const payload = JSON.parse(slackCalls[0][1].body as string);
     expect(payload.text).toContain("ESCALATED");
@@ -921,7 +921,7 @@ describe("batch-deny integration (v2.1 path)", () => {
 
     // Verify no Slack call happened (only a PR comment URL if any)
     const nonPrCalls = fetchMock.mock.calls.filter(
-      ([url]: [string]) =>
+      ([url]) =>
         !url.includes("/issues/") && !url.includes("/comments") && !url.includes("/statuses/"),
     );
     expect(nonPrCalls).toHaveLength(0);
@@ -941,7 +941,7 @@ describe("batch-deny integration (v2.1 path)", () => {
     await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
 
     const prCommentCall = fetchMock.mock.calls.find(
-      ([url]: [string]) => url.includes("/issues/77/comments"),
+      ([url]) => url.includes("/issues/77/comments"),
     );
     expect(prCommentCall).toBeUndefined();
   });
@@ -961,7 +961,7 @@ describe("batch-deny integration (v2.1 path)", () => {
     await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
 
     const prCommentCall = fetchMock.mock.calls.find(
-      ([url]: [string]) => url.includes("/issues/") && url.includes("/comments"),
+      ([url]) => url.includes("/issues/") && url.includes("/comments"),
     );
     expect(prCommentCall).toBeUndefined();
   });
@@ -1001,13 +1001,13 @@ describe("batch-deny integration (v2.1 path)", () => {
 
     // No Slack call
     const slackCalls = fetchMock.mock.calls.filter(
-      ([url]: [string]) => url === "https://hooks.slack.com/batch-webhook",
+      ([url]) => url === "https://hooks.slack.com/batch-webhook",
     );
     expect(slackCalls).toHaveLength(0);
 
     // No PR comment call
     const prCommentCall = fetchMock.mock.calls.find(
-      ([url]: [string]) => url.includes("/issues/77/comments"),
+      ([url]) => url.includes("/issues/77/comments"),
     );
     expect(prCommentCall).toBeUndefined();
   });
@@ -1030,7 +1030,7 @@ describe("batch-deny integration (v2.1 path)", () => {
     await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
 
     const slackCalls = fetchMock.mock.calls.filter(
-      ([url]: [string]) => url === "https://hooks.slack.com/batch-webhook",
+      ([url]) => url === "https://hooks.slack.com/batch-webhook",
     );
     expect(slackCalls).toHaveLength(1);
     const payload = JSON.parse(slackCalls[0][1].body as string);

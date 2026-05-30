@@ -1045,6 +1045,52 @@ export async function run(): Promise<void> {
     setOutput("verified", allVerified ? "true" : "false");
 
     if (result.failed) {
+      // Fire Slack + PR-comment notifications for the batch deny path, mirroring
+      // the single-eval path. Aggregate across all blocked decisions.
+      {
+        const gh = getGitHubContext();
+        const runUrl = `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`;
+        const slackWebhook = getInput("slack-webhook");
+        const prCommentEnabled = getInput("pr-comment-on-deny").toLowerCase() !== "false";
+
+        const blockedDecisions = result.decisions.filter(
+          (d) => d.decision === "deny" || d.decision === "hold" || d.decision === "escalate",
+        );
+        const worstDecision: string = blockedDecisions.some((d) => d.decision === "deny")
+          ? "deny"
+          : blockedDecisions.some((d) => d.decision === "escalate")
+            ? "escalate"
+            : "hold";
+        const batchActor = getInput("actor") || "unknown";
+        const batchEnv = resolveEnvironment(getInput("environment"), gh.ref, apiKey);
+        const reasonSummary = `${blockedDecisions.length} of ${result.decisions.length} evaluation(s) blocked (${worstDecision})`;
+
+        if (slackWebhook) {
+          await notifySlack(slackWebhook, {
+            decision: worstDecision,
+            action: "batch evaluation",
+            actor: batchActor,
+            environment: batchEnv,
+            reason: reasonSummary,
+            runUrl,
+          });
+        }
+        if (prCommentEnabled && gh.pr_number) {
+          await postPRComment({
+            repository: gh.repository,
+            prNumber: gh.pr_number,
+            body: buildGateDenyComment({
+              decision: worstDecision,
+              reason: reasonSummary,
+              action: "batch evaluation",
+              actor: batchActor,
+              environment: batchEnv,
+              runUrl,
+            }),
+          });
+        }
+      }
+
       setFailed(
         `AtlaSent Gate: one or more evaluations were not allowed (deny/hold/escalate). See 'decisions' output for details.`,
       );

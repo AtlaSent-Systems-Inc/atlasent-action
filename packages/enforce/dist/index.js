@@ -30,17 +30,37 @@ exports.EnforceError = EnforceError;
 // ---------------------------------------------------------------------------
 async function evaluate(config) {
     const apiUrl = (config.apiUrl ?? DEFAULT_API_URL).replace(/\/$/, "");
+    // Separate state_snapshot out of context if the caller mistakenly nested it there.
+    const rawContext = { ...config.context };
+    const contextSnapshot = rawContext["state_snapshot"];
+    delete rawContext["state_snapshot"];
     const payload = {
         action_type: config.action,
         actor_id: config.actor,
         context: {
+            // Keep environment in context for backward compat with older control plane versions.
             ...(config.environment ? { environment: config.environment } : {}),
             ...(config.targetId ? { target_id: config.targetId } : {}),
-            ...config.context,
+            ...rawContext,
         },
     };
-    if (config.targetId)
+    // Top-level fields forwarded to the control plane's EvaluateRequest.
+    if (config.environment != null)
+        payload["environment"] = config.environment;
+    if (config.resource != null)
+        payload["resource"] = config.resource;
+    else if (config.targetId)
         payload["target_id"] = config.targetId;
+    if (config.current_state != null)
+        payload["current_state"] = config.current_state;
+    if (config.proposed_state != null)
+        payload["proposed_state"] = config.proposed_state;
+    if (config.execution_binding != null)
+        payload["execution_binding"] = config.execution_binding;
+    // state_snapshot is a top-level body field (EvaluateBody.state_snapshot), not inside context.
+    const snap = config.state_snapshot ?? contextSnapshot;
+    if (snap != null)
+        payload["state_snapshot"] = snap;
     let status;
     let body;
     try {
@@ -154,6 +174,9 @@ function mapDecision(raw) {
         riskScore: extractRiskScore(raw),
         denyReason: raw["deny_reason"],
         holdReason: raw["hold_reason"],
+        risk_class: raw["risk_class"],
+        authority_basis: raw["authority_basis"],
+        escalation_id: raw["escalation_id"],
         chainEntry: raw["chain_entry"] ?? null,
         snapshot: raw["snapshot"] ?? null,
         auditHash: raw["audit_hash"],

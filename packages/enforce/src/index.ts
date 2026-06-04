@@ -35,6 +35,15 @@ export interface EnforceConfig {
     enforcement_point?: string;
   };
   context?: Record<string, unknown>;
+  /** Top-level body field required when the action class has requires_state_snapshot=true.
+   *  Must be sent alongside context, not nested inside it. */
+  state_snapshot?: {
+    source?: string;
+    source_kind?: string;
+    complete?: boolean;
+    run_id?: string;
+    payload?: unknown;
+  };
 }
 
 export interface Decision {
@@ -86,6 +95,11 @@ export class EnforceError extends Error {
 export async function evaluate(config: EnforceConfig): Promise<Decision> {
   const apiUrl = (config.apiUrl ?? DEFAULT_API_URL).replace(/\/$/, "");
 
+  // Separate state_snapshot out of context if the caller mistakenly nested it there.
+  const rawContext = { ...config.context };
+  const contextSnapshot = rawContext["state_snapshot"] as EnforceConfig["state_snapshot"] | undefined;
+  delete rawContext["state_snapshot"];
+
   const payload: Record<string, unknown> = {
     action_type: config.action,
     actor_id: config.actor,
@@ -93,7 +107,7 @@ export async function evaluate(config: EnforceConfig): Promise<Decision> {
       // Keep environment in context for backward compat with older control plane versions.
       ...(config.environment ? { environment: config.environment } : {}),
       ...(config.targetId ? { target_id: config.targetId } : {}),
-      ...config.context,
+      ...rawContext,
     },
   };
   // Top-level fields forwarded to the control plane's EvaluateRequest.
@@ -103,6 +117,9 @@ export async function evaluate(config: EnforceConfig): Promise<Decision> {
   if (config.current_state != null) payload["current_state"] = config.current_state;
   if (config.proposed_state != null) payload["proposed_state"] = config.proposed_state;
   if (config.execution_binding != null) payload["execution_binding"] = config.execution_binding;
+  // state_snapshot is a top-level body field (EvaluateBody.state_snapshot), not inside context.
+  const snap = config.state_snapshot ?? contextSnapshot;
+  if (snap != null) payload["state_snapshot"] = snap;
 
   let status: number;
   let body: string;

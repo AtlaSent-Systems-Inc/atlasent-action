@@ -36,36 +36,29 @@ Push to main → AtlaSent evaluates → permit issued → deploy
     target-id: api-service
     environment: live
     fail-on-deny: 'true'
-    context: |
-      {
-        "team": "platform",
-        "service": "api",
-        "state_snapshot": {
-          "source": "github-actions",
-          "complete": true,
-          "run_id": "${{ github.run_id }}"
-        }
-      }
+    context: '{"team": "platform", "service": "api"}'
+    # state_snapshot is injected automatically — no need to include it here
 ```
 
 ## Required context: `state_snapshot`
 
-All `production.deploy` evaluations (and all action classes in the AtlaSent system) **require a `state_snapshot` field** in the context. Omitting it results in an immediate `SNAPSHOT_REQUIRED` deny regardless of policy.
+All `production.deploy` evaluations (and all action classes in the AtlaSent system) **require a `state_snapshot`** in the request body. Omitting it results in an immediate `SNAPSHOT_REQUIRED` deny regardless of policy.
 
-Include it in the `context` JSON:
+**The action injects `state_snapshot` automatically** from the GitHub Actions runtime (`source: "github-actions"`, `complete: true`, `run_id: ${{ github.run_id }}`). No extra configuration is needed for the standard case.
+
+If you need to override the snapshot (e.g. to attach a pre-collected environment diff), pass it as a top-level `state_snapshot` key in the `context` input. The action will use your value instead of the auto-injected one:
 
 ```yaml
+# Only needed if you want to override the auto-injected snapshot:
 context: |
   {
     "state_snapshot": {
-      "source": "github-actions",
+      "source": "buildkite",
       "complete": true,
-      "run_id": "${{ github.run_id }}"
+      "run_id": "$BUILDKITE_BUILD_ID"
     }
   }
 ```
-
-The `source` field identifies where the snapshot was captured (`github-actions`, `buildkite`, `jenkins`, etc.). The `complete: true` flag signals that the pre-deploy state was captured successfully. The action will pass it through to the AtlaSent evaluator exactly as provided.
 
 > **Why is this required?** AtlaSent enforces that every protected action is evaluated against a known, captured state — this closes the TOCTOU (time-of-check, time-of-use) window by proving the workflow observed the environment before the gate ran.
 

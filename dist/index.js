@@ -2135,6 +2135,13 @@ async function run() {
     actor: `github:${actor}`,
     environment,
     targetId,
+    // state_snapshot is required for all action classes (requires_state_snapshot=true).
+    // Auto-populate from GitHub Actions context; callers can override via the context input.
+    state_snapshot: {
+      source: "github-actions",
+      complete: true,
+      run_id: gh.run_id
+    },
     context: {
       source: "github-action",
       repository: gh.repository,

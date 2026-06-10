@@ -29,6 +29,19 @@ jobs:
         with:
           node-version: '20'
 
+      # ── AtlaSent release gate ─────────────────────────────────────────────
+      # Gate closed: if the permit is not verified the job exits here and
+      # nothing builds, signs, or publishes.
+      - name: AtlaSent release gate
+        uses: atlasent/action@v1
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+        with:
+          action: production.release
+          actor: ${{ github.actor }}
+          environment: production
+          context: '{"ref": "${{ github.ref }}", "repo": "${{ github.repository }}"}'  
+
       - run: npm ci
 
       - run: npm run build

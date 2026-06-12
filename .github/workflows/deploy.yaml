@@ -4,8 +4,6 @@ name: AtlaSent Deploy Gate (Demo)
 # In your repo, replace uses: ./ with: uses: AtlaSent-Systems-Inc/atlasent-action@v1
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       environment:

@@ -80,7 +80,7 @@ function normalizeAndValidateProtectedAction(actionType: string): string {
 // ---------------------------------------------------------------------------
 
 function getInput(name: string, required = false): string {
-  const envKey = `INPUT_${name.replace(/-/g, "_").toUpperCase()}`;
+  const envKey = `INPUT_${name.replace(/ /g, "_").toUpperCase()}`;
   const val = (process.env[envKey] ?? "").trim();
   if (required && !val) {
     setFailed(`Input required and not supplied: ${name}`);

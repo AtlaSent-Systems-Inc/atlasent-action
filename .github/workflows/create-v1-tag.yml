@@ -19,4 +19,4 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git push origin dbc729d1c5bb88d15f67e19e0a67dc4d22f94606:refs/tags/v1 --force
+          git push origin 9be1474e1f3ac697466de92fb5ff2b0582f7c3b5:refs/tags/v1 --force

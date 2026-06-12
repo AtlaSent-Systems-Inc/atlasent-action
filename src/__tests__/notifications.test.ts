@@ -110,7 +110,7 @@ afterEach(() => {
 // ── Convenience helpers ─────────────────────────────────────────────────────
 
 function setInput(name: string, value: string) {
-  process.env[`INPUT_${name.replace(/-/g, "_").toUpperCase()}`] = value;
+  process.env[`INPUT_${name.replace(/ /g, "_").toUpperCase()}`] = value;
 }
 
 function setApiKey(value = "ask_test_key") {

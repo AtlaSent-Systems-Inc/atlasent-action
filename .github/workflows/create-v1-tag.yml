@@ -1,13 +1,23 @@
-name: Create v1 floating tag
+name: Move v1 floating tag
+
+# Manual fallback for repointing the floating `v1` tag (the one customers
+# reference via `uses: AtlaSent-Systems-Inc/atlasent-action@v1`). Normally the
+# Release workflow moves `v1` automatically on every v1.x release; use this only
+# to correct v1 out of band. No hardcoded SHA — it resolves the target tag.
 
 on:
   workflow_dispatch:
+    inputs:
+      target_tag:
+        description: 'Tag v1 should point at (e.g. v1.3.0). Leave blank to use the latest v1.*.* tag.'
+        required: false
+        default: ''
 
 permissions:
   contents: write
 
 jobs:
-  create-tag:
+  move-tag:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,8 +25,22 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create v1 floating tag pointing at v1.3.0
+      - name: Resolve and move v1
         run: |
+          target='${{ github.event.inputs.target_tag }}'
+          if [ -z "$target" ]; then
+            target="$(git tag -l 'v1.*.*' --sort=-v:refname | head -n1)"
+          fi
+          if [ -z "$target" ]; then
+            echo "::error::No v1.*.* tag found and no target_tag provided. Cut a v1.x release first."
+            exit 1
+          fi
+          if ! git rev-parse -q --verify "refs/tags/$target" >/dev/null; then
+            echo "::error::Tag '$target' does not exist."
+            exit 1
+          fi
+          echo "Moving v1 -> $target"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git push origin 9be1474e1f3ac697466de92fb5ff2b0582f7c3b5:refs/tags/v1 --force
+          git tag -f v1 "$target"
+          git push origin refs/tags/v1 --force

@@ -7,8 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Branch or tag to build'
+        description: 'Tag to build and publish (e.g. v1.3.0). Use a vX.Y.Z tag to publish a release.'
         default: 'main'
+      bootstrap:
+        description: 'Skip the AtlaSent release gate for the bootstrap (first) publish, when no v1 of the action exists yet to gate with.'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -24,35 +28,46 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
+          fetch-depth: 0
 
       - uses: actions/setup-node@v6
         with:
           node-version: '20'
 
-      # ── AtlaSent release gate ─────────────────────────────────────────────
-      # Gate closed: if the permit is not verified the job exits here and
-      # nothing builds, signs, or publishes.
-      - name: AtlaSent release gate
-        uses: atlasent/action@v1
-        env:
-          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
-        with:
-          action: production.release
-          actor: ${{ github.actor }}
-          environment: production
-          context: '{"ref": "${{ github.ref }}", "repo": "${{ github.repository }}"}'  
-
       - run: npm ci
 
       - run: npm run build
 
-      - name: Commit dist
+      # The committed dist/index.js is the artifact GitHub Actions runs. It must
+      # already match source at release time — we verify rather than commit, so
+      # the release never mutates the repo (the old approach git-pushed on a
+      # detached HEAD during tag builds and failed).
+      - name: Verify committed dist is current
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add dist/index.js
-          git diff --staged --quiet || git commit -m "chore: build dist/index.js"
-          git push
+          if ! git diff --quiet -- dist/index.js; then
+            echo "::error::dist/index.js is out of date with src/. Run 'npm run build' and commit dist/index.js before tagging a release."
+            git --no-pager diff --stat -- dist/index.js
+            exit 1
+          fi
+
+      # ── AtlaSent release gate (dogfood) ───────────────────────────────────
+      # Gated on the action's OWN code (uses: ./), so each release is authorized
+      # by the very build it is releasing. Skipped only for the one-time
+      # bootstrap publish (workflow_dispatch with bootstrap=true), which breaks
+      # the chicken-and-egg of publishing v1 before any v1 exists to gate with.
+      # Subsequent tag-push releases run the gate.
+      - name: AtlaSent release gate
+        if: ${{ github.event.inputs.bootstrap != 'true' }}
+        uses: ./
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          action: production.release
+          actor: ${{ github.actor }}
+          environment: prod
+          context: '{"ref": "${{ github.ref }}", "repo": "${{ github.repository }}"}'
 
       # ── R4: cosign keyless signing ────────────────────────────────────────
       - name: Install cosign
@@ -75,16 +90,52 @@ jobs:
         run: |
           cosign verify-blob \
             --bundle=dist/index.js.bundle \
-            --certificate-identity-regexp='https://github.com/AtlaSent-Systems-Inc/atlasent-action/.github/workflows/release.yml@refs/tags/v.*' \
+            --certificate-identity-regexp='https://github.com/AtlaSent-Systems-Inc/atlasent-action/.github/workflows/release.yml@.*' \
             --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
             dist/index.js
 
-      - name: Upload signature bundle to GitHub release
-        # Only upload when triggered by a tag push (i.e. a real release).
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+      # ── Resolve which tag (if any) to publish ─────────────────────────────
+      # Publish on a tag push, or on a manual dispatch whose ref is a vX.Y.Z tag
+      # (the bootstrap path). A dispatch against 'main' builds + signs but does
+      # not publish a release.
+      - name: Resolve release tag
+        id: rel
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "${{ github.event.inputs.ref }}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "tag=${{ github.event.inputs.ref }}" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Publish the GitHub Release (this is what lists the action) ─────────
+      - name: Create GitHub Release
+        if: ${{ steps.rel.outputs.publish == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${{ github.ref_name }}" \
-            dist/index.js.bundle \
-            --clobber
+          tag='${{ steps.rel.outputs.tag }}'
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/index.js.bundle --clobber
+          else
+            gh release create "$tag" \
+              dist/index.js.bundle \
+              --title "$tag" \
+              --generate-notes \
+              --verify-tag
+          fi
+
+      # ── Move the floating v1 tag to this release ──────────────────────────
+      # Customers reference `uses: AtlaSent-Systems-Inc/atlasent-action@v1`, so
+      # v1 must track the latest v1.x release. Replaces the old workflow that
+      # force-pushed v1 to a hardcoded, drift-prone SHA.
+      - name: Update floating v1 tag
+        if: ${{ steps.rel.outputs.publish == 'true' && startsWith(steps.rel.outputs.tag, 'v1.') }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f v1 '${{ steps.rel.outputs.tag }}'
+          git push origin refs/tags/v1 --force

@@ -4,6 +4,29 @@ All notable changes to `atlasent-action` are documented here.
 
 ## [Unreleased]
 
+### Approvals from PR reviews (P0 — deploy pilot)
+
+The single-eval path now derives `context.approvals` from the pull request's
+reviews, so the canonical `allow-2-approvals-change-window` policy template
+works out of the box without a second integration.
+
+- New `approvals-from` input (`pr-reviews` default | `none`). When
+  `pr-reviews`, the action counts distinct reviewers whose latest review state
+  is `APPROVED` (GitHub's own latest-review-per-user semantics:
+  `COMMENTED`/`PENDING` don't change approval; a later `CHANGES_REQUESTED` or
+  `DISMISSED` supersedes an earlier `APPROVED`) and injects
+  `context.approvals` + `context.approving_reviewers`.
+- Resolves the PR from the `pull_request` event ref, or — on a `push`/merge to
+  the default branch — from the head commit's associated PR
+  (`GET /repos/{repo}/commits/{sha}/pulls`).
+- Requires `GITHUB_TOKEN` (`env: GITHUB_TOKEN: ${{ github.token }}`).
+- **Best-effort, fail-open-to-zero:** any API error (including a non-JSON
+  body) yields `0` approvals, which denies a count-gated deploy — the
+  fail-closed direction. Never throws.
+- The operator's `context` input still wins (an explicit `approvals` overrides
+  the derived value). `change_window` remains an operator-supplied signal.
+- New module `src/approvals.ts` with 16 unit tests; `dist/index.js` rebuilt.
+
 ### V1 convergence — SDK realignment verification (P0)
 
 V1 pilot SDK alignment audit. `@atlasent/sdk` remains pinned at the latest

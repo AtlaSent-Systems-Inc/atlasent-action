@@ -26,9 +26,22 @@ inputs:
     required: false
     default: 'true'
   context:
-    description: 'JSON context to include in the evaluation (optional). Used for single-eval path.'
+    description: 'JSON context to include in the evaluation (optional). Used for single-eval path. Values here override anything the action derives automatically (e.g. an explicit `approvals` count wins over PR-review-derived approvals).'
     required: false
     default: '{}'
+  approvals-from:
+    description: |
+      Where the `context.approvals` count comes from on the single-eval path.
+        - "pr-reviews" (default): count distinct reviewers whose latest PR
+          review is APPROVED, derived from the GitHub API, and inject as
+          context.approvals + context.approving_reviewers. Lets the
+          `allow-2-approvals-change-window` policy template work out of the box.
+          Requires GITHUB_TOKEN (pass `env: GITHUB_TOKEN: ${{ github.token }}`).
+        - "none": do not derive approvals; supply them via the `context` input.
+      Best-effort and fail-open-to-zero: any API failure yields 0 approvals,
+      which denies a count-gated deploy (the fail-closed direction).
+    required: false
+    default: 'pr-reviews'
   evaluations:
     description: 'JSON array of evaluation requests for batch mode, e.g. [{"action":"production.deploy","actor":"alice"}]. When set, single-eval inputs (action, actor, context) are ignored.'
     required: false

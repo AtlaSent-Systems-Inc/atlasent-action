@@ -42,6 +42,7 @@ import {
   normalizeProtectedAction,
 } from "./canonicalAction";
 import { runVqpVerify } from "./vqpVerify";
+import { resolveApprovals, type ApprovalEvidence } from "./approvals";
 
 function getApiKey(): string {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -1134,6 +1135,27 @@ export async function run(): Promise<void> {
       (targetId ? ` (target=${targetId})` : ""),
   );
 
+  // Derive verified approval evidence from PR reviews so the
+  // `allow-2-approvals-change-window` policy template can read a trustworthy
+  // `context.approvals` count without a second integration. Best-effort and
+  // fail-open-to-zero: any failure leaves approvals at 0, which denies a
+  // count-gated deploy (the fail-closed direction). `approvals-from: none`
+  // skips the lookup entirely. The operator's `context` input always wins,
+  // so an explicit `approvals` there overrides what we derive.
+  const approvalsFrom = (getInput("approvals-from") || "pr-reviews").toLowerCase();
+  let approvalEvidence: ApprovalEvidence | null = null;
+  if (approvalsFrom === "pr-reviews") {
+    approvalEvidence = await resolveApprovals({
+      repository: gh.repository,
+      sha: gh.sha,
+      prNumber: gh.pr_number ?? null,
+      token: process.env["GITHUB_TOKEN"],
+      apiBase: process.env["GITHUB_API_URL"],
+      log: info,
+      warn: warning,
+    });
+  }
+
   const config: EnforceConfig = {
     apiKey,
     apiUrl,
@@ -1157,8 +1179,15 @@ export async function run(): Promise<void> {
       run_id: gh.run_id,
       run_number: gh.run_number,
       event_name: gh.event_name,
-      pr_number: gh.pr_number ?? null,
+      pr_number: approvalEvidence?.pr_number ?? gh.pr_number ?? null,
       run_url: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+      // Verified approval evidence from PR reviews (operator context can override).
+      ...(approvalEvidence && approvalEvidence.source === "pr-reviews"
+        ? {
+            approvals: approvalEvidence.approvals,
+            approving_reviewers: approvalEvidence.approving_reviewers,
+          }
+        : {}),
       ...extraContext,
     },
   };

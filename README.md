@@ -119,7 +119,35 @@ The action sets several outputs you can reference in subsequent steps.
 | `environment`  | No       | Auto-detected          | `live` for `main`/`master`, `test` otherwise            |
 | `api-url`      | No       | `ATLASENT_BASE_URL` or `https://api.atlasent.io` | AtlaSent API base URL override. |
 | `fail-on-deny` | No       | `true`                 | Deprecated for pilot mode; deny/hold/escalate still fail closed. |
-| `context`      | No       | `{}`                   | Additional JSON context for evaluation                  |
+| `context`      | No       | `{}`                   | Additional JSON context for evaluation. Overrides auto-derived values (e.g. an explicit `approvals` here wins over PR-review-derived approvals). |
+| `approvals-from` | No     | `pr-reviews`           | Source of `context.approvals`. `pr-reviews` (default) counts distinct reviewers whose latest PR review is `APPROVED` and injects `context.approvals` + `context.approving_reviewers`; `none` disables it. Requires `GITHUB_TOKEN`. Fail-open-to-zero. |
+
+### Approvals from PR reviews
+
+The canonical `production.deploy` policy template `allow-2-approvals-change-window` allows only when `context.approvals >= 2`. By default the action derives that count from the pull request's reviews — no second integration required — so a deploy with two approving reviews is permitted and one without is blocked.
+
+Pass the token so the action can read reviews, and ensure the deploy is associated with a PR (a `pull_request` event, or a `push`/merge to `main` whose commit has an associated PR):
+
+```yaml
+- name: Authorization Gate
+  id: gate
+  uses: AtlaSent-Systems-Inc/atlasent-action@v1
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+    GITHUB_TOKEN: ${{ github.token }}      # lets the gate read PR reviews
+  with:
+    action: production.deploy
+    environment: live
+    # change_window is an operator signal — supply it explicitly:
+    context: '{"change_window": true}'
+
+- name: Deploy
+  if: steps.gate.outputs.verified == 'true'
+  run: ./deploy.sh
+```
+
+`change_window` is a deliberate operator signal and is **not** auto-derived — set it in `context` (or use a template that does not require it). The approval lookup is best-effort and **fails open to zero**: if the GitHub API can't be reached, `approvals` is `0`, which denies a count-gated deploy (the fail-closed direction).
 
 ### Batch inputs (v2.1)
 

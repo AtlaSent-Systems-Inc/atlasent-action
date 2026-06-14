@@ -1365,6 +1365,139 @@ async function runVqpVerify(inputs, fetchFn = globalThis.fetch) {
   };
 }
 
+// src/approvals.ts
+var EMPTY = {
+  approvals: 0,
+  approving_reviewers: [],
+  pr_number: null,
+  source: "none"
+};
+var MAX_REVIEW_PAGES = 10;
+var PER_PAGE = 100;
+function ghHeaders(token) {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
+}
+async function resolvePrNumber(opts) {
+  const explicit = typeof opts.prNumber === "number" ? opts.prNumber : typeof opts.prNumber === "string" && /^\d+$/.test(opts.prNumber.trim()) ? parseInt(opts.prNumber.trim(), 10) : null;
+  if (explicit && explicit > 0)
+    return explicit;
+  if (!opts.sha)
+    return null;
+  const url = `${opts.apiBase}/repos/${opts.repository}/commits/${opts.sha}/pulls`;
+  try {
+    const res = await opts.fetchImpl(url, { headers: ghHeaders(opts.token) });
+    if (!res.ok) {
+      opts.warn(
+        `AtlaSent: could not resolve PR for commit ${opts.sha.slice(0, 8)} (${res.status}); treating as 0 approvals`
+      );
+      return null;
+    }
+    const pulls = await res.json();
+    if (!Array.isArray(pulls) || pulls.length === 0)
+      return null;
+    const merged = pulls.find((p) => p.state === "closed") ?? pulls[0];
+    return typeof merged.number === "number" ? merged.number : null;
+  } catch (err) {
+    opts.warn(
+      `AtlaSent: PR resolution error (advisory, non-blocking): ${err instanceof Error ? err.message : String(err)}`
+    );
+    return null;
+  }
+}
+async function fetchAllReviews(opts) {
+  const reviews = [];
+  for (let page = 1; page <= MAX_REVIEW_PAGES; page++) {
+    const url = `${opts.apiBase}/repos/${opts.repository}/pulls/${opts.prNumber}/reviews?per_page=${PER_PAGE}&page=${page}`;
+    let batch;
+    try {
+      const res = await opts.fetchImpl(url, { headers: ghHeaders(opts.token) });
+      if (!res.ok) {
+        opts.warn(
+          `AtlaSent: could not read reviews for PR #${opts.prNumber} (${res.status}); treating as 0 approvals`
+        );
+        return null;
+      }
+      batch = await res.json();
+    } catch (err) {
+      opts.warn(
+        `AtlaSent: review fetch error (advisory, non-blocking): ${err instanceof Error ? err.message : String(err)}`
+      );
+      return null;
+    }
+    if (!Array.isArray(batch) || batch.length === 0)
+      break;
+    reviews.push(...batch);
+    if (batch.length < PER_PAGE)
+      break;
+  }
+  return reviews;
+}
+function countApprovals(reviews) {
+  const STATEFUL = /* @__PURE__ */ new Set(["APPROVED", "CHANGES_REQUESTED", "DISMISSED"]);
+  const latestByUser = /* @__PURE__ */ new Map();
+  for (const r of reviews) {
+    const login = r.user?.login;
+    const state = (r.state ?? "").toUpperCase();
+    if (!login || !STATEFUL.has(state))
+      continue;
+    latestByUser.set(login, state);
+  }
+  const approving = [...latestByUser.entries()].filter(([, state]) => state === "APPROVED").map(([login]) => login).sort();
+  return { approvals: approving.length, approving_reviewers: approving };
+}
+async function resolveApprovals(options) {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const warn = options.warn ?? (() => {
+  });
+  const log = options.log ?? (() => {
+  });
+  const apiBase = (options.apiBase ?? "https://api.github.com").replace(/\/+$/, "");
+  const token = options.token?.trim();
+  if (!token) {
+    warn(
+      "AtlaSent: GITHUB_TOKEN not available \u2014 cannot read PR reviews for approval evidence. Pass `env: GITHUB_TOKEN: ${{ github.token }}` or supply `approvals` via the `context` input. Treating as 0 approvals."
+    );
+    return { ...EMPTY };
+  }
+  if (!options.repository) {
+    warn("AtlaSent: GITHUB_REPOSITORY not set \u2014 cannot read PR reviews. Treating as 0 approvals.");
+    return { ...EMPTY };
+  }
+  const prNumber = await resolvePrNumber({
+    repository: options.repository,
+    sha: options.sha,
+    token,
+    apiBase,
+    prNumber: options.prNumber,
+    fetchImpl,
+    warn
+  });
+  if (!prNumber) {
+    log("AtlaSent: no associated pull request found \u2014 0 approvals from PR reviews.");
+    return { ...EMPTY };
+  }
+  const reviews = await fetchAllReviews({
+    repository: options.repository,
+    token,
+    apiBase,
+    prNumber,
+    fetchImpl,
+    warn
+  });
+  if (reviews === null) {
+    return { approvals: 0, approving_reviewers: [], pr_number: prNumber, source: "none" };
+  }
+  const { approvals, approving_reviewers } = countApprovals(reviews);
+  log(
+    `AtlaSent: PR #${prNumber} has ${approvals} approving review${approvals === 1 ? "" : "s"}` + (approving_reviewers.length ? ` (${approving_reviewers.join(", ")})` : "")
+  );
+  return { approvals, approving_reviewers, pr_number: prNumber, source: "pr-reviews" };
+}
+
 // src/index.ts
 function getApiKey() {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -2148,6 +2281,19 @@ async function run() {
   info(
     `AtlaSent Gate: evaluating "${actionType}" for actor "github:${actor}" in ${environment} environment` + (targetId ? ` (target=${targetId})` : "")
   );
+  const approvalsFrom = (getInput("approvals-from") || "pr-reviews").toLowerCase();
+  let approvalEvidence = null;
+  if (approvalsFrom === "pr-reviews") {
+    approvalEvidence = await resolveApprovals({
+      repository: gh.repository,
+      sha: gh.sha,
+      prNumber: gh.pr_number ?? null,
+      token: process.env["GITHUB_TOKEN"],
+      apiBase: process.env["GITHUB_API_URL"],
+      log: info,
+      warn: warning
+    });
+  }
   const config = {
     apiKey,
     apiUrl,
@@ -2171,8 +2317,13 @@ async function run() {
       run_id: gh.run_id,
       run_number: gh.run_number,
       event_name: gh.event_name,
-      pr_number: gh.pr_number ?? null,
+      pr_number: approvalEvidence?.pr_number ?? gh.pr_number ?? null,
       run_url: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+      // Verified approval evidence from PR reviews (operator context can override).
+      ...approvalEvidence && approvalEvidence.source === "pr-reviews" ? {
+        approvals: approvalEvidence.approvals,
+        approving_reviewers: approvalEvidence.approving_reviewers
+      } : {},
       ...extraContext
     }
   };

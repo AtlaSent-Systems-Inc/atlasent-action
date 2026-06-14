@@ -117,7 +117,7 @@ The action sets several outputs you can reference in subsequent steps.
 | `actor`        | No       | `${{ github.actor }}`  | Actor identity                                          |
 | `target-id`    | No       | —                      | Target resource being acted on (service, artifact, etc) |
 | `environment`  | No       | Auto-detected          | `live` for `main`/`master`, `test` otherwise            |
-| `api-url`      | No       | `ATLASENT_BASE_URL` or `https://api.atlasent.io` | AtlaSent API base URL override. |
+| `api-url`      | No       | `ATLASENT_BASE_URL` or `https://api.atlasent.io` | AtlaSent API base URL override. **Self-hosted / pilot: set this to your project URL ending in `/functions/v1`. The `api.atlasent.io` apex 404s unless a custom domain is verified — which looks like a broken gate.** |
 | `fail-on-deny` | No       | `true`                 | Deprecated for pilot mode; deny/hold/escalate still fail closed. |
 | `context`      | No       | `{}`                   | Additional JSON context for evaluation. Overrides auto-derived values (e.g. an explicit `approvals` here wins over PR-review-derived approvals). |
 | `approvals-from` | No     | `pr-reviews`           | Source of `context.approvals`. `pr-reviews` (default) counts distinct reviewers whose latest PR review is `APPROVED` and injects `context.approvals` + `context.approving_reviewers`; `none` disables it. Requires `GITHUB_TOKEN`. Fail-open-to-zero. |

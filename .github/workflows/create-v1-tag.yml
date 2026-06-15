@@ -12,6 +12,10 @@ on:
         description: 'Tag v1 should point at (e.g. v1.3.0). Leave blank to use the latest v1.*.* tag.'
         required: false
         default: ''
+      commit_sha:
+        description: 'Commit SHA to point v1 at directly (bypasses versioned tag requirement — use for hotfixes before a versioned release is cut).'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -27,20 +31,31 @@ jobs:
 
       - name: Resolve and move v1
         run: |
+          commit_sha='${{ github.event.inputs.commit_sha }}'
           target='${{ github.event.inputs.target_tag }}'
-          if [ -z "$target" ]; then
-            target="$(git tag -l 'v1.*.*' --sort=-v:refname | head -n1)"
-          fi
-          if [ -z "$target" ]; then
-            echo "::error::No v1.*.* tag found and no target_tag provided. Cut a v1.x release first."
-            exit 1
-          fi
-          if ! git rev-parse -q --verify "refs/tags/$target" >/dev/null; then
-            echo "::error::Tag '$target' does not exist."
-            exit 1
-          fi
-          echo "Moving v1 -> $target"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -f v1 "$target"
+          if [ -n "$commit_sha" ]; then
+            # Direct SHA mode — validate it exists in the repo then point v1 at it.
+            if ! git rev-parse -q --verify "$commit_sha^{commit}" >/dev/null; then
+              echo "::error::Commit SHA '$commit_sha' not found."
+              exit 1
+            fi
+            echo "Moving v1 -> $commit_sha (direct SHA)"
+            git tag -f v1 "$commit_sha"
+          else
+            if [ -z "$target" ]; then
+              target="$(git tag -l 'v1.*.*' --sort=-v:refname | head -n1)"
+            fi
+            if [ -z "$target" ]; then
+              echo "::error::No v1.*.* tag found and no target_tag/commit_sha provided. Cut a v1.x release first."
+              exit 1
+            fi
+            if ! git rev-parse -q --verify "refs/tags/$target" >/dev/null; then
+              echo "::error::Tag '$target' does not exist."
+              exit 1
+            fi
+            echo "Moving v1 -> $target"
+            git tag -f v1 "$target"
+          fi
           git push origin refs/tags/v1 --force

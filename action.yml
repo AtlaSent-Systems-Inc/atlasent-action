@@ -18,9 +18,8 @@ inputs:
     description: 'Environment (defaults to live for main branch, test otherwise)'
     required: false
   api-url:
-    description: 'AtlaSent API URL base. Defaults to ATLASENT_BASE_URL when set, otherwise https://api.atlasent.io. IMPORTANT: the api.atlasent.io apex 404s unless a custom domain is verified — for a self-hosted or pilot deployment set this to your project URL ending in /functions/v1, or the gate will appear broken. The action only calls /v1-evaluate and /v1-verify-permit runtime routes.'
+    description: 'AtlaSent API URL base. Set to your Supabase project URL ending in /functions/v1 (e.g. https://<ref>.supabase.co/functions/v1). If not set, falls back to the ATLASENT_BASE_URL env var, then https://api.atlasent.io. NOTE: the api.atlasent.io apex 404s unless a custom domain is verified — always set this or ATLASENT_BASE_URL for self-hosted or pilot deployments.'
     required: false
-    default: 'https://api.atlasent.io'
   fail-on-deny:
     description: 'Deprecated in V1 pilot mode: deny/hold/escalate always fail closed regardless of this value.'
     required: false

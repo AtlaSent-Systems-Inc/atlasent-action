@@ -4,6 +4,8 @@ GitHub Action for the **CI/CD deployment authorization** domain of [AtlaSent](ht
 
 Require execution-time authorization before critical CI/CD actions run. Drop AtlaSent into any GitHub Actions workflow with a single step.
 
+The deploy gate is one source of authority — a CI/CD check that confirms a change is safe to ship. A human approval, a policy rule, or a risk-engine decision are others. Whatever authorizes the deploy, the result is the same: a single-use permit, verified before the deploy step runs and recorded as audit evidence.
+
 ```
 Push to main → AtlaSent evaluates → permit issued → deploy
                                   → denied       → fail with reason

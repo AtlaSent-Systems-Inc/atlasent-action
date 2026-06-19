@@ -4,6 +4,24 @@ All notable changes to `atlasent-action` are documented here.
 
 ## [Unreleased]
 
+### SDK bump: `@atlasent/sdk` → `2.16.0` (pilot client-surface alignment)
+
+Bumps the bundled `@atlasent/sdk` from `2.10.0` to `2.16.0` — the current
+latest **published** npm version. `2.10.0` predates `2.14.0`, the release that
+added the top-level `state_snapshot` field; with the pilot's action classes
+defaulting to `requires_state_snapshot = true`, the stale pin was a
+client-surface drift (the Action injects `state_snapshot` at the HTTP layer, so
+the deploy gate kept working, but the bundled SDK was behind). `2.16.0` is the
+known-good pinned version for the pilot path. No publish was required — this is
+a dependency/lockfile bump only.
+
+> The SDK repo source is at `2.17.0`, but that version is not published to npm
+> yet. The Action tracks the latest *published* version; it moves to `2.17.0`
+> when (and if) `2.17.0` is released. The Action does not import `@atlasent/sdk`
+> at runtime (the contract goes over HTTP), so this bump carries no behavioral
+> change to the gate.
+
+
 ### Approvals from PR reviews (P0 — deploy pilot)
 
 The single-eval path now derives `context.approvals` from the pull request's

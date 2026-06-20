@@ -17,6 +17,14 @@
 // ---------------------------------------------------------------------------
 
 export const PRODUCTION_DEPLOY_ACTION = "production.deploy";
+/**
+ * Package/artifact publishing to a public registry (PyPI, npm, crates, …).
+ * Distinct from production.deploy: governed by a release policy that does NOT
+ * require interactive PR approvals, since publishes run on workflow_dispatch /
+ * tag pushes where no PR review evidence exists. production.deploy keeps its
+ * human-approval requirement — the two must never share a policy.
+ */
+export const PACKAGE_RELEASE_ACTION = "package.release";
 export const DATABASE_MIGRATION_ACTION = "database.migration.apply";
 export const DATABASE_SCHEMA_DROP_ACTION = "database.schema.drop";
 export const DATA_EXPORT_BULK_ACTION = "data.export.bulk";
@@ -26,6 +34,19 @@ export const SECRET_ROTATION_PRODUCTION_ACTION = "secret.rotation.production";
 
 /** Legacy alias — accepted during the V1 alias window, normalized on input. */
 export const LEGACY_PRODUCTION_DEPLOY_ALIAS = "deployment.production";
+
+/**
+ * Action types the gate accepts on its single-eval path. This is a
+ * conservative client-side allow-list, NOT the authority — the runtime
+ * policy is. Deny-by-default still applies: an accepted action type with
+ * no published policy bundle resolves to deny at the runtime. We keep the
+ * set explicit (rather than accepting any well-formed type) so a typo in a
+ * workflow surfaces as a clear gate error instead of a silent deny.
+ */
+export const GATE_PERMITTED_ACTIONS: ReadonlySet<string> = new Set([
+  PRODUCTION_DEPLOY_ACTION,
+  PACKAGE_RELEASE_ACTION,
+]);
 
 // ---------------------------------------------------------------------------
 // Phase 1–6 catalog (informational — not an enforcement whitelist)

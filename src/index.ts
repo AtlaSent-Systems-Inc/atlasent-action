@@ -37,6 +37,7 @@ import {
   type EvidenceBundleRegime,
 } from "./postDeployEvidenceBundle";
 import {
+  GATE_PERMITTED_ACTIONS,
   LEGACY_PRODUCTION_DEPLOY_ALIAS,
   PRODUCTION_DEPLOY_ACTION,
   normalizeProtectedAction,
@@ -53,24 +54,31 @@ function getApiKey(): string {
 }
 
 /**
- * Normalize the workflow-supplied `action` input to the canonical
- * Deploy Gate V1 string. Legacy alias `deployment.production` is
- * accepted and rewritten to `production.deploy`. Anything else
- * fails closed with `decision=error`.
+ * Normalize the workflow-supplied `action` input to a canonical gate action
+ * string. Legacy alias `deployment.production` is accepted and rewritten to
+ * `production.deploy`. The canonical value must be in GATE_PERMITTED_ACTIONS
+ * (currently `production.deploy` and `package.release`); anything else fails
+ * closed with `decision=error`.
  *
- * Returns the canonical string for downstream use. Callers should
- * use the returned value, NOT the raw input, so every downstream
- * surface (evaluate body, GH outputs, audit) carries the canonical.
+ * The permitted set is a conservative client-side guard, not the authority —
+ * the runtime policy decides allow/deny, and deny-by-default still applies to
+ * an accepted action type that has no published bundle. Keeping the set
+ * explicit means a workflow typo surfaces as a clear gate error here rather
+ * than a confusing silent deny at the runtime.
+ *
+ * Returns the canonical string for downstream use. Callers should use the
+ * returned value, NOT the raw input, so every downstream surface (evaluate
+ * body, GH outputs, audit) carries the canonical.
  */
 function normalizeAndValidateProtectedAction(actionType: string): string {
   const { canonical } = normalizeProtectedAction(actionType);
-  if (canonical !== PRODUCTION_DEPLOY_ACTION) {
+  if (!GATE_PERMITTED_ACTIONS.has(canonical)) {
     setOutput("decision", "error");
     setOutput("verified", "false");
     setFailed(
       `AtlaSent Gate: unsupported protected action "${actionType}". ` +
-        `Deploy Gate V1 only permits "${PRODUCTION_DEPLOY_ACTION}" ` +
-        `(legacy alias "${LEGACY_PRODUCTION_DEPLOY_ALIAS}" is accepted during the V1 alias window).`,
+        `Permitted actions: ${[...GATE_PERMITTED_ACTIONS].map((a) => `"${a}"`).join(", ")} ` +
+        `(legacy alias "${LEGACY_PRODUCTION_DEPLOY_ALIAS}" is accepted and normalized to "${PRODUCTION_DEPLOY_ACTION}").`,
     );
   }
   return canonical;

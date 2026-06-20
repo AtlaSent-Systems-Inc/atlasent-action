@@ -358,7 +358,12 @@ async function loopEvaluate(apiUrl, headers, items) {
 
 // src/canonicalAction.ts
 var PRODUCTION_DEPLOY_ACTION = "production.deploy";
+var PACKAGE_RELEASE_ACTION = "package.release";
 var LEGACY_PRODUCTION_DEPLOY_ALIAS = "deployment.production";
+var GATE_PERMITTED_ACTIONS = /* @__PURE__ */ new Set([
+  PRODUCTION_DEPLOY_ACTION,
+  PACKAGE_RELEASE_ACTION
+]);
 function normalizeProtectedAction(raw) {
   if (raw === LEGACY_PRODUCTION_DEPLOY_ALIAS) {
     return { canonical: PRODUCTION_DEPLOY_ACTION, wasLegacyAlias: true };
@@ -1508,11 +1513,11 @@ function getApiKey() {
 }
 function normalizeAndValidateProtectedAction(actionType) {
   const { canonical } = normalizeProtectedAction(actionType);
-  if (canonical !== PRODUCTION_DEPLOY_ACTION) {
+  if (!GATE_PERMITTED_ACTIONS.has(canonical)) {
     setOutput("decision", "error");
     setOutput("verified", "false");
     setFailed(
-      `AtlaSent Gate: unsupported protected action "${actionType}". Deploy Gate V1 only permits "${PRODUCTION_DEPLOY_ACTION}" (legacy alias "${LEGACY_PRODUCTION_DEPLOY_ALIAS}" is accepted during the V1 alias window).`
+      `AtlaSent Gate: unsupported protected action "${actionType}". Permitted actions: ${[...GATE_PERMITTED_ACTIONS].map((a) => `"${a}"`).join(", ")} (legacy alias "${LEGACY_PRODUCTION_DEPLOY_ALIAS}" is accepted and normalized to "${PRODUCTION_DEPLOY_ACTION}").`
     );
   }
   return canonical;

@@ -25,7 +25,7 @@ jobs:
       contents: write
       id-token: write   # required for cosign keyless signing (Sigstore OIDC)
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
           fetch-depth: 0

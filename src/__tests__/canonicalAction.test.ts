@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  GATE_PERMITTED_ACTIONS,
   LEGACY_PRODUCTION_DEPLOY_ALIAS,
+  PACKAGE_RELEASE_ACTION,
   PRODUCTION_DEPLOY_ACTION,
   PROTECTED_ACTIONS_CATALOG,
   assertProtectedAction,
@@ -69,6 +71,26 @@ describe("canonicalAction", () => {
 
     it("PROTECTED_ACTIONS_CATALOG contains exactly 19 entries", () => {
       expect(PROTECTED_ACTIONS_CATALOG.size).toBe(19);
+    });
+  });
+
+  describe("GATE_PERMITTED_ACTIONS", () => {
+    it("permits production.deploy and package.release", () => {
+      expect(GATE_PERMITTED_ACTIONS.has(PRODUCTION_DEPLOY_ACTION)).toBe(true);
+      expect(GATE_PERMITTED_ACTIONS.has(PACKAGE_RELEASE_ACTION)).toBe(true);
+    });
+
+    it("is a conservative two-entry allow-list (not open to arbitrary types)", () => {
+      expect(GATE_PERMITTED_ACTIONS.size).toBe(2);
+      // A well-formed but unlisted action is NOT gate-permitted, even though
+      // its format is valid — the runtime policy is the authority, but the
+      // gate's client-side guard stays explicit.
+      expect(GATE_PERMITTED_ACTIONS.has("database.migration.apply")).toBe(false);
+    });
+
+    it("package.release is distinct from production.deploy", () => {
+      expect(PACKAGE_RELEASE_ACTION).toBe("package.release");
+      expect(PACKAGE_RELEASE_ACTION).not.toBe(PRODUCTION_DEPLOY_ACTION);
     });
   });
 });

@@ -1,0 +1,77 @@
+# Publish the AtlaSent npm packages (@atlasent/enforce, @atlasent/action).
+#
+# These are the library surfaces that live in this repo's workspaces — distinct
+# from the GitHub Action itself (which ships as the committed dist/index.js
+# bundle via release.yml). They publish to npm so SDK/example consumers can
+# `npm install @atlasent/action`.
+#
+# Trigger: push a tag matching `npm-v<semver>` (e.g. npm-v2.0.1), or run the
+# workflow manually with `publish: true`. The tag/dispatch is the only thing
+# that publishes — normal pushes never reach npm.
+#
+# Setup required once: add an `NPM_TOKEN` repo secret (an npm automation token
+# with publish rights to the @atlasent scope). Provenance uses the workflow's
+# OIDC token (id-token: write) — no extra secret needed.
+#
+# Order matters: @atlasent/action depends on @atlasent/enforce, so enforce is
+# published first. Bump both package versions to the same number before tagging.
+
+name: Publish packages
+
+on:
+  push:
+    tags:
+      - 'npm-v*.*.*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to npm (false = build + test only, dry run)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write   # required for npm provenance (Sigstore OIDC)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci
+
+      # Build both library packages (the action bundle is built separately).
+      - run: npm run build -w @atlasent/enforce -w @atlasent/action
+
+      # Run the package test suites (connector + enforce tests).
+      - run: npm test -w @atlasent/enforce -w @atlasent/action
+
+      - name: Resolve whether to publish
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=${{ github.event.inputs.publish }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Publish enforce first (action depends on it), then action. npm uses the
+      # publishConfig (access: public, provenance: true) declared in each
+      # package.json; --provenance is passed explicitly for clarity.
+      - name: Publish @atlasent/enforce
+        if: ${{ steps.gate.outputs.publish == 'true' }}
+        run: npm publish -w @atlasent/enforce --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @atlasent/action
+        if: ${{ steps.gate.outputs.publish == 'true' }}
+        run: npm publish -w @atlasent/action --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

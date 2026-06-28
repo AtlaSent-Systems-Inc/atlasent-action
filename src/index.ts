@@ -44,6 +44,7 @@ import {
 } from "./canonicalAction";
 import { runVqpVerify } from "./vqpVerify";
 import { resolveApprovals, type ApprovalEvidence } from "./approvals";
+import { buildGateStepSummary, type GateOutcome } from "./stepSummary";
 
 function getApiKey(): string {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -1297,6 +1298,42 @@ export async function run(): Promise<void> {
         }
       }
 
+      // ── Job summary — written BEFORE setFailed (which exits the process) ──
+      // so the customer always gets the rich "why was I blocked" panel on the
+      // run page, never a bare one-line ::error::. Best-effort.
+      {
+        const blockedDecision = err.decision?.decision;
+        const summaryOutcome: GateOutcome =
+          blockedDecision === "deny" ||
+          blockedDecision === "hold" ||
+          blockedDecision === "escalate"
+            ? blockedDecision
+            : "error";
+        const summaryReason =
+          summaryOutcome === "deny"
+            ? (err.decision?.denyReason ?? err.message)
+            : summaryOutcome === "hold"
+              ? (err.decision?.holdReason ?? "awaiting approval")
+              : summaryOutcome === "escalate"
+                ? "manual review required"
+                : err.message;
+        appendToStepSummary(
+          buildGateStepSummary({
+            outcome: summaryOutcome,
+            action: actionType,
+            actor: `github:${actor}`,
+            environment,
+            targetId,
+            runUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+            reason: summaryReason,
+            evaluationId: err.decision?.evaluationId,
+            auditHash: err.decision?.auditHash,
+            riskScore: err.decision?.riskScore,
+            riskClass: err.decision?.risk_class,
+          }),
+        );
+      }
+
       switch (err.phase) {
         case "evaluate":
           setFailed(
@@ -1358,6 +1395,18 @@ export async function run(): Promise<void> {
 
     emitFinancialGovernanceAdvisory(actionType, actor, orgId);
 
+    appendToStepSummary(
+      buildGateStepSummary({
+        outcome: "error",
+        action: actionType,
+        actor: `github:${actor}`,
+        environment,
+        targetId,
+        runUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+        reason: err instanceof Error ? err.message : String(err),
+      }),
+    );
+
     setFailed(
       `AtlaSent Gate: Unexpected error: ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -1387,6 +1436,7 @@ export async function run(): Promise<void> {
 
   // ── Build evidence bundle ─────────────────────────────────────────────────
   // Best-effort: evidence output failures must never block the gate decision.
+  let evidenceReceiptId: string | undefined;
   try {
     const receiptSigningSecret = process.env["ATLASENT_RECEIPT_SIGNING_SECRET"];
     const receiptSigningKeyId = getInput("receipt-signing-key-id");
@@ -1409,6 +1459,7 @@ export async function run(): Promise<void> {
 
     setOutput("evidence-receipt", JSON.stringify(bundle.receipt));
     setOutput("evidence-bundle", JSON.stringify(bundle));
+    evidenceReceiptId = bundle.receipt.receipt_id;
     info(
       `  Evidence:     receipt=${bundle.receipt.receipt_id} algorithm=${bundle.receipt.algorithm}`,
     );
@@ -1421,6 +1472,27 @@ export async function run(): Promise<void> {
     setOutput("evidence-receipt", JSON.stringify(null));
     setOutput("evidence-bundle", JSON.stringify(null));
   }
+
+  // ── Job summary — the rich panel a customer reads on the run page ─────────
+  // Best-effort: a summary failure must never affect the (already-granted) gate.
+  appendToStepSummary(
+    buildGateStepSummary({
+      outcome: "allow",
+      action: actionType,
+      actor: `github:${actor}`,
+      environment,
+      targetId,
+      runUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+      verified: true,
+      verifyOutcome,
+      evaluationId: d.evaluationId,
+      auditHash: d.auditHash,
+      riskScore: d.riskScore,
+      riskClass: d.risk_class,
+      permitIssued: !!d.permitToken,
+      evidenceReceiptId,
+    }),
+  );
 
   // ── B7: emit execution_started evidence event ────────────────────────────
   // Best-effort, fire-and-forget. Build outcome is already determined above.

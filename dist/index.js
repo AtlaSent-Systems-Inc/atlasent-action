@@ -1503,6 +1503,96 @@ async function resolveApprovals(options) {
   return { approvals, approving_reviewers, pr_number: prNumber, source: "pr-reviews" };
 }
 
+// src/stepSummary.ts
+var DEFAULT_CONSOLE = "https://console.atlasent.io";
+function truncHash(h) {
+  if (!h)
+    return void 0;
+  return h.length > 24 ? `${h.slice(0, 24)}\u2026` : h;
+}
+function buildGateStepSummary(input) {
+  const consoleBase = (input.consoleBaseUrl ?? DEFAULT_CONSOLE).replace(/\/$/, "");
+  const isAllow = input.outcome === "allow";
+  const icon = input.outcome === "allow" ? "\u2705" : input.outcome === "deny" ? "\u{1F534}" : input.outcome === "hold" ? "\u{1F7E1}" : input.outcome === "escalate" ? "\u{1F6A8}" : "\u26D4";
+  const label = input.outcome === "allow" ? "AUTHORIZED" : input.outcome === "deny" ? "DENIED" : input.outcome === "hold" ? "ON HOLD" : input.outcome === "escalate" ? "ESCALATED" : "BLOCKED (fail-closed)";
+  const lines = [];
+  lines.push("", "---", `## ${icon} AtlaSent Deploy Gate \u2014 ${label}`, "");
+  if (isAllow) {
+    lines.push(
+      `Authorization **granted** for \`${input.action}\` by **${input.actor}** in **${input.environment}**. The deploy is permitted to proceed.`
+    );
+  } else if (input.outcome === "error") {
+    lines.push(
+      `The gate **could not confirm authorization** for \`${input.action}\`, so the deploy did **not** run. This is fail-closed behavior by design \u2014 a gate that cannot verify a decision blocks rather than waves the action through.`
+    );
+  } else {
+    lines.push(
+      `The gate **blocked** \`${input.action}\` by **${input.actor}** in **${input.environment}**. The deploy did not run.`
+    );
+  }
+  lines.push("");
+  lines.push(`| Field | Value |`, `|---|---|`);
+  lines.push(`| Decision | \`${input.outcome}\` |`);
+  if (!isAllow && input.reason)
+    lines.push(`| Reason | ${input.reason} |`);
+  if (!isAllow && input.denyCode)
+    lines.push(`| Deny code | \`${input.denyCode}\` |`);
+  lines.push(`| Action | \`${input.action}\` |`);
+  lines.push(`| Actor | \`${input.actor}\` |`);
+  lines.push(`| Environment | \`${input.environment}\` |`);
+  if (input.targetId)
+    lines.push(`| Target | \`${input.targetId}\` |`);
+  if (typeof input.riskScore === "number") {
+    const cls = input.riskClass ? ` (${input.riskClass})` : "";
+    lines.push(`| Risk score | ${input.riskScore}${cls} |`);
+  } else if (input.riskClass) {
+    lines.push(`| Risk class | \`${input.riskClass}\` |`);
+  }
+  lines.push("");
+  const evalId = input.evaluationId;
+  const audit = truncHash(input.auditHash);
+  const hasEvidence = !!(evalId || audit || isAllow && input.permitIssued);
+  if (hasEvidence) {
+    lines.push("### Evidence", "");
+    if (evalId)
+      lines.push(`- **Evaluation ID:** \`${evalId}\``);
+    if (audit)
+      lines.push(`- **Audit chain hash:** \`${audit}\``);
+    if (isAllow && input.permitIssued) {
+      const verifiedNote = input.verified ? `issued and **verified**${input.verifyOutcome ? ` (${input.verifyOutcome})` : ""}` : "issued";
+      lines.push(`- **Permit:** ${verifiedNote} \u2713`);
+    }
+    if (isAllow && input.evidenceReceiptId) {
+      lines.push(`- **Evidence receipt:** \`${input.evidenceReceiptId}\``);
+    }
+    lines.push("");
+  }
+  if (evalId) {
+    lines.push(
+      `[View the full decision & replay the evidence](${consoleBase}/decisions/${evalId}/replay)`
+    );
+  }
+  lines.push(`[View workflow run](${input.runUrl})`);
+  if (input.outcome === "hold" || input.outcome === "escalate") {
+    lines.push(
+      "",
+      `> **Next step:** an authorized reviewer must approve this deployment in the [AtlaSent console](${consoleBase}/approvals) or via the Slack Approval Bot, then re-run this job.`
+    );
+  } else if (input.outcome === "deny") {
+    lines.push(
+      "",
+      `> **Why blocked?** The decision above is recorded as an immutable, hash-linked audit entry. Open the decision link to see exactly which policy rule fired.`
+    );
+  } else if (isAllow) {
+    lines.push(
+      "",
+      `> This decision is recorded as a tamper-evident, hash-linked audit entry and can be verified offline against the signed audit chain.`
+    );
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
 // src/index.ts
 function getApiKey() {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -2412,6 +2502,26 @@ async function run() {
           });
         }
       }
+      {
+        const blockedDecision = err.decision?.decision;
+        const summaryOutcome = blockedDecision === "deny" || blockedDecision === "hold" || blockedDecision === "escalate" ? blockedDecision : "error";
+        const summaryReason = summaryOutcome === "deny" ? err.decision?.denyReason ?? err.message : summaryOutcome === "hold" ? err.decision?.holdReason ?? "awaiting approval" : summaryOutcome === "escalate" ? "manual review required" : err.message;
+        appendToStepSummary(
+          buildGateStepSummary({
+            outcome: summaryOutcome,
+            action: actionType,
+            actor: `github:${actor}`,
+            environment,
+            targetId,
+            runUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+            reason: summaryReason,
+            evaluationId: err.decision?.evaluationId,
+            auditHash: err.decision?.auditHash,
+            riskScore: err.decision?.riskScore,
+            riskClass: err.decision?.risk_class
+          })
+        );
+      }
       switch (err.phase) {
         case "evaluate":
           setFailed(
@@ -2466,6 +2576,17 @@ async function run() {
       targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`
     });
     emitFinancialGovernanceAdvisory(actionType, actor, orgId);
+    appendToStepSummary(
+      buildGateStepSummary({
+        outcome: "error",
+        action: actionType,
+        actor: `github:${actor}`,
+        environment,
+        targetId,
+        runUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+        reason: err instanceof Error ? err.message : String(err)
+      })
+    );
     setFailed(
       `AtlaSent Gate: Unexpected error: ${err instanceof Error ? err.message : String(err)}`
     );
@@ -2488,6 +2609,7 @@ async function run() {
   if (d.riskScore !== void 0)
     info(`  Risk score:   ${d.riskScore}`);
   info(`  Verify:       ${verifyOutcome ?? "verified"}`);
+  let evidenceReceiptId;
   try {
     const receiptSigningSecret = process.env["ATLASENT_RECEIPT_SIGNING_SECRET"];
     const receiptSigningKeyId = getInput("receipt-signing-key-id");
@@ -2508,6 +2630,7 @@ async function run() {
     });
     setOutput("evidence-receipt", JSON.stringify(bundle.receipt));
     setOutput("evidence-bundle", JSON.stringify(bundle));
+    evidenceReceiptId = bundle.receipt.receipt_id;
     info(
       `  Evidence:     receipt=${bundle.receipt.receipt_id} algorithm=${bundle.receipt.algorithm}`
     );
@@ -2518,6 +2641,24 @@ async function run() {
     setOutput("evidence-receipt", JSON.stringify(null));
     setOutput("evidence-bundle", JSON.stringify(null));
   }
+  appendToStepSummary(
+    buildGateStepSummary({
+      outcome: "allow",
+      action: actionType,
+      actor: `github:${actor}`,
+      environment,
+      targetId,
+      runUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+      verified: true,
+      verifyOutcome,
+      evaluationId: d.evaluationId,
+      auditHash: d.auditHash,
+      riskScore: d.riskScore,
+      riskClass: d.risk_class,
+      permitIssued: !!d.permitToken,
+      evidenceReceiptId
+    })
+  );
   if (d.permitToken && d.evaluationId) {
     await emitEvidenceEvent(
       { apiKey, apiUrl },

@@ -40,6 +40,11 @@ export interface GateSummaryInput {
   reason?: string;
   /** Machine deny code (e.g. INSUFFICIENT_APPROVALS), when surfaced. */
   denyCode?: string;
+  /**
+   * Additive remediation hint from the runtime for common, safe-to-disclose
+   * denies — { summary, how_to[], docs }. Rendered verbatim as "How to fix".
+   */
+  remediation?: { summary?: string; how_to?: string[]; docs?: string };
   /** allow path: whether the issued permit was verified. */
   verified?: boolean;
   /** allow path: verify outcome string from /v1-verify-permit. */
@@ -149,6 +154,19 @@ export function buildGateStepSummary(input: GateSummaryInput): string {
       lines.push(`- **Evidence receipt:** \`${input.evidenceReceiptId}\``);
     }
     lines.push("");
+  }
+
+  // ── How to fix (remediation hint from the runtime, deny path only) ────────
+  if (!isAllow && input.remediation) {
+    const r = input.remediation;
+    const steps = (r.how_to ?? []).filter((s) => typeof s === "string" && s.length > 0);
+    if (r.summary || steps.length > 0) {
+      lines.push("### How to fix", "");
+      if (r.summary) lines.push(r.summary, "");
+      for (const step of steps) lines.push(`- ${step}`);
+      if (r.docs) lines.push("", `See [deny-code reference](${r.docs}).`);
+      lines.push("");
+    }
   }
 
   // ── How to verify / next step ─────────────────────────────────────────────

@@ -173,6 +173,8 @@ function mapDecision(raw) {
         proofHash: raw["proof_hash"],
         riskScore: extractRiskScore(raw),
         denyReason: raw["deny_reason"],
+        denyCode: raw["deny_code"],
+        remediation: raw["remediation"],
         holdReason: raw["hold_reason"],
         risk_class: raw["risk_class"],
         authority_basis: raw["authority_basis"],

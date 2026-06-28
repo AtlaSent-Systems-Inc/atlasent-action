@@ -53,6 +53,14 @@ export interface Decision {
   proofHash?: string;
   riskScore?: number;
   denyReason?: string;
+  /** Machine deny code (e.g. INSUFFICIENT_APPROVALS), present on deny. */
+  denyCode?: string;
+  /**
+   * Additive remediation hint the runtime attaches to common, safe-to-disclose
+   * denies — tells the caller how to fix it. Surfaced verbatim; never used for
+   * a decision.
+   */
+  remediation?: { summary?: string; how_to?: string[]; docs?: string };
   holdReason?: string;
   /** Resolved risk class from the evaluation (critical / high / medium / low). */
   risk_class?: string;
@@ -295,6 +303,8 @@ function mapDecision(raw: Record<string, unknown>): Decision {
     proofHash: raw["proof_hash"] as string | undefined,
     riskScore: extractRiskScore(raw),
     denyReason: raw["deny_reason"] as string | undefined,
+    denyCode: raw["deny_code"] as string | undefined,
+    remediation: raw["remediation"] as Decision["remediation"] | undefined,
     holdReason: raw["hold_reason"] as string | undefined,
     risk_class: raw["risk_class"] as string | undefined,
     authority_basis: raw["authority_basis"] as Decision["authority_basis"],

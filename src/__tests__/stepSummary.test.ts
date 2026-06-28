@@ -75,6 +75,50 @@ describe("buildGateStepSummary", () => {
     expect(md).toContain("Deny code | `INSUFFICIENT_APPROVALS`");
   });
 
+  it("renders a How-to-fix section from runtime remediation on deny", () => {
+    const md = buildGateStepSummary({
+      ...base,
+      outcome: "deny",
+      reason: "environment_mismatch",
+      denyCode: "ENVIRONMENT_MISMATCH",
+      remediation: {
+        summary: "Use an API key whose environment matches context.environment.",
+        how_to: [
+          "A live key must evaluate against a production context.",
+          "Use a test key for non-production environments.",
+        ],
+        docs: "https://example.com/deny-codes.md",
+      },
+    });
+    expect(md).toContain("### How to fix");
+    expect(md).toContain(
+      "Use an API key whose environment matches context.environment.",
+    );
+    expect(md).toContain("- A live key must evaluate against a production context.");
+    expect(md).toContain("[deny-code reference](https://example.com/deny-codes.md)");
+  });
+
+  it("never renders a How-to-fix section on allow", () => {
+    const md = buildGateStepSummary({
+      ...base,
+      outcome: "allow",
+      permitIssued: true,
+      remediation: { summary: "should not appear", how_to: ["nope"] },
+    });
+    expect(md).not.toContain("How to fix");
+    expect(md).not.toContain("should not appear");
+  });
+
+  it("omits How-to-fix when remediation has no usable content", () => {
+    const md = buildGateStepSummary({
+      ...base,
+      outcome: "deny",
+      reason: "policy",
+      remediation: { how_to: [] },
+    });
+    expect(md).not.toContain("### How to fix");
+  });
+
   it("renders a HOLD panel with the approve-and-rerun next step", () => {
     const md = buildGateStepSummary({
       ...base,

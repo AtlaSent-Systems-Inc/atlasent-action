@@ -218,6 +218,8 @@ var require_dist = __commonJS({
         proofHash: raw["proof_hash"],
         riskScore: extractRiskScore(raw),
         denyReason: raw["deny_reason"],
+        denyCode: raw["deny_code"],
+        remediation: raw["remediation"],
         holdReason: raw["hold_reason"],
         risk_class: raw["risk_class"],
         authority_basis: raw["authority_basis"],
@@ -1567,6 +1569,20 @@ function buildGateStepSummary(input) {
     }
     lines.push("");
   }
+  if (!isAllow && input.remediation) {
+    const r = input.remediation;
+    const steps = (r.how_to ?? []).filter((s) => typeof s === "string" && s.length > 0);
+    if (r.summary || steps.length > 0) {
+      lines.push("### How to fix", "");
+      if (r.summary)
+        lines.push(r.summary, "");
+      for (const step of steps)
+        lines.push(`- ${step}`);
+      if (r.docs)
+        lines.push("", `See [deny-code reference](${r.docs}).`);
+      lines.push("");
+    }
+  }
   if (evalId) {
     lines.push(
       `[View the full decision & replay the evidence](${consoleBase}/decisions/${evalId}/replay)`
@@ -2515,6 +2531,8 @@ async function run() {
             targetId,
             runUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
             reason: summaryReason,
+            denyCode: err.decision?.denyCode,
+            remediation: err.decision?.remediation,
             evaluationId: err.decision?.evaluationId,
             auditHash: err.decision?.auditHash,
             riskScore: err.decision?.riskScore,

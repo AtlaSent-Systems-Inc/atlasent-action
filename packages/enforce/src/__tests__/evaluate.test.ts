@@ -49,6 +49,24 @@ describe("evaluate", () => {
     expect(d.riskScore).toBeUndefined();
   });
 
+  it("maps deny_code and remediation from the evaluate response", async () => {
+    mockResponse(200, {
+      decision: "deny",
+      deny_reason: "environment_mismatch",
+      deny_code: "ENVIRONMENT_MISMATCH",
+      remediation: {
+        summary: "Use a matching key.",
+        how_to: ["step one", "step two"],
+        docs: "https://example.com/deny-codes.md",
+      },
+    });
+    const d = await evaluate(BASE_CONFIG);
+    expect(d.denyCode).toBe("ENVIRONMENT_MISMATCH");
+    expect(d.remediation?.summary).toBe("Use a matching key.");
+    expect(d.remediation?.how_to).toEqual(["step one", "step two"]);
+    expect(d.remediation?.docs).toBe("https://example.com/deny-codes.md");
+  });
+
   it("threads target_id into both top-level and context", async () => {
     mockResponse(200, { decision: "allow" });
     await evaluate({ ...BASE_CONFIG, targetId: "svc-prod" });

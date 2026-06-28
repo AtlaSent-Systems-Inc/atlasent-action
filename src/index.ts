@@ -1326,6 +1326,8 @@ export async function run(): Promise<void> {
             targetId,
             runUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
             reason: summaryReason,
+            denyCode: err.decision?.denyCode,
+            remediation: err.decision?.remediation,
             evaluationId: err.decision?.evaluationId,
             auditHash: err.decision?.auditHash,
             riskScore: err.decision?.riskScore,

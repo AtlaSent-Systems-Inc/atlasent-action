@@ -42,6 +42,18 @@ export interface Decision {
     proofHash?: string;
     riskScore?: number;
     denyReason?: string;
+    /** Machine deny code (e.g. INSUFFICIENT_APPROVALS), present on deny. */
+    denyCode?: string;
+    /**
+     * Additive remediation hint the runtime attaches to common, safe-to-disclose
+     * denies — tells the caller how to fix it. Surfaced verbatim; never used for
+     * a decision.
+     */
+    remediation?: {
+        summary?: string;
+        how_to?: string[];
+        docs?: string;
+    };
     holdReason?: string;
     /** Resolved risk class from the evaluation (critical / high / medium / low). */
     risk_class?: string;

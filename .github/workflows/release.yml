@@ -64,7 +64,16 @@ jobs:
           ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          action: production.release
+          # Must be a GATE_PERMITTED_ACTIONS value (src/canonicalAction.ts):
+          # production.deploy | package.release. `package.release` is the
+          # canonical "release a package" action and the correct fit for
+          # gating the action's own release. The previous value
+          # `production.release` is not in the allowlist, so the gate
+          # self-rejected with "unsupported protected action" before ever
+          # calling the API — blocking every release after the allowlist was
+          # tightened. (Requires a package.release policy on the gate org to
+          # ALLOW; otherwise it fails closed by design.)
+          action: package.release
           actor: ${{ github.actor }}
           environment: prod
           context: '{"ref": "${{ github.ref }}", "repo": "${{ github.repository }}"}'

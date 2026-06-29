@@ -1,3 +1,32 @@
+# Release Notes — v1.4.0
+
+**Pending release.** Ships the merged evidence + remediation work to `@v1`
+consumers. The features below are already on `main` but the floating `v1` tag
+still points at a pre-#100 commit, so `uses: AtlaSent-Systems-Inc/atlasent-action@v1`
+does not yet include them — cutting `v1.4.0` (which auto-moves `v1`) fixes that.
+
+### Trust at the moment of the gate
+
+- **Job-summary evidence panel (#100).** Every terminal outcome (allow / deny /
+  hold / escalate / fail-closed error) now renders a rich Markdown panel on the
+  GitHub run page: the decision, reason, action/actor/environment/target, risk,
+  the evidence anchors (evaluation ID, audit chain hash, permit issued &
+  verified), a deep link to the console decision replay, and the workflow run.
+  The single-use permit token and raw proof hash are never printed.
+- **Deny remediation — "How to fix" (#101).** On a non-allow outcome the panel
+  surfaces the runtime's remediation hint (summary + concrete steps + deny-code
+  reference) so a blocked deploy shows not just *why* but *how to unblock*.
+
+### Notes
+
+- Additive only — no input/output or wire-shape changes; the canonical shape
+  stays `env: ATLASENT_API_KEY` + `with: api-url`/`action`/`target-id`.
+- `dist/index.js` is rebuilt and committed (the release gate verifies it is
+  current).
+- Cutting the `v1.4.0` tag runs the dogfood release gate, cosign-signs
+  `dist/index.js`, publishes the GitHub Release, and re-points the floating
+  `v1` tag to this release.
+
 # Release Notes — v1.3.0
 
 **Release date:** 2026-04-30

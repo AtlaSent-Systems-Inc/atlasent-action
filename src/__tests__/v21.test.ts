@@ -64,7 +64,7 @@ it("wraps single action/actor into a 1-item batch", async () => {
     FLAGS,
   );
   expect(mockEvaluateMany).toHaveBeenCalledWith(
-    "https://api.atlasent.io",
+    "https://api.atlasent.io/functions/v1",
     "ask_test_key",
     [expect.objectContaining({ action: "production.deploy", actor: "bob" })],
     false,

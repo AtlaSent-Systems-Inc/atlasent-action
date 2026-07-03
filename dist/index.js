@@ -388,7 +388,7 @@ function assertValidActionType(raw) {
 // src/inputs.ts
 function parseInputs(env) {
   const apiKey = required(env, "ATLASENT_API_KEY");
-  const apiUrl = env["INPUT_API-URL"] || env["ATLASENT_BASE_URL"] || "https://api.atlasent.io";
+  const apiUrl = env["INPUT_API-URL"] || env["ATLASENT_BASE_URL"] || "https://api.atlasent.io/functions/v1";
   const failOnDeny = (env["INPUT_FAIL-ON-DENY"] || "true") === "true";
   const policySyncEnabled = (env["INPUT_POLICY-SYNC"] ?? "").toLowerCase() === "true";
   if (policySyncEnabled) {
@@ -2263,7 +2263,12 @@ async function run() {
   }
   const apiKey = getApiKey();
   maskValue(apiKey);
-  const apiUrl = getInput("api-url") || (process.env["ATLASENT_BASE_URL"] ?? "").trim() || "https://api.atlasent.io";
+  const apiUrl = getInput("api-url") || (process.env["ATLASENT_BASE_URL"] ?? "").trim() || "https://api.atlasent.io/functions/v1";
+  if (!apiUrl.includes("/functions/v1")) {
+    warning(
+      "ATLASENT_BASE_URL does not contain '/functions/v1'. For Supabase-hosted AtlaSent instances set ATLASENT_BASE_URL to your project URL ending in /functions/v1 (e.g. https://<project-ref>.supabase.co/functions/v1). Without this suffix every API call will 404."
+    );
+  }
   const failOnDeny = getInput("fail-on-deny") !== "false";
   if (!failOnDeny) {
     warning(

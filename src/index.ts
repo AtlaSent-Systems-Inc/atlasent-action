@@ -976,7 +976,15 @@ export async function run(): Promise<void> {
   const apiUrl =
     getInput("api-url") ||
     (process.env["ATLASENT_BASE_URL"] ?? "").trim() ||
-    "https://api.atlasent.io";
+    "https://api.atlasent.io/functions/v1";
+  if (!apiUrl.includes("/functions/v1")) {
+    warning(
+      "ATLASENT_BASE_URL does not contain '/functions/v1'. " +
+        "For Supabase-hosted AtlaSent instances set ATLASENT_BASE_URL to your project URL " +
+        "ending in /functions/v1 (e.g. https://<project-ref>.supabase.co/functions/v1). " +
+        "Without this suffix every API call will 404.",
+    );
+  }
   const failOnDeny = getInput("fail-on-deny") !== "false";
   if (!failOnDeny) {
     warning(

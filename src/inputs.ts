@@ -44,7 +44,7 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
   const apiUrl =
     env["INPUT_API-URL"] ||
     env["ATLASENT_BASE_URL"] ||
-    "https://api.atlasent.io";
+    "https://api.atlasent.io/functions/v1";
   const failOnDeny = (env["INPUT_FAIL-ON-DENY"] || "true") === "true";
 
   // ── Policy sync mode (checked first) ────────────────────────────────────────

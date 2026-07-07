@@ -16,10 +16,23 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '24'
+
+      - name: Validate action.yml
+        run: python3 .github/scripts/validate_action.py
 
       - run: npm ci
 
       - run: npm run typecheck
+
+      - run: npm run build
+
+      - name: Verify dist is up to date
+        run: |
+          if ! git diff --quiet -- dist/index.js; then
+            echo "::error::dist/index.js is out of date. Run 'npm run build' and commit dist/index.js."
+            git --no-pager diff --stat -- dist/index.js
+            exit 1
+          fi
 
       - run: npm test

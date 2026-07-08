@@ -5,6 +5,9 @@ import {
   PACKAGE_RELEASE_ACTION,
   PRODUCTION_DEPLOY_ACTION,
   PROTECTED_ACTIONS_CATALOG,
+  TRIAL_BLINDING_SETUP_ACTION,
+  TRIAL_UNBLINDING_EMERGENCY_ACTION,
+  TRIAL_UNBLINDING_EXECUTE_ACTION,
   assertProtectedAction,
   normalizeProtectedAction,
 } from "../canonicalAction";
@@ -69,8 +72,8 @@ describe("canonicalAction", () => {
       expect(() => assertProtectedAction("access.cert.revoke")).not.toThrow();
     });
 
-    it("PROTECTED_ACTIONS_CATALOG contains exactly 19 entries", () => {
-      expect(PROTECTED_ACTIONS_CATALOG.size).toBe(19);
+    it("PROTECTED_ACTIONS_CATALOG contains exactly 22 entries", () => {
+      expect(PROTECTED_ACTIONS_CATALOG.size).toBe(22);
     });
   });
 
@@ -80,8 +83,14 @@ describe("canonicalAction", () => {
       expect(GATE_PERMITTED_ACTIONS.has(PACKAGE_RELEASE_ACTION)).toBe(true);
     });
 
-    it("is a conservative two-entry allow-list (not open to arbitrary types)", () => {
-      expect(GATE_PERMITTED_ACTIONS.size).toBe(2);
+    it("permits the three GxP clinical trial action types", () => {
+      expect(GATE_PERMITTED_ACTIONS.has(TRIAL_BLINDING_SETUP_ACTION)).toBe(true);
+      expect(GATE_PERMITTED_ACTIONS.has(TRIAL_UNBLINDING_EXECUTE_ACTION)).toBe(true);
+      expect(GATE_PERMITTED_ACTIONS.has(TRIAL_UNBLINDING_EMERGENCY_ACTION)).toBe(true);
+    });
+
+    it("is a conservative explicit allow-list (not open to arbitrary types)", () => {
+      expect(GATE_PERMITTED_ACTIONS.size).toBe(5);
       // A well-formed but unlisted action is NOT gate-permitted, even though
       // its format is valid — the runtime policy is the authority, but the
       // gate's client-side guard stays explicit.

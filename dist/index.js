@@ -361,10 +361,16 @@ async function loopEvaluate(apiUrl, headers, items) {
 // src/canonicalAction.ts
 var PRODUCTION_DEPLOY_ACTION = "production.deploy";
 var PACKAGE_RELEASE_ACTION = "package.release";
+var TRIAL_BLINDING_SETUP_ACTION = "trial.blinding.setup";
+var TRIAL_UNBLINDING_EXECUTE_ACTION = "trial.unblinding.execute";
+var TRIAL_UNBLINDING_EMERGENCY_ACTION = "trial.unblinding.emergency";
 var LEGACY_PRODUCTION_DEPLOY_ALIAS = "deployment.production";
 var GATE_PERMITTED_ACTIONS = /* @__PURE__ */ new Set([
   PRODUCTION_DEPLOY_ACTION,
-  PACKAGE_RELEASE_ACTION
+  PACKAGE_RELEASE_ACTION,
+  TRIAL_BLINDING_SETUP_ACTION,
+  TRIAL_UNBLINDING_EXECUTE_ACTION,
+  TRIAL_UNBLINDING_EMERGENCY_ACTION
 ]);
 function normalizeProtectedAction(raw) {
   if (raw === LEGACY_PRODUCTION_DEPLOY_ALIAS) {

@@ -32,6 +32,11 @@ export const ADMIN_PERMISSION_GRANT_ACTION = "admin.permission.grant";
 export const AGENT_TOOL_CALL_ACTION = "agent.tool.call";
 export const SECRET_ROTATION_PRODUCTION_ACTION = "secret.rotation.production";
 
+// GxP — Clinical trial blinding / unblinding (ICH E6(R2) §4.8 / §5.13, 21 CFR Part 11 §11.10/§11.300)
+export const TRIAL_BLINDING_SETUP_ACTION = "trial.blinding.setup";
+export const TRIAL_UNBLINDING_EXECUTE_ACTION = "trial.unblinding.execute";
+export const TRIAL_UNBLINDING_EMERGENCY_ACTION = "trial.unblinding.emergency";
+
 /** Legacy alias — accepted during the V1 alias window, normalized on input. */
 export const LEGACY_PRODUCTION_DEPLOY_ALIAS = "deployment.production";
 
@@ -46,6 +51,9 @@ export const LEGACY_PRODUCTION_DEPLOY_ALIAS = "deployment.production";
 export const GATE_PERMITTED_ACTIONS: ReadonlySet<string> = new Set([
   PRODUCTION_DEPLOY_ACTION,
   PACKAGE_RELEASE_ACTION,
+  TRIAL_BLINDING_SETUP_ACTION,
+  TRIAL_UNBLINDING_EXECUTE_ACTION,
+  TRIAL_UNBLINDING_EMERGENCY_ACTION,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -84,6 +92,10 @@ export const PROTECTED_ACTIONS_CATALOG: ReadonlySet<string> = new Set([
   "database.migration.apply",
   "database.schema.drop",
   "database.table.delete",
+  // GxP — Clinical trial blinding (ICH E6(R2) §4.8 / §5.13, 21 CFR Part 11 §11.10/§11.300)
+  "trial.blinding.setup",
+  "trial.unblinding.execute",
+  "trial.unblinding.emergency",
 ]);
 
 // ---------------------------------------------------------------------------

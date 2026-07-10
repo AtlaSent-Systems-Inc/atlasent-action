@@ -42,6 +42,47 @@ Push to main → AtlaSent evaluates → permit issued → deploy
     # state_snapshot is injected automatically — no need to include it here
 ```
 
+## Beyond deploys — any protected action
+
+The gate is not deployment-specific. `production.deploy` is just the default
+`action` value; the same evaluate → permit → verify → fail-closed mechanic
+authorizes **any** provisioned action class. Set `action` (and `target-id`) to
+the class you want to gate — the action, the wire contract, and the fail-closed
+behavior are identical.
+
+For example, a GxP clinical-trial unblinding gate (ICH E6(R2) §4.8 / 21 CFR
+Part 11), where the runtime enforces that class's dual-authorization, verified
+human approval, and per-class MFA at evaluate time:
+
+```yaml
+jobs:
+  unblind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: AtlaSent clinical unblinding gate
+        id: gate
+        uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+        with:
+          action: trial.unblinding.execute   # or trial.unblinding.emergency, package.release, data.release, …
+          target-id: trial:NCT12345678
+          environment: production
+
+      - name: Perform the unblinding
+        if: steps.gate.outputs.verified == 'true'   # gate on verified, not decision
+        run: ./scripts/unblind.sh
+```
+
+The action does **not** restrict `action` to a fixed allowlist — it validates
+only the format (dot-separated lowercase identifiers, 2–4 segments) and forwards
+the class to the control plane, where the policy is the authority. So any action
+class provisioned in your AtlaSent org works — `package.release`,
+`trial.unblinding.emergency`, `data.release`, your own custom classes — with no
+code change to this action. Recognized clinical/package constants are listed in
+`src/canonicalAction.ts`.
+
 ## Required context: `state_snapshot`
 
 All `production.deploy` evaluations (and all action classes in the AtlaSent system) **require a `state_snapshot`** in the request body. Omitting it results in an immediate `SNAPSHOT_REQUIRED` deny regardless of policy.

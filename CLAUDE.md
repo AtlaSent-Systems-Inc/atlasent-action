@@ -65,7 +65,7 @@ Required secrets (set in repository or org secrets):
 | `ATLASENT_API_KEY` | API key scoped to at least `evaluate:write` + `verify:execute` |
 | `ATLASENT_BASE_URL` | Supabase project URL, e.g. `https://<ref>.supabase.co/functions/v1` |
 
-Key action inputs (see `action.yml` for the full list of ~30 inputs):
+Key action inputs (see `action.yml` for the full list of 53 inputs / 39 outputs):
 
 | Input | Default | Description |
 |---|---|---|
@@ -84,6 +84,8 @@ Key action inputs (see `action.yml` for the full list of ~30 inputs):
 | `governance-agents` | — | Comma-separated advisory governance-agent slugs |
 | `release-mode` | — | Set `"register-and-verify"` for post-deploy release verification |
 | `trajectory-verify` | `"false"` | Set `"true"` to verify a trajectory step |
+
+> The table above is a curated subset. Two further input families in `action.yml` are not represented in the modes table: the `financial-governance` family (`financial-governance`, `financial-action-value`, `financial-action-currency`) and the `insights-*` family (`insights-org-id`, `insights-subject-id`, `insights-session-count`). See `action.yml` for the complete set.
 
 ## Key outputs
 

@@ -83,17 +83,26 @@ var require_dist = __commonJS({
     exports2.evaluate = evaluate;
     exports2.verify = verify;
     exports2.verifyPermit = verifyPermit3;
+    exports2.reverifyPermit = reverifyPermit2;
     exports2.enforce = enforce2;
     var transport_1 = require_transport();
     var DEFAULT_API_URL = "https://api.atlasent.io";
     var EnforceError2 = class extends Error {
       phase;
       decision;
-      constructor(message, phase, decision = null) {
+      /** Coarse verify outcome (verified | mismatch | expired | replay_blocked | invalid | …). */
+      outcome;
+      /** Precise verify wire code, when the failure came from verify-permit. */
+      verifyErrorCode;
+      mismatchFields;
+      constructor(message, phase, decision = null, details) {
         super(message);
         this.name = "EnforceError";
         this.phase = phase;
         this.decision = decision;
+        this.outcome = details?.outcome;
+        this.verifyErrorCode = details?.verifyErrorCode;
+        this.mismatchFields = details?.mismatchFields;
       }
     };
     exports2.EnforceError = EnforceError2;
@@ -127,6 +136,9 @@ var require_dist = __commonJS({
       const snap = config.state_snapshot ?? contextSnapshot;
       if (snap != null)
         payload["state_snapshot"] = snap;
+      if (config.executionPayloadHash != null) {
+        payload["execution_payload_hash"] = config.executionPayloadHash;
+      }
       let status;
       let body;
       try {
@@ -170,19 +182,25 @@ var require_dist = __commonJS({
           throw new EnforceError2(`Unknown decision: ${String(decision.decision)}`, "verify", decision);
       }
     }
-    async function verifyPermit3(config, decision) {
-      if (!decision.permitToken) {
-        throw new EnforceError2("evaluate returned allow but no permit_token \u2014 refusing to execute without verifiable permit", "verify-permit", decision);
-      }
+    async function postVerify(config, permitToken, decision) {
       const apiUrl = (config.apiUrl ?? DEFAULT_API_URL).replace(/\/$/, "");
+      const bodyObj = {
+        permit_token: permitToken,
+        action_type: config.action,
+        actor_id: config.actor
+      };
+      if (config.environment != null)
+        bodyObj["environment"] = config.environment;
+      if (config.targetId != null)
+        bodyObj["target_id"] = config.targetId;
+      if (config.executionPayloadHash != null)
+        bodyObj["payload_hash"] = config.executionPayloadHash;
       let status;
       let body;
       try {
-        ({ status, body } = await (0, transport_1.post)(`${apiUrl}/v1-verify-permit`, JSON.stringify({
-          permit_token: decision.permitToken,
-          action_type: config.action,
-          actor_id: config.actor
-        }), { Authorization: `Bearer ${config.apiKey}` }));
+        ({ status, body } = await (0, transport_1.post)(`${apiUrl}/v1-verify-permit`, JSON.stringify(bodyObj), {
+          Authorization: `Bearer ${config.apiKey}`
+        }));
       } catch (err) {
         throw new EnforceError2(`verify-permit unreachable: ${err instanceof Error ? err.message : String(err)}`, "verify-permit", decision);
       }
@@ -198,10 +216,33 @@ var require_dist = __commonJS({
       } catch {
         throw new EnforceError2("Non-JSON response from verify-permit", "verify-permit", decision);
       }
-      if (raw.verified !== true) {
-        throw new EnforceError2(`Permit verification failed (outcome=${raw.outcome ?? "unknown"})`, "verify-permit", decision);
+      const ok = raw.valid ?? raw.verified;
+      return {
+        verified: ok === true,
+        outcome: raw.outcome,
+        verifyErrorCode: raw.verify_error_code,
+        mismatchFields: Array.isArray(raw.mismatch_fields) ? raw.mismatch_fields : void 0
+      };
+    }
+    async function verifyPermit3(config, decision) {
+      if (!decision.permitToken) {
+        throw new EnforceError2("evaluate returned allow but no permit_token \u2014 refusing to execute without verifiable permit", "verify-permit", decision);
       }
-      return { verified: true, outcome: raw.outcome };
+      const r = await postVerify(config, decision.permitToken, decision);
+      if (!r.verified) {
+        throw new EnforceError2(`Permit verification failed (outcome=${r.outcome ?? "unknown"}${r.verifyErrorCode ? `, code=${r.verifyErrorCode}` : ""})`, "verify-permit", decision, { outcome: r.outcome, verifyErrorCode: r.verifyErrorCode, mismatchFields: r.mismatchFields });
+      }
+      return r;
+    }
+    async function reverifyPermit2(config, permitToken) {
+      if (!permitToken || !permitToken.trim()) {
+        throw new EnforceError2("no permit_token presented at execution boundary \u2014 refusing to execute", "verify-permit", null, { outcome: "invalid", verifyErrorCode: "MISSING_PERMIT" });
+      }
+      const r = await postVerify(config, permitToken, null);
+      if (!r.verified) {
+        throw new EnforceError2(`Permit re-verification failed at execution boundary (outcome=${r.outcome ?? "unknown"}${r.verifyErrorCode ? `, code=${r.verifyErrorCode}` : ""})`, "verify-permit", null, { outcome: r.outcome, verifyErrorCode: r.verifyErrorCode, mismatchFields: r.mismatchFields });
+      }
+      return r;
     }
     async function enforce2(config, fn) {
       const decision = await evaluate(config);
@@ -1929,6 +1970,55 @@ var VALID_SEVERITIES = [
   "high",
   "blocker"
 ];
+async function runVerifyPermitStep(apiKey, apiUrl) {
+  const permitToken = getInput("permit-token", true);
+  const rawActionType = getInput("action", true);
+  const actionType = normalizeAndValidateProtectedAction(rawActionType);
+  const actor = getInput("actor") || "unknown";
+  const targetId = getInput("target-id") || void 0;
+  const artifactDigest = getInput("artifact-digest") || void 0;
+  const gh = getGitHubContext();
+  const environment = resolveEnvironment(getInput("environment"), gh.ref, apiKey);
+  maskValue(permitToken);
+  const config = {
+    apiKey,
+    apiUrl,
+    action: actionType,
+    actor: `github:${actor}`,
+    environment,
+    targetId,
+    executionPayloadHash: artifactDigest
+  };
+  info(
+    `AtlaSent boundary re-verification: "${actionType}" for "github:${actor}" in ${environment}` + (artifactDigest ? ` (artifact=${artifactDigest})` : "")
+  );
+  try {
+    const r = await (0, import_enforce3.reverifyPermit)(config, permitToken);
+    setOutput("decision", "allow");
+    setOutput("verified", "true");
+    setOutput("verify-outcome", r.outcome ?? "verified");
+    setOutput("verify-error-code", "");
+    setOutput("permit-token", permitToken);
+    info(
+      `Permit re-verified at the execution boundary (outcome=${r.outcome ?? "verified"}). Deployment may proceed.`
+    );
+  } catch (err) {
+    setOutput("decision", "deny");
+    setOutput("verified", "false");
+    if (err instanceof import_enforce3.EnforceError) {
+      setOutput("verify-outcome", err.outcome ?? "invalid");
+      setOutput("verify-error-code", err.verifyErrorCode ?? "");
+      setFailed(
+        `Deploy blocked at execution boundary (outcome=${err.outcome ?? "unknown"}${err.verifyErrorCode ? `, code=${err.verifyErrorCode}` : ""}): ${err.message}`
+      );
+    }
+    setOutput("verify-outcome", "invalid");
+    setOutput("verify-error-code", "");
+    setFailed(
+      `Deploy blocked at execution boundary: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
 async function runGovernanceAgentsStep(apiKey, apiUrl) {
   const slugsRaw = getInput("governance-agents", true);
   const agentSlugs = slugsRaw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
@@ -2290,6 +2380,10 @@ async function run() {
     await runGovernanceAgentsStep(apiKey, apiUrl);
     return;
   }
+  if (getInput("verify-permit").toLowerCase() === "true") {
+    await runVerifyPermitStep(apiKey, apiUrl);
+    return;
+  }
   const evaluationsRaw = getInput("evaluations");
   if (evaluationsRaw) {
     const waitForId = getInput("wait-for-id") || void 0;
@@ -2416,6 +2510,7 @@ async function run() {
       warn: warning
     });
   }
+  const artifactDigest = getInput("artifact-digest") || void 0;
   const config = {
     apiKey,
     apiUrl,
@@ -2423,6 +2518,9 @@ async function run() {
     actor: `github:${actor}`,
     environment,
     targetId,
+    // Canonical artifact binding — the runtime binds this into the permit and
+    // re-checks it at verify time (artifact-substitution defense).
+    executionPayloadHash: artifactDigest,
     // state_snapshot is required for all action classes (requires_state_snapshot=true).
     // Auto-populate from GitHub Actions context; callers can override via the context input.
     state_snapshot: {
@@ -2468,6 +2566,8 @@ async function run() {
         setOutput("audit-hash", "");
       }
       setOutput("verified", "false");
+      setOutput("verify-outcome", err.outcome ?? "");
+      setOutput("verify-error-code", err.verifyErrorCode ?? "");
       setOutput("evidence-receipt", JSON.stringify(null));
       setOutput("evidence-bundle", JSON.stringify(null));
       {
@@ -2624,6 +2724,8 @@ async function run() {
   const { decision: d, verifyOutcome } = enforceResult;
   setDecisionOutputs(d);
   setOutput("verified", "true");
+  setOutput("verify-outcome", verifyOutcome ?? "verified");
+  setOutput("verify-error-code", "");
   await postCommitStatus({
     repository: gh.repository,
     sha: gh.sha,

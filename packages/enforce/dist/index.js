@@ -11,17 +11,26 @@ exports.EnforceError = void 0;
 exports.evaluate = evaluate;
 exports.verify = verify;
 exports.verifyPermit = verifyPermit;
+exports.reverifyPermit = reverifyPermit;
 exports.enforce = enforce;
 const transport_1 = require("./transport");
 const DEFAULT_API_URL = "https://api.atlasent.io";
 class EnforceError extends Error {
     phase;
     decision;
-    constructor(message, phase, decision = null) {
+    /** Coarse verify outcome (verified | mismatch | expired | replay_blocked | invalid | …). */
+    outcome;
+    /** Precise verify wire code, when the failure came from verify-permit. */
+    verifyErrorCode;
+    mismatchFields;
+    constructor(message, phase, decision = null, details) {
         super(message);
         this.name = "EnforceError";
         this.phase = phase;
         this.decision = decision;
+        this.outcome = details?.outcome;
+        this.verifyErrorCode = details?.verifyErrorCode;
+        this.mismatchFields = details?.mismatchFields;
     }
 }
 exports.EnforceError = EnforceError;
@@ -61,6 +70,11 @@ async function evaluate(config) {
     const snap = config.state_snapshot ?? contextSnapshot;
     if (snap != null)
         payload["state_snapshot"] = snap;
+    // Artifact digest is a canonical top-level input — the runtime binds it into
+    // the permit (execution_hash_expected). Never buried in context/presentation.
+    if (config.executionPayloadHash != null) {
+        payload["execution_payload_hash"] = config.executionPayloadHash;
+    }
     let status;
     let body;
     try {
@@ -109,26 +123,32 @@ function verify(decision) {
             throw new EnforceError(`Unknown decision: ${String(decision.decision)}`, "verify", decision);
     }
 }
-// ---------------------------------------------------------------------------
-// Step 3 — verifyPermit (calls /v1-verify-permit, fail-closed)
-//
-// Without this round-trip the enforce wrapper is evaluate-only: a tampered or
-// replayed permit_token would still surface decision=allow. This step consumes
-// the token — downstream re-verify returns outcome=permit_consumed.
-// ---------------------------------------------------------------------------
-async function verifyPermit(config, decision) {
-    if (!decision.permitToken) {
-        throw new EnforceError("evaluate returned allow but no permit_token — refusing to execute without verifiable permit", "verify-permit", decision);
-    }
+/**
+ * Shared HTTP core for permit verification. Sends the permit token AND re-binds
+ * the execution context (environment, target, artifact digest) so verification
+ * checks the caller is executing the SAME artifact/environment the permit was
+ * issued for. Returns a normalized result (does not throw on verified=false —
+ * the caller applies the fail-closed decision).
+ */
+async function postVerify(config, permitToken, decision) {
     const apiUrl = (config.apiUrl ?? DEFAULT_API_URL).replace(/\/$/, "");
+    const bodyObj = {
+        permit_token: permitToken,
+        action_type: config.action,
+        actor_id: config.actor,
+    };
+    if (config.environment != null)
+        bodyObj["environment"] = config.environment;
+    if (config.targetId != null)
+        bodyObj["target_id"] = config.targetId;
+    if (config.executionPayloadHash != null)
+        bodyObj["payload_hash"] = config.executionPayloadHash;
     let status;
     let body;
     try {
-        ({ status, body } = await (0, transport_1.post)(`${apiUrl}/v1-verify-permit`, JSON.stringify({
-            permit_token: decision.permitToken,
-            action_type: config.action,
-            actor_id: config.actor,
-        }), { Authorization: `Bearer ${config.apiKey}` }));
+        ({ status, body } = await (0, transport_1.post)(`${apiUrl}/v1-verify-permit`, JSON.stringify(bodyObj), {
+            Authorization: `Bearer ${config.apiKey}`,
+        }));
     }
     catch (err) {
         throw new EnforceError(`verify-permit unreachable: ${err instanceof Error ? err.message : String(err)}`, "verify-permit", decision);
@@ -146,11 +166,44 @@ async function verifyPermit(config, decision) {
     catch {
         throw new EnforceError("Non-JSON response from verify-permit", "verify-permit", decision);
     }
-    if (raw.verified !== true) {
-        // outcome=permit_consumed (replay), permit_expired, etc.
-        throw new EnforceError(`Permit verification failed (outcome=${raw.outcome ?? "unknown"})`, "verify-permit", decision);
+    // Runtime wire field is `valid`; older responses used `verified`. Accept both.
+    const ok = raw.valid ?? raw.verified;
+    return {
+        verified: ok === true,
+        outcome: raw.outcome,
+        verifyErrorCode: raw.verify_error_code,
+        mismatchFields: Array.isArray(raw.mismatch_fields) ? raw.mismatch_fields : undefined,
+    };
+}
+async function verifyPermit(config, decision) {
+    if (!decision.permitToken) {
+        throw new EnforceError("evaluate returned allow but no permit_token — refusing to execute without verifiable permit", "verify-permit", decision);
     }
-    return { verified: true, outcome: raw.outcome };
+    const r = await postVerify(config, decision.permitToken, decision);
+    if (!r.verified) {
+        // outcome=replay_blocked (replay), expired, mismatch (wrong artifact/env), etc.
+        throw new EnforceError(`Permit verification failed (outcome=${r.outcome ?? "unknown"}${r.verifyErrorCode ? `, code=${r.verifyErrorCode}` : ""})`, "verify-permit", decision, { outcome: r.outcome, verifyErrorCode: r.verifyErrorCode, mismatchFields: r.mismatchFields });
+    }
+    return r;
+}
+// ---------------------------------------------------------------------------
+// Step 3b — reverifyPermit (re-verify at the EXECUTION BOUNDARY)
+//
+// Re-verify an already-issued permit immediately before the protected step,
+// independent of the gate that issued it — so a workflow cannot evaluate one
+// artifact and execute another, and a missing / modified / expired / replayed /
+// context-mismatched permit fails closed AT THE BOUNDARY. Pass the artifact
+// digest via config.executionPayloadHash and the environment via config.environment.
+// ---------------------------------------------------------------------------
+async function reverifyPermit(config, permitToken) {
+    if (!permitToken || !permitToken.trim()) {
+        throw new EnforceError("no permit_token presented at execution boundary — refusing to execute", "verify-permit", null, { outcome: "invalid", verifyErrorCode: "MISSING_PERMIT" });
+    }
+    const r = await postVerify(config, permitToken, null);
+    if (!r.verified) {
+        throw new EnforceError(`Permit re-verification failed at execution boundary (outcome=${r.outcome ?? "unknown"}${r.verifyErrorCode ? `, code=${r.verifyErrorCode}` : ""})`, "verify-permit", null, { outcome: r.outcome, verifyErrorCode: r.verifyErrorCode, mismatchFields: r.mismatchFields });
+    }
+    return r;
 }
 // ---------------------------------------------------------------------------
 // Step 4 — enforce (evaluate → verify → verifyPermit → execute, fail-closed)

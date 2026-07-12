@@ -14,7 +14,7 @@
 // masking secrets, and translating EnforceResult / EnforceError into step
 // outputs and exit codes.
 
-import { enforce, EnforceError } from "@atlasent/enforce";
+import { enforce, reverifyPermit, EnforceError } from "@atlasent/enforce";
 import type { Decision, EnforceConfig } from "@atlasent/enforce";
 import { GateInfraError } from "./gate";
 import { runV21 } from "./v21";
@@ -549,6 +549,68 @@ const VALID_SEVERITIES: readonly AgentSeverity[] = [
   "blocker",
 ];
 
+// ── Verify-permit (execution boundary) step ──────────────────────────────────
+//
+// Re-verifies an existing permit immediately before the protected step. The
+// artifact digest + environment are re-bound at verify time so a permit issued
+// for one artifact/environment cannot authorize another. Fails closed on any
+// missing / modified / expired / replayed / denied / mismatched permit.
+async function runVerifyPermitStep(apiKey: string, apiUrl: string): Promise<void> {
+  const permitToken = getInput("permit-token", true);
+  const rawActionType = getInput("action", true);
+  const actionType = normalizeAndValidateProtectedAction(rawActionType);
+  const actor = getInput("actor") || "unknown";
+  const targetId = getInput("target-id") || undefined;
+  const artifactDigest = getInput("artifact-digest") || undefined;
+  const gh = getGitHubContext();
+  const environment = resolveEnvironment(getInput("environment"), gh.ref, apiKey);
+
+  maskValue(permitToken);
+
+  const config: EnforceConfig = {
+    apiKey,
+    apiUrl,
+    action: actionType,
+    actor: `github:${actor}`,
+    environment,
+    targetId,
+    executionPayloadHash: artifactDigest,
+  };
+
+  info(
+    `AtlaSent boundary re-verification: "${actionType}" for "github:${actor}" in ${environment}` +
+      (artifactDigest ? ` (artifact=${artifactDigest})` : ""),
+  );
+
+  try {
+    const r = await reverifyPermit(config, permitToken);
+    setOutput("decision", "allow");
+    setOutput("verified", "true");
+    setOutput("verify-outcome", r.outcome ?? "verified");
+    setOutput("verify-error-code", "");
+    setOutput("permit-token", permitToken);
+    info(
+      `Permit re-verified at the execution boundary (outcome=${r.outcome ?? "verified"}). Deployment may proceed.`,
+    );
+  } catch (err) {
+    setOutput("decision", "deny");
+    setOutput("verified", "false");
+    if (err instanceof EnforceError) {
+      setOutput("verify-outcome", err.outcome ?? "invalid");
+      setOutput("verify-error-code", err.verifyErrorCode ?? "");
+      setFailed(
+        `Deploy blocked at execution boundary (outcome=${err.outcome ?? "unknown"}` +
+          `${err.verifyErrorCode ? `, code=${err.verifyErrorCode}` : ""}): ${err.message}`,
+      );
+    }
+    setOutput("verify-outcome", "invalid");
+    setOutput("verify-error-code", "");
+    setFailed(
+      `Deploy blocked at execution boundary: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 async function runGovernanceAgentsStep(apiKey: string, apiUrl: string): Promise<void> {
   const slugsRaw = getInput("governance-agents", true);
   const agentSlugs = slugsRaw
@@ -1010,6 +1072,17 @@ export async function run(): Promise<void> {
     return;
   }
 
+  // ── Verify-permit path (execution boundary) ─────────────────────────────────
+  //
+  // Re-verify an already-issued permit immediately before the protected step,
+  // independent of the gate that issued it. Fails closed on any missing /
+  // modified / expired / replayed / denied / context-mismatched permit — so a
+  // workflow cannot evaluate one artifact and execute another.
+  if (getInput("verify-permit").toLowerCase() === "true") {
+    await runVerifyPermitStep(apiKey, apiUrl);
+    return;
+  }
+
   // ── v2.1 batch path (scope-excluded from this unification) ─────────────────
   const evaluationsRaw = getInput("evaluations");
   if (evaluationsRaw) {
@@ -1173,6 +1246,8 @@ export async function run(): Promise<void> {
     });
   }
 
+  const artifactDigest = getInput("artifact-digest") || undefined;
+
   const config: EnforceConfig = {
     apiKey,
     apiUrl,
@@ -1180,6 +1255,9 @@ export async function run(): Promise<void> {
     actor: `github:${actor}`,
     environment,
     targetId,
+    // Canonical artifact binding — the runtime binds this into the permit and
+    // re-checks it at verify time (artifact-substitution defense).
+    executionPayloadHash: artifactDigest,
     // state_snapshot is required for all action classes (requires_state_snapshot=true).
     // Auto-populate from GitHub Actions context; callers can override via the context input.
     state_snapshot: {
@@ -1227,6 +1305,8 @@ export async function run(): Promise<void> {
         setOutput("audit-hash", "");
       }
       setOutput("verified", "false");
+      setOutput("verify-outcome", err.outcome ?? "");
+      setOutput("verify-error-code", err.verifyErrorCode ?? "");
       setOutput("evidence-receipt", JSON.stringify(null));
       setOutput("evidence-bundle", JSON.stringify(null));
 
@@ -1426,6 +1506,8 @@ export async function run(): Promise<void> {
   const { decision: d, verifyOutcome } = enforceResult;
   setDecisionOutputs(d);
   setOutput("verified", "true");
+  setOutput("verify-outcome", verifyOutcome ?? "verified");
+  setOutput("verify-error-code", "");
 
   // Fallback commit status for orgs without the full GitHub App installation.
   // Best-effort: failure to post never blocks the gate.

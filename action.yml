@@ -14,6 +14,16 @@ inputs:
   target-id:
     description: 'Target resource being acted on (service name, artifact id, etc). Threaded into both top-level target_id and context.target_id so policies can gate on what is being deployed, not just who is deploying.'
     required: false
+  artifact-digest:
+    description: 'SHA-256 digest of the artifact being deployed (e.g. sha256:<image-or-plan-hash>). Sent to evaluate as the canonical top-level execution_payload_hash, which the runtime binds into the permit. Re-presented at verify time as payload_hash — a permit issued for one artifact and presented for another fails with PAYLOAD_MISMATCH. Supply the SAME digest to the gate step and to the verify-permit step at the execution boundary so a workflow cannot evaluate one artifact and execute another.'
+    required: false
+  verify-permit:
+    description: 'Set "true" to run VERIFY-ONLY mode: re-verify an existing permit at the execution boundary (immediately before the protected step), independent of the gate that issued it. Requires permit-token; also pass action, actor, environment, and artifact-digest so the runtime re-binds the execution context. Fails closed on any missing / modified / expired / replayed / denied / context-mismatched permit. Outputs verified / verify-outcome / verify-error-code.'
+    required: false
+    default: 'false'
+  permit-token:
+    description: 'The permit token to re-verify (required in verify-permit mode). Typically the permit-token output of an earlier gate step, passed to the deploy step.'
+    required: false
   environment:
     description: 'Environment (defaults to live for main branch, test otherwise)'
     required: false
@@ -284,7 +294,11 @@ outputs:
   risk-score:
     description: 'The numeric risk score from the Decision response. Empty string when the evaluator did not return a risk assessment. Single-eval path only.'
   verified:
-    description: '"true" when evaluate=allow AND verify-permit=true for ALL evaluations; "false" otherwise (fail-closed). Set on both single and batch paths.'
+    description: '"true" when evaluate=allow AND verify-permit=true for ALL evaluations; "false" otherwise (fail-closed). Set on both single and batch paths, and in verify-permit (boundary) mode.'
+  verify-outcome:
+    description: 'Coarse verification outcome from the last permit verification (verified / mismatch / expired / revoked / replay_blocked / invalid). Set on the single-eval and verify-permit (boundary) paths. Empty when verification did not run.'
+  verify-error-code:
+    description: 'Precise runtime verify wire code when verification failed (e.g. PAYLOAD_MISMATCH, ENVIRONMENT_MISMATCH, PERMIT_EXPIRED, PERMIT_ALREADY_USED, MISSING_PERMIT). Empty on success. Lets a workflow distinguish WHY a permit was rejected.'
   decisions:
     description: 'JSON array of per-item decision results for the batch path. Each item: {decision, verified, evaluationId, permitToken, reasons, verifyOutcome}.'
   batch-id:

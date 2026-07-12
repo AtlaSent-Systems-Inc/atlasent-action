@@ -44,6 +44,16 @@ export interface EnforceConfig {
     run_id?: string;
     payload?: unknown;
   };
+  /**
+   * SHA-256 digest of the artifact being authorized (canonical input, NOT
+   * presentation metadata). Sent to evaluate as the top-level
+   * `execution_payload_hash`, which the runtime binds into the permit
+   * (`execution_hash_expected`). Re-presented at verify time as `payload_hash`
+   * — a permit issued for one artifact then presented for another fails with
+   * `PAYLOAD_MISMATCH`. This is what stops a workflow evaluating one artifact
+   * and executing a different one.
+   */
+  executionPayloadHash?: string;
 }
 
 export interface Decision {
@@ -80,6 +90,10 @@ export interface Decision {
 export interface VerifyPermitResult {
   verified: boolean;
   outcome?: string;
+  /** Precise runtime wire code (e.g. PAYLOAD_MISMATCH, PERMIT_EXPIRED). */
+  verifyErrorCode?: string;
+  /** Fields that diverged between the presented context and the bound permit. */
+  mismatchFields?: string[];
 }
 
 export type EnforcePhase = "evaluate" | "verify" | "verify-permit" | "execute";
@@ -87,12 +101,25 @@ export type EnforcePhase = "evaluate" | "verify" | "verify-permit" | "execute";
 export class EnforceError extends Error {
   readonly phase: EnforcePhase;
   readonly decision: Decision | null;
+  /** Coarse verify outcome (verified | mismatch | expired | replay_blocked | invalid | …). */
+  readonly outcome?: string;
+  /** Precise verify wire code, when the failure came from verify-permit. */
+  readonly verifyErrorCode?: string;
+  readonly mismatchFields?: string[];
 
-  constructor(message: string, phase: EnforcePhase, decision: Decision | null = null) {
+  constructor(
+    message: string,
+    phase: EnforcePhase,
+    decision: Decision | null = null,
+    details?: { outcome?: string; verifyErrorCode?: string; mismatchFields?: string[] },
+  ) {
     super(message);
     this.name = "EnforceError";
     this.phase = phase;
     this.decision = decision;
+    this.outcome = details?.outcome;
+    this.verifyErrorCode = details?.verifyErrorCode;
+    this.mismatchFields = details?.mismatchFields;
   }
 }
 
@@ -128,6 +155,11 @@ export async function evaluate(config: EnforceConfig): Promise<Decision> {
   // state_snapshot is a top-level body field (EvaluateBody.state_snapshot), not inside context.
   const snap = config.state_snapshot ?? contextSnapshot;
   if (snap != null) payload["state_snapshot"] = snap;
+  // Artifact digest is a canonical top-level input — the runtime binds it into
+  // the permit (execution_hash_expected). Never buried in context/presentation.
+  if (config.executionPayloadHash != null) {
+    payload["execution_payload_hash"] = config.executionPayloadHash;
+  }
 
   let status: number;
   let body: string;
@@ -204,6 +236,75 @@ export function verify(decision: Decision): void {
 // the token — downstream re-verify returns outcome=permit_consumed.
 // ---------------------------------------------------------------------------
 
+interface RawVerify {
+  valid?: boolean;
+  verified?: boolean; // legacy field name — accepted for backward compat
+  outcome?: string;
+  verify_error_code?: string;
+  mismatch_fields?: string[];
+}
+
+/**
+ * Shared HTTP core for permit verification. Sends the permit token AND re-binds
+ * the execution context (environment, target, artifact digest) so verification
+ * checks the caller is executing the SAME artifact/environment the permit was
+ * issued for. Returns a normalized result (does not throw on verified=false —
+ * the caller applies the fail-closed decision).
+ */
+async function postVerify(
+  config: EnforceConfig,
+  permitToken: string,
+  decision: Decision | null,
+): Promise<VerifyPermitResult> {
+  const apiUrl = (config.apiUrl ?? DEFAULT_API_URL).replace(/\/$/, "");
+
+  const bodyObj: Record<string, unknown> = {
+    permit_token: permitToken,
+    action_type: config.action,
+    actor_id: config.actor,
+  };
+  if (config.environment != null) bodyObj["environment"] = config.environment;
+  if (config.targetId != null) bodyObj["target_id"] = config.targetId;
+  if (config.executionPayloadHash != null) bodyObj["payload_hash"] = config.executionPayloadHash;
+
+  let status: number;
+  let body: string;
+  try {
+    ({ status, body } = await post(`${apiUrl}/v1-verify-permit`, JSON.stringify(bodyObj), {
+      Authorization: `Bearer ${config.apiKey}`,
+    }));
+  } catch (err) {
+    throw new EnforceError(
+      `verify-permit unreachable: ${err instanceof Error ? err.message : String(err)}`,
+      "verify-permit",
+      decision,
+    );
+  }
+
+  if (status >= 500) {
+    throw new EnforceError(`verify-permit infrastructure failure (HTTP ${status})`, "verify-permit", decision);
+  }
+  if (status < 200 || status >= 300) {
+    throw new EnforceError(`verify-permit failed (HTTP ${status})`, "verify-permit", decision);
+  }
+
+  let raw: RawVerify;
+  try {
+    raw = JSON.parse(body) as RawVerify;
+  } catch {
+    throw new EnforceError("Non-JSON response from verify-permit", "verify-permit", decision);
+  }
+
+  // Runtime wire field is `valid`; older responses used `verified`. Accept both.
+  const ok = raw.valid ?? raw.verified;
+  return {
+    verified: ok === true,
+    outcome: raw.outcome,
+    verifyErrorCode: raw.verify_error_code,
+    mismatchFields: Array.isArray(raw.mismatch_fields) ? raw.mismatch_fields : undefined,
+  };
+}
+
 export async function verifyPermit(
   config: EnforceConfig,
   decision: Decision,
@@ -216,64 +317,51 @@ export async function verifyPermit(
     );
   }
 
-  const apiUrl = (config.apiUrl ?? DEFAULT_API_URL).replace(/\/$/, "");
-
-  let status: number;
-  let body: string;
-  try {
-    ({ status, body } = await post(
-      `${apiUrl}/v1-verify-permit`,
-      JSON.stringify({
-        permit_token: decision.permitToken,
-        action_type: config.action,
-        actor_id: config.actor,
-      }),
-      { Authorization: `Bearer ${config.apiKey}` },
-    ));
-  } catch (err) {
+  const r = await postVerify(config, decision.permitToken, decision);
+  if (!r.verified) {
+    // outcome=replay_blocked (replay), expired, mismatch (wrong artifact/env), etc.
     throw new EnforceError(
-      `verify-permit unreachable: ${err instanceof Error ? err.message : String(err)}`,
+      `Permit verification failed (outcome=${r.outcome ?? "unknown"}${r.verifyErrorCode ? `, code=${r.verifyErrorCode}` : ""})`,
       "verify-permit",
       decision,
+      { outcome: r.outcome, verifyErrorCode: r.verifyErrorCode, mismatchFields: r.mismatchFields },
     );
   }
+  return r;
+}
 
-  if (status >= 500) {
-    throw new EnforceError(
-      `verify-permit infrastructure failure (HTTP ${status})`,
-      "verify-permit",
-      decision,
-    );
-  }
-  if (status < 200 || status >= 300) {
-    throw new EnforceError(
-      `verify-permit failed (HTTP ${status})`,
-      "verify-permit",
-      decision,
-    );
-  }
+// ---------------------------------------------------------------------------
+// Step 3b — reverifyPermit (re-verify at the EXECUTION BOUNDARY)
+//
+// Re-verify an already-issued permit immediately before the protected step,
+// independent of the gate that issued it — so a workflow cannot evaluate one
+// artifact and execute another, and a missing / modified / expired / replayed /
+// context-mismatched permit fails closed AT THE BOUNDARY. Pass the artifact
+// digest via config.executionPayloadHash and the environment via config.environment.
+// ---------------------------------------------------------------------------
 
-  let raw: { verified?: boolean; outcome?: string };
-  try {
-    raw = JSON.parse(body) as { verified?: boolean; outcome?: string };
-  } catch {
+export async function reverifyPermit(
+  config: EnforceConfig,
+  permitToken: string,
+): Promise<VerifyPermitResult> {
+  if (!permitToken || !permitToken.trim()) {
     throw new EnforceError(
-      "Non-JSON response from verify-permit",
+      "no permit_token presented at execution boundary — refusing to execute",
       "verify-permit",
-      decision,
+      null,
+      { outcome: "invalid", verifyErrorCode: "MISSING_PERMIT" },
     );
   }
-
-  if (raw.verified !== true) {
-    // outcome=permit_consumed (replay), permit_expired, etc.
+  const r = await postVerify(config, permitToken, null);
+  if (!r.verified) {
     throw new EnforceError(
-      `Permit verification failed (outcome=${raw.outcome ?? "unknown"})`,
+      `Permit re-verification failed at execution boundary (outcome=${r.outcome ?? "unknown"}${r.verifyErrorCode ? `, code=${r.verifyErrorCode}` : ""})`,
       "verify-permit",
-      decision,
+      null,
+      { outcome: r.outcome, verifyErrorCode: r.verifyErrorCode, mismatchFields: r.mismatchFields },
     );
   }
-
-  return { verified: true, outcome: raw.outcome };
+  return r;
 }
 
 // ---------------------------------------------------------------------------

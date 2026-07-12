@@ -42,6 +42,74 @@ Push to main → AtlaSent evaluates → permit issued → deploy
     # state_snapshot is injected automatically — no need to include it here
 ```
 
+## Artifact binding & execution-boundary verification
+
+By default the gate step evaluates, verifies the permit, and outputs `verified`;
+your deploy step guards on `if: steps.gate.outputs.verified == 'true'`. That is
+fully supported and unchanged.
+
+For a stronger guarantee — **a workflow must not be able to evaluate one artifact
+and execute another** — bind the artifact digest into the authorization and
+re-verify the permit *at the execution boundary*, immediately before the deploy:
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs: { digest: "${{ steps.d.outputs.digest }}" }
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./build.sh out/
+      - id: d
+        run: echo "digest=sha256:$(tar -cf - out | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+  gate:
+    needs: build
+    runs-on: ubuntu-latest
+    outputs: { permit: "${{ steps.g.outputs.permit-token }}" }
+    steps:
+      - id: g
+        uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        env: { ATLASENT_API_KEY: "${{ secrets.ATLASENT_API_KEY }}", ATLASENT_BASE_URL: "${{ secrets.ATLASENT_BASE_URL }}" }
+        with:
+          action: production.deploy
+          environment: production
+          artifact-digest: ${{ needs.build.outputs.digest }}   # canonical binding
+
+  deploy:
+    needs: [build, gate]
+    runs-on: ubuntu-latest
+    steps:
+      # THE EXECUTION BOUNDARY — re-verify the permit against the live runtime,
+      # re-binding environment + artifact digest. Fails closed on a missing,
+      # modified, expired, replayed, denied, or context-mismatched permit.
+      - id: verify
+        uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        env: { ATLASENT_API_KEY: "${{ secrets.ATLASENT_API_KEY }}", ATLASENT_BASE_URL: "${{ secrets.ATLASENT_BASE_URL }}" }
+        with:
+          verify-permit: "true"
+          permit-token: ${{ needs.gate.outputs.permit }}
+          action: production.deploy
+          environment: production
+          artifact-digest: ${{ needs.build.outputs.digest }}
+      - if: steps.verify.outputs.verified == 'true'
+        run: ./deploy.sh out/
+```
+
+- **`artifact-digest`** is sent to evaluate as the canonical top-level
+  `execution_payload_hash` (never buried in context) and the runtime binds it into
+  the permit. Presenting a different digest at verify → `PAYLOAD_MISMATCH`.
+- **`verify-permit: "true"`** runs verify-only against the live runtime at the
+  deploy boundary. It fails the step closed and sets `verify-outcome` /
+  `verify-error-code` (e.g. `PAYLOAD_MISMATCH`, `ENVIRONMENT_MISMATCH`,
+  `PERMIT_EXPIRED`, `PERMIT_ALREADY_USED`, `MISSING_PERMIT`).
+
+**Compatibility:** all of this is additive and opt-in. Existing single-step gate
+workflows keep working unchanged; `artifact-digest`, `verify-permit`, the
+`permit-token` input, and the `verify-outcome` / `verify-error-code` outputs are
+new optional surface. Adopt the boundary pattern when you want artifact-substitution
+and cross-step replay protection at the point of execution.
+
 ## Beyond deploys — any protected action
 
 The gate is not deployment-specific. `production.deploy` is just the default

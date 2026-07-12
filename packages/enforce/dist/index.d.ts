@@ -34,6 +34,16 @@ export interface EnforceConfig {
         run_id?: string;
         payload?: unknown;
     };
+    /**
+     * SHA-256 digest of the artifact being authorized (canonical input, NOT
+     * presentation metadata). Sent to evaluate as the top-level
+     * `execution_payload_hash`, which the runtime binds into the permit
+     * (`execution_hash_expected`). Re-presented at verify time as `payload_hash`
+     * — a permit issued for one artifact then presented for another fails with
+     * `PAYLOAD_MISMATCH`. This is what stops a workflow evaluating one artifact
+     * and executing a different one.
+     */
+    executionPayloadHash?: string;
 }
 export interface Decision {
     decision: "allow" | "deny" | "hold" | "escalate";
@@ -77,16 +87,30 @@ export interface Decision {
 export interface VerifyPermitResult {
     verified: boolean;
     outcome?: string;
+    /** Precise runtime wire code (e.g. PAYLOAD_MISMATCH, PERMIT_EXPIRED). */
+    verifyErrorCode?: string;
+    /** Fields that diverged between the presented context and the bound permit. */
+    mismatchFields?: string[];
 }
 export type EnforcePhase = "evaluate" | "verify" | "verify-permit" | "execute";
 export declare class EnforceError extends Error {
     readonly phase: EnforcePhase;
     readonly decision: Decision | null;
-    constructor(message: string, phase: EnforcePhase, decision?: Decision | null);
+    /** Coarse verify outcome (verified | mismatch | expired | replay_blocked | invalid | …). */
+    readonly outcome?: string;
+    /** Precise verify wire code, when the failure came from verify-permit. */
+    readonly verifyErrorCode?: string;
+    readonly mismatchFields?: string[];
+    constructor(message: string, phase: EnforcePhase, decision?: Decision | null, details?: {
+        outcome?: string;
+        verifyErrorCode?: string;
+        mismatchFields?: string[];
+    });
 }
 export declare function evaluate(config: EnforceConfig): Promise<Decision>;
 export declare function verify(decision: Decision): void;
 export declare function verifyPermit(config: EnforceConfig, decision: Decision): Promise<VerifyPermitResult>;
+export declare function reverifyPermit(config: EnforceConfig, permitToken: string): Promise<VerifyPermitResult>;
 export declare function enforce<T>(config: EnforceConfig, fn: () => Promise<T>): Promise<{
     result: T;
     decision: Decision;

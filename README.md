@@ -75,6 +75,11 @@ jobs:
           action: production.deploy
           environment: production
           artifact-digest: ${{ needs.build.outputs.digest }}   # canonical binding
+          # ISSUE the permit but do NOT verify/consume it here — the single-use
+          # permit is consumed at the execution boundary below. Without this the
+          # gate would consume the permit and the deploy-step verify would fail
+          # PERMIT_ALREADY_USED (replay_blocked).
+          mode: evaluate-only
 
   deploy:
     needs: [build, gate]
@@ -96,6 +101,12 @@ jobs:
         run: ./deploy.sh out/
 ```
 
+- **`mode: evaluate-only`** on the gate step ISSUES a permit without verifying or
+  consuming it, so the single-use permit survives for the boundary step to consume.
+  This step outputs `permit-token` (unconsumed) + `permit-issued: true` with
+  `verified: false` — gate the deploy on the **boundary** step's `verified`, never
+  on the gate step. (The default one-step gate consumes the permit in place; that
+  is still fully supported when you don't need a separate boundary step.)
 - **`artifact-digest`** is sent to evaluate as the canonical top-level
   `execution_payload_hash` (never buried in context) and the runtime binds it into
   the permit. Presenting a different digest at verify → `PAYLOAD_MISMATCH`.

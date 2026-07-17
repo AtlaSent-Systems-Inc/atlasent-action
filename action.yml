@@ -24,6 +24,13 @@ inputs:
   permit-token:
     description: 'The permit token to re-verify (required in verify-permit mode). Typically the permit-token output of an earlier gate step, passed to the deploy step.'
     required: false
+  mode:
+    description: |
+      Single-eval execution model (ignored on batch / policy-sync / verify-permit / release / vqp / governance paths).
+        - "enforce" (default): evaluate → verify → CONSUME the single-use permit in THIS step, then output verified=true. Best for a one-step gate.
+        - "evaluate-only": ISSUE a permit but do NOT verify or consume it. For the two-step EXECUTION-BOUNDARY pattern: this step issues the permit (outputs decision + permit-token UNCONSUMED + permit-issued=true, verified=false); a later `verify-permit: true` step re-verifies and consumes it at the deploy step (the real cryptographic boundary). You MUST gate the protected step on that later step's `verified == 'true'` — never on this step's decision.
+    required: false
+    default: 'enforce'
   environment:
     description: 'Environment (defaults to live for main branch, test otherwise)'
     required: false
@@ -286,7 +293,7 @@ outputs:
   decision:
     description: 'The evaluation decision (allow/deny/hold/escalate). Set for single-eval path only.'
   permit-token:
-    description: 'The permit token consumed by the gate (audit reference; single-use, already consumed by v1-verify-permit). Single-eval path only.'
+    description: 'The permit token. On the default (enforce) path it is already consumed by v1-verify-permit (audit reference only). In evaluate-only mode it is UNCONSUMED — pass it to a later verify-permit step to re-verify and consume it at the execution boundary. Single-eval path only.'
   evaluation-id:
     description: 'The evaluation ID for audit trail. Single-eval path only.'
   proof-hash:
@@ -295,6 +302,8 @@ outputs:
     description: 'The numeric risk score from the Decision response. Empty string when the evaluator did not return a risk assessment. Single-eval path only.'
   verified:
     description: '"true" when evaluate=allow AND verify-permit=true for ALL evaluations; "false" otherwise (fail-closed). Set on both single and batch paths, and in verify-permit (boundary) mode.'
+  permit-issued:
+    description: '"true" when a permit was minted on the single-eval path. In evaluate-only mode this is "true" while verified is "false" (issued but not consumed — re-verify at the execution boundary). "false" on non-allow or when no permit was minted. Do NOT gate a deploy on this — gate on verified.'
   verify-outcome:
     description: 'Coarse verification outcome from the last permit verification (verified / mismatch / expired / revoked / replay_blocked / invalid). Set on the single-eval and verify-permit (boundary) paths. Empty when verification did not run.'
   verify-error-code:

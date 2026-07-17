@@ -80,7 +80,7 @@ var require_dist = __commonJS({
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.EnforceError = void 0;
-    exports2.evaluate = evaluate;
+    exports2.evaluate = evaluate2;
     exports2.verify = verify;
     exports2.verifyPermit = verifyPermit3;
     exports2.reverifyPermit = reverifyPermit2;
@@ -106,7 +106,7 @@ var require_dist = __commonJS({
       }
     };
     exports2.EnforceError = EnforceError2;
-    async function evaluate(config) {
+    async function evaluate2(config) {
       const apiUrl = (config.apiUrl ?? DEFAULT_API_URL).replace(/\/$/, "");
       const rawContext = { ...config.context };
       const contextSnapshot = rawContext["state_snapshot"];
@@ -245,7 +245,7 @@ var require_dist = __commonJS({
       return r;
     }
     async function enforce2(config, fn) {
-      const decision = await evaluate(config);
+      const decision = await evaluate2(config);
       verify(decision);
       const vp = await verifyPermit3(config, decision);
       const result = await fn();
@@ -2511,6 +2511,7 @@ async function run() {
     });
   }
   const artifactDigest = getInput("artifact-digest") || void 0;
+  const evaluateOnly = (getInput("mode") || "enforce").trim().toLowerCase() === "evaluate-only";
   const config = {
     apiKey,
     apiUrl,
@@ -2549,8 +2550,13 @@ async function run() {
   };
   let enforceResult;
   try {
-    enforceResult = await (0, import_enforce3.enforce)(config, async () => {
-    });
+    if (evaluateOnly) {
+      const decision = await (0, import_enforce3.evaluate)(config);
+      enforceResult = { result: void 0, decision, verifyOutcome: void 0 };
+    } else {
+      enforceResult = await (0, import_enforce3.enforce)(config, async () => {
+      });
+    }
   } catch (err) {
     if (err instanceof import_enforce3.EnforceError) {
       if (err.decision) {
@@ -2566,6 +2572,7 @@ async function run() {
         setOutput("audit-hash", "");
       }
       setOutput("verified", "false");
+      setOutput("permit-issued", "false");
       setOutput("verify-outcome", err.outcome ?? "");
       setOutput("verify-error-code", err.verifyErrorCode ?? "");
       setOutput("evidence-receipt", JSON.stringify(null));
@@ -2695,6 +2702,7 @@ async function run() {
     setOutput("snapshot", JSON.stringify(null));
     setOutput("audit-hash", "");
     setOutput("verified", "false");
+    setOutput("permit-issued", "false");
     setOutput("evidence-receipt", JSON.stringify(null));
     setOutput("evidence-bundle", JSON.stringify(null));
     await postCommitStatus({
@@ -2722,8 +2730,68 @@ async function run() {
     return;
   }
   const { decision: d, verifyOutcome } = enforceResult;
+  if (evaluateOnly) {
+    setDecisionOutputs(d);
+    setOutput("verified", "false");
+    setOutput("permit-issued", d.permitToken ? "true" : "false");
+    setOutput("verify-outcome", "");
+    setOutput("verify-error-code", "");
+    if (!d.permitToken) {
+      await postCommitStatus({
+        repository: gh.repository,
+        sha: gh.sha,
+        state: "error",
+        description: `AtlaSent: allow without permit (evaluate-only) \u2014 ${actionType}`.slice(0, 140),
+        targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`
+      });
+      setFailed(
+        "AtlaSent Gate (evaluate-only): evaluate returned allow but no permit_token was issued \u2014 there is nothing to re-verify at the execution boundary. Deploy blocked (fail-closed)."
+      );
+      return;
+    }
+    warning(
+      "AtlaSent Gate: evaluate-only mode \u2014 a permit was ISSUED but NOT verified or consumed. The single-use permit is consumed at the EXECUTION BOUNDARY. Add a second AtlaSent step with `verify-permit: true`, this step's `permit-token` output, and the SAME `artifact-digest`, then gate the protected step on THAT step's `verified == 'true'`. Do NOT gate the deploy on this step's `decision` or `permit-issued` \u2014 neither proves the artifact/environment were re-bound at the boundary."
+    );
+    await postCommitStatus({
+      repository: gh.repository,
+      sha: gh.sha,
+      state: "pending",
+      description: `AtlaSent: permit issued (evaluate-only) \u2014 re-verify at boundary (${actionType})`.slice(0, 140),
+      targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`
+    });
+    appendToStepSummary(
+      [
+        "",
+        "---",
+        "## \u{1F7E6} AtlaSent Deploy Gate \u2014 PERMIT ISSUED (evaluate-only)",
+        "",
+        `A permit was **issued** for \`${actionType}\` by **github:${actor}** in **${environment}**, but has **not** been verified or consumed. It must be re-verified at the execution boundary before the protected step runs.`,
+        "",
+        `| Field | Value |`,
+        `|---|---|`,
+        `| Decision | \`${d.decision}\` |`,
+        "| Verified | `false` \u2014 re-verify at the boundary |",
+        "| Permit | issued (single-use, unconsumed) |",
+        `| Action | \`${actionType}\` |`,
+        `| Actor | \`github:${actor}\` |`,
+        `| Environment | \`${environment}\` |`,
+        ...targetId ? [`| Target | \`${targetId}\` |`] : [],
+        ...d.evaluationId ? [`| Evaluation ID | \`${d.evaluationId}\` |`] : [],
+        "",
+        "> **Next step:** add an AtlaSent step with `verify-permit: true`, `permit-token: ${{ steps.<this-step>.outputs.permit-token }}`, and the same `artifact-digest`, then gate the deploy on that step's `verified == 'true'`.",
+        `[View workflow run](${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id})`,
+        ""
+      ].join("\n")
+    );
+    info(
+      `Authorization EVALUATED (permit issued, NOT yet verified). Re-verify at the execution boundary (verify-permit: true). Evaluation: ${d.evaluationId ?? ""}`
+    );
+    emitFinancialGovernanceAdvisory(actionType, actor, orgId);
+    return;
+  }
   setDecisionOutputs(d);
   setOutput("verified", "true");
+  setOutput("permit-issued", "true");
   setOutput("verify-outcome", verifyOutcome ?? "verified");
   setOutput("verify-error-code", "");
   await postCommitStatus({

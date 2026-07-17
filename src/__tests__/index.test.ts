@@ -13,16 +13,18 @@ vi.mock("@atlasent/enforce", async (importOriginal) => {
   return {
     ...original,
     enforce: vi.fn(),
+    evaluate: vi.fn(),
   };
 });
 
-import { enforce, EnforceError } from "@atlasent/enforce";
+import { enforce, evaluate, EnforceError } from "@atlasent/enforce";
 import type { Decision } from "@atlasent/enforce";
 
 // Import run() after mocking to ensure the mock is in place.
 import { run } from "../index";
 
 const mockEnforce = enforce as unknown as ReturnType<typeof vi.fn>;
+const mockEvaluate = evaluate as unknown as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -101,6 +103,7 @@ beforeEach(() => {
   consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {}) as unknown as typeof consoleSpy;
 
   mockEnforce.mockReset();
+  mockEvaluate.mockReset();
 });
 
 afterEach(() => {
@@ -356,5 +359,99 @@ describe("deprecated ::set-output command", () => {
     const allLogs = getConsoleLogs();
     const deprecated = allLogs.filter((l) => l.includes("::set-output"));
     expect(deprecated).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. evaluate-only (issue-permit) mode — B3 two-step execution boundary
+// ---------------------------------------------------------------------------
+
+describe("evaluate-only (issue-permit) mode", () => {
+  it("issues a permit WITHOUT verifying/consuming: verified=false, permit-issued=true, enforce() not called", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("mode", "evaluate-only");
+
+    mockEvaluate.mockResolvedValueOnce(
+      makeDecision({ permitToken: "pt-unconsumed", evaluationId: "ev-eo" }),
+    );
+
+    await run();
+
+    expect(getExitCalls()).toHaveLength(0);
+    // The gate must NOT verify/consume the permit in evaluate-only mode.
+    expect(mockEnforce).not.toHaveBeenCalled();
+    expect(mockEvaluate).toHaveBeenCalledTimes(1);
+
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("allow");
+    expect(outputs["verified"]).toBe("false"); // honest: not verified yet
+    expect(outputs["permit-issued"]).toBe("true");
+    expect(outputs["permit-token"]).toBe("pt-unconsumed");
+    expect(outputs["evaluation-id"]).toBe("ev-eo");
+  });
+
+  it("warns the caller to re-verify at the execution boundary", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("mode", "evaluate-only");
+
+    mockEvaluate.mockResolvedValueOnce(makeDecision({ permitToken: "pt-x" }));
+
+    await run();
+
+    const logs = getConsoleLogs();
+    expect(
+      logs.some((l) => l.includes("::warning::") && l.includes("verify-permit")),
+    ).toBe(true);
+  });
+
+  it("fails closed when evaluate returns allow but no permit_token", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("mode", "evaluate-only");
+
+    mockEvaluate.mockResolvedValueOnce(makeDecision({ permitToken: undefined }));
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    expect(getExitCalls()).toContain(1);
+
+    const outputs = readOutputs(outputFile);
+    expect(outputs["verified"]).toBe("false");
+    expect(outputs["permit-issued"]).toBe("false");
+  });
+
+  it("fails closed on deny (evaluate throws EnforceError phase=evaluate)", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("mode", "evaluate-only");
+
+    const denyDecision = makeDecision({ decision: "deny", denyReason: "policy violation" });
+    mockEvaluate.mockRejectedValueOnce(
+      new EnforceError("Denied: policy violation", "evaluate", denyDecision),
+    );
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    expect(getExitCalls()).toContain(1);
+
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("deny");
+    expect(outputs["verified"]).toBe("false");
+  });
+
+  it("default mode (enforce) still verifies via enforce() and outputs verified=true", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    // no mode input → defaults to enforce
+
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    expect(mockEnforce).toHaveBeenCalledTimes(1);
+    expect(mockEvaluate).not.toHaveBeenCalled();
+    const outputs = readOutputs(outputFile);
+    expect(outputs["verified"]).toBe("true");
+    expect(outputs["permit-issued"]).toBe("true");
   });
 });

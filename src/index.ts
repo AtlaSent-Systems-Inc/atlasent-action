@@ -14,7 +14,7 @@
 // masking secrets, and translating EnforceResult / EnforceError into step
 // outputs and exit codes.
 
-import { enforce, reverifyPermit, EnforceError } from "@atlasent/enforce";
+import { enforce, evaluate, reverifyPermit, EnforceError } from "@atlasent/enforce";
 import type { Decision, EnforceConfig } from "@atlasent/enforce";
 import { GateInfraError } from "./gate";
 import { runV21 } from "./v21";
@@ -1248,6 +1248,16 @@ export async function run(): Promise<void> {
 
   const artifactDigest = getInput("artifact-digest") || undefined;
 
+  // evaluate-only (issue-permit) mode: ISSUE a permit without verifying or
+  // consuming it, so a workflow can express the two-step EXECUTION-BOUNDARY
+  // pattern entirely with atlasent-action — this step issues the permit, and a
+  // later `verify-permit: true` step re-verifies + consumes it at the deploy
+  // step (the real cryptographic boundary). The default `enforce` model
+  // evaluate→verify→consumes the single-use permit in this step, so a second
+  // boundary verify on the same permit would fail `replay_blocked`.
+  const evaluateOnly =
+    (getInput("mode") || "enforce").trim().toLowerCase() === "evaluate-only";
+
   const config: EnforceConfig = {
     apiKey,
     apiUrl,
@@ -1289,7 +1299,15 @@ export async function run(): Promise<void> {
 
   let enforceResult: Awaited<ReturnType<typeof enforce>>;
   try {
-    enforceResult = await enforce(config, async () => {});
+    if (evaluateOnly) {
+      // Issue the permit only — do NOT verify/consume it here. evaluate()
+      // throws EnforceError (phase "evaluate") on any non-allow, so the
+      // fail-closed handler below is shared with the enforce path.
+      const decision = await evaluate(config);
+      enforceResult = { result: undefined, decision, verifyOutcome: undefined };
+    } else {
+      enforceResult = await enforce(config, async () => {});
+    }
   } catch (err) {
     if (err instanceof EnforceError) {
       if (err.decision) {
@@ -1305,6 +1323,7 @@ export async function run(): Promise<void> {
         setOutput("audit-hash", "");
       }
       setOutput("verified", "false");
+      setOutput("permit-issued", "false");
       setOutput("verify-outcome", err.outcome ?? "");
       setOutput("verify-error-code", err.verifyErrorCode ?? "");
       setOutput("evidence-receipt", JSON.stringify(null));
@@ -1469,6 +1488,7 @@ export async function run(): Promise<void> {
     setOutput("snapshot", JSON.stringify(null));
     setOutput("audit-hash", "");
     setOutput("verified", "false");
+    setOutput("permit-issued", "false");
     setOutput("evidence-receipt", JSON.stringify(null));
     setOutput("evidence-bundle", JSON.stringify(null));
 
@@ -1504,8 +1524,92 @@ export async function run(): Promise<void> {
   }
 
   const { decision: d, verifyOutcome } = enforceResult;
+
+  // ── evaluate-only (issue-permit) success ──────────────────────────────────
+  // A permit was ISSUED but deliberately NOT verified/consumed. `verified` is
+  // honestly `false` — the caller MUST re-verify at the execution boundary
+  // (a `verify-permit: true` step) and gate the protected step on THAT step.
+  if (evaluateOnly) {
+    setDecisionOutputs(d);
+    setOutput("verified", "false");
+    setOutput("permit-issued", d.permitToken ? "true" : "false");
+    setOutput("verify-outcome", "");
+    setOutput("verify-error-code", "");
+
+    if (!d.permitToken) {
+      // allow with no permit — nothing to re-verify at the boundary. Same
+      // fail-closed invariant as verifyPermit(): refuse rather than proceed.
+      await postCommitStatus({
+        repository: gh.repository,
+        sha: gh.sha,
+        state: "error",
+        description: `AtlaSent: allow without permit (evaluate-only) — ${actionType}`.slice(0, 140),
+        targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+      });
+      setFailed(
+        "AtlaSent Gate (evaluate-only): evaluate returned allow but no permit_token was issued — " +
+          "there is nothing to re-verify at the execution boundary. Deploy blocked (fail-closed).",
+      );
+      return;
+    }
+
+    warning(
+      "AtlaSent Gate: evaluate-only mode — a permit was ISSUED but NOT verified or consumed. " +
+        "The single-use permit is consumed at the EXECUTION BOUNDARY. Add a second AtlaSent step with " +
+        "`verify-permit: true`, this step's `permit-token` output, and the SAME `artifact-digest`, then " +
+        "gate the protected step on THAT step's `verified == 'true'`. Do NOT gate the deploy on this " +
+        "step's `decision` or `permit-issued` — neither proves the artifact/environment were re-bound at the boundary.",
+    );
+
+    await postCommitStatus({
+      repository: gh.repository,
+      sha: gh.sha,
+      state: "pending",
+      description: `AtlaSent: permit issued (evaluate-only) — re-verify at boundary (${actionType})`.slice(0, 140),
+      targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+    });
+
+    appendToStepSummary(
+      [
+        "",
+        "---",
+        "## 🟦 AtlaSent Deploy Gate — PERMIT ISSUED (evaluate-only)",
+        "",
+        `A permit was **issued** for \`${actionType}\` by **github:${actor}** in **${environment}**, ` +
+          "but has **not** been verified or consumed. It must be re-verified at the execution boundary " +
+          "before the protected step runs.",
+        "",
+        `| Field | Value |`,
+        `|---|---|`,
+        `| Decision | \`${d.decision}\` |`,
+        "| Verified | `false` — re-verify at the boundary |",
+        "| Permit | issued (single-use, unconsumed) |",
+        `| Action | \`${actionType}\` |`,
+        `| Actor | \`github:${actor}\` |`,
+        `| Environment | \`${environment}\` |`,
+        ...(targetId ? [`| Target | \`${targetId}\` |`] : []),
+        ...(d.evaluationId ? [`| Evaluation ID | \`${d.evaluationId}\` |`] : []),
+        "",
+        "> **Next step:** add an AtlaSent step with `verify-permit: true`, " +
+          "`permit-token: ${{ steps.<this-step>.outputs.permit-token }}`, and the same `artifact-digest`, " +
+          "then gate the deploy on that step's `verified == 'true'`.",
+        `[View workflow run](${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id})`,
+        "",
+      ].join("\n"),
+    );
+
+    info(
+      "Authorization EVALUATED (permit issued, NOT yet verified). " +
+        `Re-verify at the execution boundary (verify-permit: true). Evaluation: ${d.evaluationId ?? ""}`,
+    );
+
+    emitFinancialGovernanceAdvisory(actionType, actor, orgId);
+    return;
+  }
+
   setDecisionOutputs(d);
   setOutput("verified", "true");
+  setOutput("permit-issued", "true");
   setOutput("verify-outcome", verifyOutcome ?? "verified");
   setOutput("verify-error-code", "");
 

@@ -65,7 +65,7 @@ Required secrets (set in repository or org secrets):
 | `ATLASENT_API_KEY` | API key scoped to at least `evaluate:write` + `verify:execute` |
 | `ATLASENT_BASE_URL` | Supabase project URL, e.g. `https://<ref>.supabase.co/functions/v1` |
 
-Key action inputs (see `action.yml` for the full list of 53 inputs / 39 outputs):
+Key action inputs (see `action.yml` for the full list of 57 inputs / 42 outputs):
 
 | Input | Default | Description |
 |---|---|---|

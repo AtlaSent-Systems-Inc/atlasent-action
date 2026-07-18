@@ -13,7 +13,7 @@
 //   • 404 from /v1-evaluate/batch → automatic fallback to per-item loop
 //     (v2_batch tenant flag is off; closed-by-default behavior).
 
-import { verifyPermit } from "@atlasent/enforce";
+import { verifyPermit, requiredBindingsFor } from "@atlasent/enforce";
 import type { EvaluateRequest } from "./types";
 import type { Decision } from "./types";
 
@@ -90,7 +90,24 @@ export async function evaluateMany(
         return { ...d, verified: d.decision === "allow" ? false : undefined };
       }
       const item = items[i];
-      const enforceConfig = { apiKey, apiUrl, action: item.action, actor: item.actor };
+      // Re-bind the SAME environment / target / artifact digest this item was
+      // evaluated with, and REQUIRE each at verify (fail-closed). Previously the
+      // batch verify sent only {action,actor} — an unbound verify that a cross-item,
+      // wrong-environment, or artifact-substituted permit could still satisfy.
+      const enforceConfig = {
+        apiKey,
+        apiUrl,
+        action: item.action,
+        actor: item.actor,
+        environment: item.environment,
+        targetId: item.target_id,
+        executionPayloadHash: item.execution_payload_hash,
+        requiredBindings: requiredBindingsFor({
+          environment: item.environment,
+          targetId: item.target_id,
+          executionPayloadHash: item.execution_payload_hash,
+        }),
+      };
       const enforceDecision = { decision: "allow" as const, permitToken: d.permitToken };
       const result = await verifyPermit(enforceConfig, enforceDecision);
       return { ...d, verified: result.verified, verifyOutcome: result.outcome };

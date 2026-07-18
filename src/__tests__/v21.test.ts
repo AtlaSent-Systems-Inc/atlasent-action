@@ -5,7 +5,10 @@ import { runV21 } from "../v21";
 // parseInputs + evaluateMany + (optional) waitForTerminalDecision.
 
 vi.mock("../batch", () => ({ evaluateMany: vi.fn() }));
-vi.mock("@atlasent/enforce", () => ({ verifyPermit: vi.fn() }));
+vi.mock("@atlasent/enforce", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@atlasent/enforce")>();
+  return { ...actual, verifyPermit: vi.fn() };
+});
 vi.mock("../stream", () => ({ waitForTerminalDecision: vi.fn() }));
 vi.mock("../evidenceClient", () => ({ emitEvidenceEvent: vi.fn(async () => {}) }));
 

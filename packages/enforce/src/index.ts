@@ -54,6 +54,14 @@ export interface EnforceConfig {
    * and executing a different one.
    */
   executionPayloadHash?: string;
+  /**
+   * Wire bindings that MUST appear on the verify-permit body, or verification is
+   * refused BEFORE the network round-trip (fail-closed). Guarantees the execution
+   * boundary re-presents what the permit was issued for — an unbound verify that a
+   * cross-item / wrong-environment / substituted permit could satisfy is refused,
+   * not sent. Values are the wire keys: "environment" | "target_id" | "payload_hash".
+   */
+  requiredBindings?: Array<"environment" | "target_id" | "payload_hash">;
 }
 
 export interface Decision {
@@ -61,6 +69,13 @@ export interface Decision {
   evaluationId?: string;
   permitToken?: string;
   proofHash?: string;
+  /**
+   * The artifact digest the RUNTIME bound into the permit at evaluate time
+   * (`execution_hash_expected`, echoed on the evaluate response). When present it
+   * is re-presented at verify as `payload_hash` in preference to any caller-supplied
+   * digest — so verify checks the ORIGINAL evaluated artifact, not a re-supplied one.
+   */
+  executionHashExpected?: string;
   riskScore?: number;
   denyReason?: string;
   /** Machine deny code (e.g. INSUFFICIENT_APPROVALS), present on deny. */
@@ -265,7 +280,27 @@ async function postVerify(
   };
   if (config.environment != null) bodyObj["environment"] = config.environment;
   if (config.targetId != null) bodyObj["target_id"] = config.targetId;
-  if (config.executionPayloadHash != null) bodyObj["payload_hash"] = config.executionPayloadHash;
+  // Prefer the runtime-bound original evaluated digest (execution_hash_expected,
+  // echoed on the decision) over a caller-supplied one, so verify re-presents the
+  // artifact the permit was actually issued for — not one re-supplied at verify time.
+  const payloadHash = decision?.executionHashExpected ?? config.executionPayloadHash;
+  if (payloadHash != null) bodyObj["payload_hash"] = payloadHash;
+
+  // Fail closed: if the caller declared bindings as required, refuse to verify —
+  // BEFORE the network round-trip — when any is absent or empty. A permit gate that
+  // silently drops its environment / target / artifact binding is the exact
+  // substitution hole this closes. verify-error-code MISSING_BINDING.
+  const missing = (config.requiredBindings ?? []).filter(
+    (b) => bodyObj[b] == null || bodyObj[b] === "",
+  );
+  if (missing.length > 0) {
+    throw new EnforceError(
+      `verify-permit refused: required binding(s) absent: ${missing.join(", ")}`,
+      "verify-permit",
+      decision,
+      { outcome: "invalid", verifyErrorCode: "MISSING_BINDING" },
+    );
+  }
 
   let status: number;
   let body: string;
@@ -303,6 +338,25 @@ async function postVerify(
     verifyErrorCode: raw.verify_error_code,
     mismatchFields: Array.isArray(raw.mismatch_fields) ? raw.mismatch_fields : undefined,
   };
+}
+
+/**
+ * Derive the `requiredBindings` set from the bindings actually provided for a
+ * decision/item — "re-present at verify exactly what was bound at evaluate."
+ * A binding that is present at evaluate but absent at verify then fails closed
+ * (MISSING_BINDING) instead of silently dropping off the wire. Empty strings do
+ * not count as present.
+ */
+export function requiredBindingsFor(b: {
+  environment?: string;
+  targetId?: string;
+  executionPayloadHash?: string;
+}): Array<"environment" | "target_id" | "payload_hash"> {
+  const r: Array<"environment" | "target_id" | "payload_hash"> = [];
+  if (b.environment != null && b.environment !== "") r.push("environment");
+  if (b.targetId != null && b.targetId !== "") r.push("target_id");
+  if (b.executionPayloadHash != null && b.executionPayloadHash !== "") r.push("payload_hash");
+  return r;
 }
 
 export async function verifyPermit(
@@ -389,6 +443,9 @@ function mapDecision(raw: Record<string, unknown>): Decision {
     evaluationId: raw["evaluation_id"] as string | undefined,
     permitToken: raw["permit_token"] as string | undefined,
     proofHash: raw["proof_hash"] as string | undefined,
+    executionHashExpected: (raw["execution_hash_expected"] ?? raw["payload_hash"]) as
+      | string
+      | undefined,
     riskScore: extractRiskScore(raw),
     denyReason: raw["deny_reason"] as string | undefined,
     denyCode: raw["deny_code"] as string | undefined,

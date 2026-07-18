@@ -16,7 +16,7 @@
 //      verified decision. Best-effort, never blocks the action.
 //   5. Job summary is rendered per evaluation.
 
-import { verifyPermit } from "@atlasent/enforce";
+import { verifyPermit, requiredBindingsFor } from "@atlasent/enforce";
 import { evaluateMany } from "./batch";
 import { parseInputs } from "./inputs";
 import { waitForTerminalDecision } from "./stream";
@@ -121,7 +121,23 @@ export async function runV21(
         const item = items[idx];
         const vr = terminal.permitToken
           ? await verifyPermit(
-              { apiKey: inputs.apiKey, apiUrl: inputs.apiUrl, action: item.action, actor: item.actor },
+              {
+                apiKey: inputs.apiKey,
+                apiUrl: inputs.apiUrl,
+                action: item.action,
+                actor: item.actor,
+                // Bind + require the same environment / target / digest the item was
+                // evaluated with. A terminal allow (hold→allow) is verified under the
+                // SAME bindings as the direct-allow path — not an unbound verify.
+                environment: item.environment,
+                targetId: item.target_id,
+                executionPayloadHash: item.execution_payload_hash,
+                requiredBindings: requiredBindingsFor({
+                  environment: item.environment,
+                  targetId: item.target_id,
+                  executionPayloadHash: item.execution_payload_hash,
+                }),
+              },
               { decision: "allow" as const, permitToken: terminal.permitToken },
             )
           : { verified: false as const, outcome: undefined };

@@ -6,6 +6,14 @@ export interface EvaluateRequest {
   action: string;
   actor: string;
   environment?: string;
+  /** Target resource id — bound at evaluate and re-presented at verify (wire: `target_id`). */
+  target_id?: string;
+  /**
+   * SHA-256 artifact digest — bound into the permit at evaluate (`execution_hash_expected`)
+   * and re-presented at verify as `payload_hash`. A per-item permit issued for one artifact
+   * then presented for another fails `PAYLOAD_MISMATCH`. Passed through to the evaluate wire.
+   */
+  execution_payload_hash?: string;
   context?: Record<string, unknown>;
 }
 

@@ -3,7 +3,10 @@ import { evaluateMany, BATCH_MAX_ITEMS, BATCH_MIN_ITEMS } from "../batch";
 
 // Mock @atlasent/enforce so verifyPermit uses a test double rather than the
 // real HTTP transport. fetch is still needed for the evaluate calls.
-vi.mock("@atlasent/enforce", () => ({ verifyPermit: vi.fn() }));
+vi.mock("@atlasent/enforce", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@atlasent/enforce")>();
+  return { ...actual, verifyPermit: vi.fn() };
+});
 
 import { verifyPermit } from "@atlasent/enforce";
 const mockVerifyPermit = verifyPermit as ReturnType<typeof vi.fn>;
@@ -171,6 +174,59 @@ describe("evaluateMany", () => {
         permitToken: "tok-xyz",
       }),
     );
+  });
+
+  it("binds each item's OWN environment/target/digest at verify (cross-item isolation)", async () => {
+    const items = [
+      { action: "production.deploy", actor: "alice", environment: "production", target_id: "svc:api", execution_payload_hash: "sha256:A" },
+      { action: "production.deploy", actor: "bob", environment: "staging", target_id: "svc:worker", execution_payload_hash: "sha256:B" },
+    ];
+    fetchMock
+      .mockResolvedValueOnce(evalResp("allow", "tokA"))
+      .mockResolvedValueOnce(evalResp("allow", "tokB"));
+    mockVerifyPermit.mockResolvedValue({ verified: true, outcome: "ok" });
+
+    await evaluateMany("https://api.test", "k", items, false);
+
+    // Item 0's permit is verified under item 0's OWN bindings + requires them.
+    expect(mockVerifyPermit).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        action: "production.deploy",
+        actor: "alice",
+        environment: "production",
+        targetId: "svc:api",
+        executionPayloadHash: "sha256:A",
+        requiredBindings: ["environment", "target_id", "payload_hash"],
+      }),
+      expect.objectContaining({ permitToken: "tokA" }),
+    );
+    // Item 1 is verified under item 1's OWN bindings — NOT item 0's (no cross-item bleed).
+    expect(mockVerifyPermit).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        action: "production.deploy",
+        actor: "bob",
+        environment: "staging",
+        targetId: "svc:worker",
+        executionPayloadHash: "sha256:B",
+        requiredBindings: ["environment", "target_id", "payload_hash"],
+      }),
+      expect.objectContaining({ permitToken: "tokB" }),
+    );
+  });
+
+  it("fails closed when an item's permit fails verification (substitution / mismatch)", async () => {
+    const items = [
+      { action: "production.deploy", actor: "alice", environment: "production", target_id: "svc:api", execution_payload_hash: "sha256:A" },
+    ];
+    fetchMock.mockResolvedValueOnce(evalResp("allow", "tokA"));
+    mockVerifyPermit.mockRejectedValueOnce(
+      new Error("Permit verification failed (outcome=mismatch, code=PAYLOAD_MISMATCH)"),
+    );
+    await expect(
+      evaluateMany("https://api.test", "k", items, false),
+    ).rejects.toThrow(/PAYLOAD_MISMATCH/);
   });
 
   // ── Wave B hardening: items<2 short-circuit ────────────────────────────────

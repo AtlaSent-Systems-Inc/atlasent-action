@@ -14,7 +14,7 @@
 // masking secrets, and translating EnforceResult / EnforceError into step
 // outputs and exit codes.
 
-import { enforce, evaluate, reverifyPermit, EnforceError } from "@atlasent/enforce";
+import { enforce, evaluate, reverifyPermit, requiredBindingsFor, EnforceError } from "@atlasent/enforce";
 import type { Decision, EnforceConfig } from "@atlasent/enforce";
 import { GateInfraError } from "./gate";
 import { runV21 } from "./v21";
@@ -575,6 +575,13 @@ async function runVerifyPermitStep(apiKey: string, apiUrl: string): Promise<void
     environment,
     targetId,
     executionPayloadHash: artifactDigest,
+    // Boundary re-verify must re-present every binding it was given, or fail
+    // closed (MISSING_BINDING) — never a silently-unbound boundary verify.
+    requiredBindings: requiredBindingsFor({
+      environment,
+      targetId,
+      executionPayloadHash: artifactDigest,
+    }),
   };
 
   info(
@@ -602,6 +609,9 @@ async function runVerifyPermitStep(apiKey: string, apiUrl: string): Promise<void
         `Deploy blocked at execution boundary (outcome=${err.outcome ?? "unknown"}` +
           `${err.verifyErrorCode ? `, code=${err.verifyErrorCode}` : ""}): ${err.message}`,
       );
+      // Fail closed, but do NOT fall through — that clobbered the precise
+      // verify-outcome / verify-error-code with a generic "invalid".
+      return;
     }
     setOutput("verify-outcome", "invalid");
     setOutput("verify-error-code", "");
@@ -1268,6 +1278,13 @@ export async function run(): Promise<void> {
     // Canonical artifact binding — the runtime binds this into the permit and
     // re-checks it at verify time (artifact-substitution defense).
     executionPayloadHash: artifactDigest,
+    // Re-present every binding provided here at verify, or fail closed
+    // (MISSING_BINDING) rather than silently drop it.
+    requiredBindings: requiredBindingsFor({
+      environment,
+      targetId,
+      executionPayloadHash: artifactDigest,
+    }),
     // state_snapshot is required for all action classes (requires_state_snapshot=true).
     // Auto-populate from GitHub Actions context; callers can override via the context input.
     state_snapshot: {

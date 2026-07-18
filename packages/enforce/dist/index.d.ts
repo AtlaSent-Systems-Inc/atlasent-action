@@ -44,12 +44,27 @@ export interface EnforceConfig {
      * and executing a different one.
      */
     executionPayloadHash?: string;
+    /**
+     * Wire bindings that MUST appear on the verify-permit body, or verification is
+     * refused BEFORE the network round-trip (fail-closed). Guarantees the execution
+     * boundary re-presents what the permit was issued for — an unbound verify that a
+     * cross-item / wrong-environment / substituted permit could satisfy is refused,
+     * not sent. Values are the wire keys: "environment" | "target_id" | "payload_hash".
+     */
+    requiredBindings?: Array<"environment" | "target_id" | "payload_hash">;
 }
 export interface Decision {
     decision: "allow" | "deny" | "hold" | "escalate";
     evaluationId?: string;
     permitToken?: string;
     proofHash?: string;
+    /**
+     * The artifact digest the RUNTIME bound into the permit at evaluate time
+     * (`execution_hash_expected`, echoed on the evaluate response). When present it
+     * is re-presented at verify as `payload_hash` in preference to any caller-supplied
+     * digest — so verify checks the ORIGINAL evaluated artifact, not a re-supplied one.
+     */
+    executionHashExpected?: string;
     riskScore?: number;
     denyReason?: string;
     /** Machine deny code (e.g. INSUFFICIENT_APPROVALS), present on deny. */
@@ -109,6 +124,18 @@ export declare class EnforceError extends Error {
 }
 export declare function evaluate(config: EnforceConfig): Promise<Decision>;
 export declare function verify(decision: Decision): void;
+/**
+ * Derive the `requiredBindings` set from the bindings actually provided for a
+ * decision/item — "re-present at verify exactly what was bound at evaluate."
+ * A binding that is present at evaluate but absent at verify then fails closed
+ * (MISSING_BINDING) instead of silently dropping off the wire. Empty strings do
+ * not count as present.
+ */
+export declare function requiredBindingsFor(b: {
+    environment?: string;
+    targetId?: string;
+    executionPayloadHash?: string;
+}): Array<"environment" | "target_id" | "payload_hash">;
 export declare function verifyPermit(config: EnforceConfig, decision: Decision): Promise<VerifyPermitResult>;
 export declare function reverifyPermit(config: EnforceConfig, permitToken: string): Promise<VerifyPermitResult>;
 export declare function enforce<T>(config: EnforceConfig, fn: () => Promise<T>): Promise<{

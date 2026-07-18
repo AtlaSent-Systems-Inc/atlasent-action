@@ -82,6 +82,7 @@ var require_dist = __commonJS({
     exports2.EnforceError = void 0;
     exports2.evaluate = evaluate2;
     exports2.verify = verify;
+    exports2.requiredBindingsFor = requiredBindingsFor4;
     exports2.verifyPermit = verifyPermit3;
     exports2.reverifyPermit = reverifyPermit2;
     exports2.enforce = enforce2;
@@ -193,8 +194,13 @@ var require_dist = __commonJS({
         bodyObj["environment"] = config.environment;
       if (config.targetId != null)
         bodyObj["target_id"] = config.targetId;
-      if (config.executionPayloadHash != null)
-        bodyObj["payload_hash"] = config.executionPayloadHash;
+      const payloadHash = decision?.executionHashExpected ?? config.executionPayloadHash;
+      if (payloadHash != null)
+        bodyObj["payload_hash"] = payloadHash;
+      const missing = (config.requiredBindings ?? []).filter((b) => bodyObj[b] == null || bodyObj[b] === "");
+      if (missing.length > 0) {
+        throw new EnforceError2(`verify-permit refused: required binding(s) absent: ${missing.join(", ")}`, "verify-permit", decision, { outcome: "invalid", verifyErrorCode: "MISSING_BINDING" });
+      }
       let status;
       let body;
       try {
@@ -223,6 +229,16 @@ var require_dist = __commonJS({
         verifyErrorCode: raw.verify_error_code,
         mismatchFields: Array.isArray(raw.mismatch_fields) ? raw.mismatch_fields : void 0
       };
+    }
+    function requiredBindingsFor4(b) {
+      const r = [];
+      if (b.environment != null && b.environment !== "")
+        r.push("environment");
+      if (b.targetId != null && b.targetId !== "")
+        r.push("target_id");
+      if (b.executionPayloadHash != null && b.executionPayloadHash !== "")
+        r.push("payload_hash");
+      return r;
     }
     async function verifyPermit3(config, decision) {
       if (!decision.permitToken) {
@@ -257,6 +273,7 @@ var require_dist = __commonJS({
         evaluationId: raw["evaluation_id"],
         permitToken: raw["permit_token"],
         proofHash: raw["proof_hash"],
+        executionHashExpected: raw["execution_hash_expected"] ?? raw["payload_hash"],
         riskScore: extractRiskScore(raw),
         denyReason: raw["deny_reason"],
         denyCode: raw["deny_code"],
@@ -342,7 +359,20 @@ async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
         return { ...d, verified: d.decision === "allow" ? false : void 0 };
       }
       const item = items[i];
-      const enforceConfig = { apiKey, apiUrl, action: item.action, actor: item.actor };
+      const enforceConfig = {
+        apiKey,
+        apiUrl,
+        action: item.action,
+        actor: item.actor,
+        environment: item.environment,
+        targetId: item.target_id,
+        executionPayloadHash: item.execution_payload_hash,
+        requiredBindings: (0, import_enforce.requiredBindingsFor)({
+          environment: item.environment,
+          targetId: item.target_id,
+          executionPayloadHash: item.execution_payload_hash
+        })
+      };
       const enforceDecision = { decision: "allow", permitToken: d.permitToken };
       const result = await (0, import_enforce.verifyPermit)(enforceConfig, enforceDecision);
       return { ...d, verified: result.verified, verifyOutcome: result.outcome };
@@ -696,7 +726,23 @@ async function runV21(env, flags) {
       if (terminal.decision === "allow") {
         const item = items[idx];
         const vr = terminal.permitToken ? await (0, import_enforce2.verifyPermit)(
-          { apiKey: inputs.apiKey, apiUrl: inputs.apiUrl, action: item.action, actor: item.actor },
+          {
+            apiKey: inputs.apiKey,
+            apiUrl: inputs.apiUrl,
+            action: item.action,
+            actor: item.actor,
+            // Bind + require the same environment / target / digest the item was
+            // evaluated with. A terminal allow (hold→allow) is verified under the
+            // SAME bindings as the direct-allow path — not an unbound verify.
+            environment: item.environment,
+            targetId: item.target_id,
+            executionPayloadHash: item.execution_payload_hash,
+            requiredBindings: (0, import_enforce2.requiredBindingsFor)({
+              environment: item.environment,
+              targetId: item.target_id,
+              executionPayloadHash: item.execution_payload_hash
+            })
+          },
           { decision: "allow", permitToken: terminal.permitToken }
         ) : { verified: false, outcome: void 0 };
         decisions[idx] = { ...terminal, verified: vr.verified, verifyOutcome: vr.outcome };
@@ -1987,7 +2033,14 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
     actor: `github:${actor}`,
     environment,
     targetId,
-    executionPayloadHash: artifactDigest
+    executionPayloadHash: artifactDigest,
+    // Boundary re-verify must re-present every binding it was given, or fail
+    // closed (MISSING_BINDING) — never a silently-unbound boundary verify.
+    requiredBindings: (0, import_enforce3.requiredBindingsFor)({
+      environment,
+      targetId,
+      executionPayloadHash: artifactDigest
+    })
   };
   info(
     `AtlaSent boundary re-verification: "${actionType}" for "github:${actor}" in ${environment}` + (artifactDigest ? ` (artifact=${artifactDigest})` : "")
@@ -2011,6 +2064,7 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
       setFailed(
         `Deploy blocked at execution boundary (outcome=${err.outcome ?? "unknown"}${err.verifyErrorCode ? `, code=${err.verifyErrorCode}` : ""}): ${err.message}`
       );
+      return;
     }
     setOutput("verify-outcome", "invalid");
     setOutput("verify-error-code", "");
@@ -2522,6 +2576,13 @@ async function run() {
     // Canonical artifact binding — the runtime binds this into the permit and
     // re-checks it at verify time (artifact-substitution defense).
     executionPayloadHash: artifactDigest,
+    // Re-present every binding provided here at verify, or fail closed
+    // (MISSING_BINDING) rather than silently drop it.
+    requiredBindings: (0, import_enforce3.requiredBindingsFor)({
+      environment,
+      targetId,
+      executionPayloadHash: artifactDigest
+    }),
     // state_snapshot is required for all action classes (requires_state_snapshot=true).
     // Auto-populate from GitHub Actions context; callers can override via the context input.
     state_snapshot: {

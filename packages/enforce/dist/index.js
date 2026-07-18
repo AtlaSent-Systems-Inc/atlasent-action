@@ -10,6 +10,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.EnforceError = void 0;
 exports.evaluate = evaluate;
 exports.verify = verify;
+exports.requiredBindingsFor = requiredBindingsFor;
 exports.verifyPermit = verifyPermit;
 exports.reverifyPermit = reverifyPermit;
 exports.enforce = enforce;
@@ -141,8 +142,20 @@ async function postVerify(config, permitToken, decision) {
         bodyObj["environment"] = config.environment;
     if (config.targetId != null)
         bodyObj["target_id"] = config.targetId;
-    if (config.executionPayloadHash != null)
-        bodyObj["payload_hash"] = config.executionPayloadHash;
+    // Prefer the runtime-bound original evaluated digest (execution_hash_expected,
+    // echoed on the decision) over a caller-supplied one, so verify re-presents the
+    // artifact the permit was actually issued for — not one re-supplied at verify time.
+    const payloadHash = decision?.executionHashExpected ?? config.executionPayloadHash;
+    if (payloadHash != null)
+        bodyObj["payload_hash"] = payloadHash;
+    // Fail closed: if the caller declared bindings as required, refuse to verify —
+    // BEFORE the network round-trip — when any is absent or empty. A permit gate that
+    // silently drops its environment / target / artifact binding is the exact
+    // substitution hole this closes. verify-error-code MISSING_BINDING.
+    const missing = (config.requiredBindings ?? []).filter((b) => bodyObj[b] == null || bodyObj[b] === "");
+    if (missing.length > 0) {
+        throw new EnforceError(`verify-permit refused: required binding(s) absent: ${missing.join(", ")}`, "verify-permit", decision, { outcome: "invalid", verifyErrorCode: "MISSING_BINDING" });
+    }
     let status;
     let body;
     try {
@@ -174,6 +187,23 @@ async function postVerify(config, permitToken, decision) {
         verifyErrorCode: raw.verify_error_code,
         mismatchFields: Array.isArray(raw.mismatch_fields) ? raw.mismatch_fields : undefined,
     };
+}
+/**
+ * Derive the `requiredBindings` set from the bindings actually provided for a
+ * decision/item — "re-present at verify exactly what was bound at evaluate."
+ * A binding that is present at evaluate but absent at verify then fails closed
+ * (MISSING_BINDING) instead of silently dropping off the wire. Empty strings do
+ * not count as present.
+ */
+function requiredBindingsFor(b) {
+    const r = [];
+    if (b.environment != null && b.environment !== "")
+        r.push("environment");
+    if (b.targetId != null && b.targetId !== "")
+        r.push("target_id");
+    if (b.executionPayloadHash != null && b.executionPayloadHash !== "")
+        r.push("payload_hash");
+    return r;
 }
 async function verifyPermit(config, decision) {
     if (!decision.permitToken) {
@@ -224,6 +254,7 @@ function mapDecision(raw) {
         evaluationId: raw["evaluation_id"],
         permitToken: raw["permit_token"],
         proofHash: raw["proof_hash"],
+        executionHashExpected: (raw["execution_hash_expected"] ?? raw["payload_hash"]),
         riskScore: extractRiskScore(raw),
         denyReason: raw["deny_reason"],
         denyCode: raw["deny_code"],

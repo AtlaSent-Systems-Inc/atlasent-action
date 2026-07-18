@@ -18,6 +18,7 @@
 
 import { verifyPermit } from "@atlasent/enforce";
 import { evaluateMany } from "./batch";
+import { buildVerifyConfig } from "./verifyBinding";
 import { parseInputs } from "./inputs";
 import { waitForTerminalDecision } from "./stream";
 import type { Decision, EvaluateRequest } from "./types";
@@ -119,9 +120,12 @@ export async function runV21(
         // Terminal allow must be verified — same fail-closed contract as evaluateMany.
         // Uses @atlasent/enforce's canonical verifyPermit() implementation.
         const item = items[idx];
+        // Re-bind the terminal item's evaluated environment / target / artifact
+        // digest so the terminal-allow verify has the same substitution
+        // resistance as single-eval (not just action+actor).
         const vr = terminal.permitToken
           ? await verifyPermit(
-              { apiKey: inputs.apiKey, apiUrl: inputs.apiUrl, action: item.action, actor: item.actor },
+              buildVerifyConfig(inputs.apiKey, inputs.apiUrl, item),
               { decision: "allow" as const, permitToken: terminal.permitToken },
             )
           : { verified: false as const, outcome: undefined };

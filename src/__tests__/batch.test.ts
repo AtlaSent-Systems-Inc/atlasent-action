@@ -173,6 +173,78 @@ describe("evaluateMany", () => {
     );
   });
 
+  it("a non-valid verify (e.g. mismatch) yields verified=false — item is not executable", async () => {
+    // The runtime rejects a substituted artifact/env with a mismatch outcome;
+    // the batch must surface verified=false (the workflow gates on it) rather
+    // than reporting the allow as executable.
+    fetchMock.mockResolvedValueOnce(evalResp("allow", "tok-mm"));
+    mockVerifyPermit.mockResolvedValueOnce({ verified: false, outcome: "mismatch" });
+
+    const out = await evaluateMany(
+      "https://api.test",
+      "k",
+      [{ action: "a", actor: "u", context: { execution_payload_hash: "sha256:evaluated" } }],
+      false,
+    );
+    expect(out.decisions[0].verified).toBe(false);
+    expect(out.decisions[0].verifyOutcome).toBe("mismatch");
+  });
+
+  it("re-binds each item's environment/target/payload_hash at verify (substitution resistance)", async () => {
+    fetchMock.mockResolvedValueOnce(evalResp("allow", "tok-bind"));
+    mockVerifyPermit.mockResolvedValueOnce({ verified: true, outcome: "ok" });
+
+    await evaluateMany(
+      "https://api.test",
+      "k",
+      [
+        {
+          action: "production.deploy",
+          actor: "alice",
+          environment: "production",
+          context: { target_id: "api-service", execution_payload_hash: "sha256:artifact-A" },
+        },
+      ],
+      false,
+    );
+
+    expect(mockVerifyPermit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: "production",
+        targetId: "api-service",
+        executionPayloadHash: "sha256:artifact-A",
+      }),
+      expect.objectContaining({ permitToken: "tok-bind" }),
+    );
+  });
+
+  it("verifies each permit against its OWN item's bindings (no cross-item bleed)", async () => {
+    // Two items, distinct artifacts/targets. Each permit must be verified with
+    // the bindings of the SAME item — a permit for item 0 must never carry
+    // item 1's payload hash.
+    fetchMock.mockResolvedValueOnce(batchResp(2, "b1", "tok"));
+    mockVerifyPermit.mockResolvedValue({ verified: true, outcome: "ok" });
+
+    await evaluateMany(
+      "https://api.test",
+      "k",
+      [
+        { action: "a", actor: "u", environment: "staging", context: { target_id: "svc-0", execution_payload_hash: "sha256:zero" } },
+        { action: "b", actor: "u", environment: "production", context: { target_id: "svc-1", execution_payload_hash: "sha256:one" } },
+      ],
+      true,
+    );
+
+    expect(mockVerifyPermit).toHaveBeenCalledWith(
+      expect.objectContaining({ targetId: "svc-0", executionPayloadHash: "sha256:zero", environment: "staging" }),
+      expect.objectContaining({ permitToken: "tok0" }),
+    );
+    expect(mockVerifyPermit).toHaveBeenCalledWith(
+      expect.objectContaining({ targetId: "svc-1", executionPayloadHash: "sha256:one", environment: "production" }),
+      expect.objectContaining({ permitToken: "tok1" }),
+    );
+  });
+
   // ── Wave B hardening: items<2 short-circuit ────────────────────────────────
 
   it("short-circuits to /v1-evaluate loop when v2Batch=true but only 1 item (no batch benefit)", async () => {

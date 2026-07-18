@@ -16,6 +16,7 @@
 import { verifyPermit } from "@atlasent/enforce";
 import type { EvaluateRequest } from "./types";
 import type { Decision } from "./types";
+import { buildVerifyConfig } from "./verifyBinding";
 
 /**
  * Server-enforced cap from V2-D3: `/v1-evaluate/batch` rejects requests
@@ -90,7 +91,11 @@ export async function evaluateMany(
         return { ...d, verified: d.decision === "allow" ? false : undefined };
       }
       const item = items[i];
-      const enforceConfig = { apiKey, apiUrl, action: item.action, actor: item.actor };
+      // Re-bind the SAME evaluated environment / target / artifact digest this
+      // item carried into /v1-evaluate, so a permit issued for one item cannot
+      // verify against another item's bindings (index i pairs decision→item,
+      // and both the batch and loop paths preserve input order).
+      const enforceConfig = buildVerifyConfig(apiKey, apiUrl, item);
       const enforceDecision = { decision: "allow" as const, permitToken: d.permitToken };
       const result = await verifyPermit(enforceConfig, enforceDecision);
       return { ...d, verified: result.verified, verifyOutcome: result.outcome };

@@ -307,6 +307,27 @@ var import_enforce2 = __toESM(require_dist());
 
 // src/batch.ts
 var import_enforce = __toESM(require_dist());
+
+// src/verifyBinding.ts
+function nonEmptyString(v) {
+  return typeof v === "string" && v.length > 0 ? v : void 0;
+}
+function buildVerifyConfig(apiKey, apiUrl, item) {
+  const rec = item;
+  const ctx = item.context ?? {};
+  const pick = (key) => nonEmptyString(rec[key]) ?? nonEmptyString(ctx[key]);
+  return {
+    apiKey,
+    apiUrl,
+    action: item.action,
+    actor: item.actor,
+    environment: pick("environment"),
+    targetId: pick("target_id"),
+    executionPayloadHash: pick("execution_payload_hash")
+  };
+}
+
+// src/batch.ts
 var BATCH_MAX_ITEMS = 100;
 var BATCH_MIN_ITEMS = 2;
 async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
@@ -342,7 +363,7 @@ async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
         return { ...d, verified: d.decision === "allow" ? false : void 0 };
       }
       const item = items[i];
-      const enforceConfig = { apiKey, apiUrl, action: item.action, actor: item.actor };
+      const enforceConfig = buildVerifyConfig(apiKey, apiUrl, item);
       const enforceDecision = { decision: "allow", permitToken: d.permitToken };
       const result = await (0, import_enforce.verifyPermit)(enforceConfig, enforceDecision);
       return { ...d, verified: result.verified, verifyOutcome: result.outcome };
@@ -696,7 +717,7 @@ async function runV21(env, flags) {
       if (terminal.decision === "allow") {
         const item = items[idx];
         const vr = terminal.permitToken ? await (0, import_enforce2.verifyPermit)(
-          { apiKey: inputs.apiKey, apiUrl: inputs.apiUrl, action: item.action, actor: item.actor },
+          buildVerifyConfig(inputs.apiKey, inputs.apiUrl, item),
           { decision: "allow", permitToken: terminal.permitToken }
         ) : { verified: false, outcome: void 0 };
         decisions[idx] = { ...terminal, verified: vr.verified, verifyOutcome: vr.outcome };

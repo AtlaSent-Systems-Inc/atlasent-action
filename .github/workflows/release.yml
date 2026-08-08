@@ -17,6 +17,7 @@ on:
 permissions:
   contents: write
   id-token: write   # required for cosign keyless signing (Sigstore OIDC)
+  statuses: write   # required for the AtlaSent gate's best-effort commit-status post
 
 jobs:
   build-and-release:
@@ -24,6 +25,7 @@ jobs:
     permissions:
       contents: write
       id-token: write   # required for cosign keyless signing (Sigstore OIDC)
+      statuses: write   # required for the AtlaSent gate's best-effort commit-status post
     steps:
       - uses: actions/checkout@v7
         with:
@@ -56,6 +58,38 @@ jobs:
       # bootstrap publish (workflow_dispatch with bootstrap=true), which breaks
       # the chicken-and-egg of publishing v1 before any v1 exists to gate with.
       # Subsequent tag-push releases run the gate.
+      #
+      # KNOWN OPEN ISSUES as of 2026-08-08 (both require atlasent-api /
+      # operator action, NOT an atlasent-action code change — do not "fix"
+      # either by spoofing the actor or context below):
+      #   1. The last real (non-bootstrap) gate runs (2026-06-29, run IDs
+      #      28344572087 / 28344637307) failed closed with
+      #      "AtlaSent Gate: Authentication failed (HTTP 401)" from
+      #      `POST /v1-evaluate` — before any policy was evaluated. This is
+      #      the runtime's own `denyResponse("unauthenticated", ...)`
+      #      ("API key not found or inactive"), thrown when
+      #      `ATLASENT_API_KEY` doesn't resolve to an active row via
+      #      `validate_api_key`. Needs an operator to verify/rotate the
+      #      `ATLASENT_API_KEY` / `ATLASENT_BASE_URL` repo secrets against
+      #      the runtime project (kttccumlnmdtupgbyfue) in atlasent-api.
+      #   2. Independently, the `package.release` policy bundle currently
+      #      seeded on the runtime (atlasent-api migrations
+      #      20260623000004/…005/20260708000000) only allows
+      #      `actor_id = 'github:github-actions[bot]'`, and its two allow
+      #      templates additionally require either `context.signed_tag =
+      #      true` (never set anywhere in this repo) or `context.workflow =
+      #      'Publish to PyPI'` (this workflow's `GITHUB_WORKFLOW` /
+      #      `context.workflow` is literally "Release" — it never matches).
+      #      Meanwhile `actor: ${{ github.actor }}` below is the *human* who
+      #      pushed the release tag on the documented RELEASING.md flow
+      #      (confirmed live: actor "github:bettyc925" in run 28344637307),
+      #      not the bot. No combination this workflow can produce satisfies
+      #      the current policy — it appears to have been authored for a
+      #      different (PyPI-publishing) CI pipeline and reused here without
+      #      its own template. This needs an atlasent-api policy change
+      #      (e.g. a template scoped to this repo/workflow, or a durable
+      #      allow-listed human release-manager identity) — see the PR that
+      #      introduced this comment for the full write-up.
       - name: AtlaSent release gate
         if: ${{ github.event.inputs.bootstrap != 'true' }}
         uses: ./

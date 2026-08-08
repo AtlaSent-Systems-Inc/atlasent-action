@@ -11,9 +11,9 @@ on:
         required: false
         type: choice
         options:
-          - prod
+          - production
           - staging
-        default: prod
+        default: production
 
 permissions:
   contents: read
@@ -30,13 +30,15 @@ jobs:
         env:
           ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
           ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           action: production.deploy
           actor: ${{ github.actor }}
-          environment: ${{ inputs.environment || 'prod' }}
+          target-id: ${{ github.repository }}
+          environment: ${{ inputs.environment || 'production' }}
 
       # Only reached if AtlaSent authorized the deploy (verified=true)
-      - name: Deploy to ${{ inputs.environment || 'prod' }}
+      - name: Deploy to ${{ inputs.environment || 'production' }}
         run: |
           echo "Decision:     ${{ steps.gate.outputs.decision }}"
           echo "Verified:     ${{ steps.gate.outputs.verified }}"

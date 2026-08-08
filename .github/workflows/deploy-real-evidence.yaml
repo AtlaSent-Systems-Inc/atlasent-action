@@ -1,0 +1,42 @@
+name: AtlaSent Deploy Gate (Real PR Evidence)
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  deploy:
+    if: ${{ github.event.pull_request.merged == true }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: AtlaSent authorization gate
+        id: gate
+        uses: ./
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          action: production.deploy
+          actor: ${{ github.actor }}
+          target-id: ${{ github.repository }}
+          environment: production
+          approvals-from: pr-reviews
+          context: '{"change_window":true}'
+
+      - name: Deploy to production
+        run: |
+          echo "Decision:     ${{ steps.gate.outputs.decision }}"
+          echo "Verified:     ${{ steps.gate.outputs.verified }}"
+          echo "Evaluation:   ${{ steps.gate.outputs.evaluation-id }}"
+          echo "Proof hash:   ${{ steps.gate.outputs.proof-hash }}"
+          echo "Risk score:   ${{ steps.gate.outputs.risk-score }}"
+          echo ""
+          echo "Replace this with the real production deploy command."

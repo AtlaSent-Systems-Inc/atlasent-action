@@ -74,26 +74,38 @@ jobs:
       #      the runtime project (kttccumlnmdtupgbyfue) in atlasent-api.
       #      This gate WILL STILL 401 until that verification happens, even
       #      after issue 2 below is activated for the production org.
-      #   2. FIXED IN atlasent-api, PENDING PRODUCTION-ORG ACTIVATION (as of
-      #      2026-08-10, migration 20260830000000_package_release_action_
-      #      release_template.sql). The `package.release` policy bundle's
-      #      two templates (seeded by 20260623000004/…005/20260708000000)
-      #      only ever allowed `actor_id = 'github:github-actions[bot]'`
-      #      plus either `context.signed_tag = true` (never set anywhere in
-      #      this repo) or `context.workflow = 'Publish to PyPI'` (this
-      #      workflow is named "Release" — it never matched). Meanwhile
+      #   2. FIXED IN SHAPE, DELIBERATELY INERT PENDING A FOUNDER DECISION
+      #      (atlasent-api migration 20260838000000_package_release_
+      #      atlasent_action_gate.sql). The `package.release` policy
+      #      bundle's two existing templates (seeded by
+      #      20260623000004/…005/20260708000000) only ever allowed
+      #      `actor_id = 'github:github-actions[bot]'` plus either
+      #      `context.signed_tag = true` (never set anywhere in this repo)
+      #      or `context.workflow = 'Publish to PyPI'` (this workflow is
+      #      named "Release" — it never matched). Meanwhile
       #      `actor: ${{ github.actor }}` below is the *human* who pushed
       #      the release tag on the documented RELEASING.md flow (confirmed
       #      live: actor "github:bettyc925" in run 28344637307), not the
       #      bot — the existing templates were authored for atlasent-sdk's
-      #      PyPI publisher and reused here without a matching template. The
-      #      migration above adds a third template scoped to this exact
-      #      repo + workflow + event + version-tag ref + actor (not a bare
-      #      actor allow-list). It still needs an operator to run
+      #      PyPI publisher and reused here without a matching template.
+      #
+      #      The fix adds a third template scoped to this exact repo +
+      #      a strict vX.Y.Z tag-ref regex + a durable release-manager
+      #      allow-list — deliberately NOT a re-add of the old one-off
+      #      `github:bettyc925` TEMP exception. That allow-list currently
+      #      holds a single placeholder identity
+      #      (`github:__TODO_CONFIRM_RELEASE_MANAGER__`) that cannot match
+      #      any real GitHub actor_id (double underscores aren't legal in
+      #      GitHub usernames) — so today this template is a
+      #      structurally-correct no-op and this gate STILL denies every
+      #      real release exactly as before. It stays that way until an
+      #      operator/founder decides who the durable authorized release
+      #      managers for this repo are, ships a follow-up migration (or
+      #      amends the placeholder) naming them, and runs
       #      `SELECT public.seed_package_release_bundle('<atlasent's real
-      #      org uuid>')` against production before this gate can actually
-      #      pass on a real (non-demo-org) release — the migration only
-      #      auto-activates the demo org.
+      #      org uuid>')` against production. See that migration's own
+      #      "FOUNDER DECISION REQUIRED" comment block for the full
+      #      write-up.
       - name: AtlaSent release gate
         if: ${{ github.event.inputs.bootstrap != 'true' }}
         uses: ./

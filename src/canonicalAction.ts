@@ -37,6 +37,17 @@ export const TRIAL_BLINDING_SETUP_ACTION = "trial.blinding.setup";
 export const TRIAL_UNBLINDING_EXECUTE_ACTION = "trial.unblinding.execute";
 export const TRIAL_UNBLINDING_EMERGENCY_ACTION = "trial.unblinding.emergency";
 
+/**
+ * Publication of a signed trust-root document (public verification keys,
+ * revocations, Sigstore identities) to a public distribution host. A Canon
+ * specialization of secret.rotate (CANON-000035) — see
+ * atlasent/contract/canonical-actions/SPECIALIZATIONS.yaml. Distinct from
+ * production.deploy: no change-window condition applies (secret.rotate's own
+ * authorization_pattern.change_windows_required is false), and the caller is
+ * expected to be a narrow service/workflow identity, not a human.
+ */
+export const TRUST_ROOT_PUBLISH_ACTION = "trust_root.publish";
+
 /** Legacy alias — accepted during the V1 alias window, normalized on input. */
 export const LEGACY_PRODUCTION_DEPLOY_ALIAS = "deployment.production";
 
@@ -54,6 +65,7 @@ export const GATE_PERMITTED_ACTIONS: ReadonlySet<string> = new Set([
   TRIAL_BLINDING_SETUP_ACTION,
   TRIAL_UNBLINDING_EXECUTE_ACTION,
   TRIAL_UNBLINDING_EMERGENCY_ACTION,
+  TRUST_ROOT_PUBLISH_ACTION,
 ]);
 
 // ---------------------------------------------------------------------------

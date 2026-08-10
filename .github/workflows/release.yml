@@ -59,11 +59,11 @@ jobs:
       # the chicken-and-egg of publishing v1 before any v1 exists to gate with.
       # Subsequent tag-push releases run the gate.
       #
-      # KNOWN OPEN ISSUES as of 2026-08-08 (both require atlasent-api /
-      # operator action, NOT an atlasent-action code change — do not "fix"
-      # either by spoofing the actor or context below):
-      #   1. The last real (non-bootstrap) gate runs (2026-06-29, run IDs
-      #      28344572087 / 28344637307) failed closed with
+      # KNOWN OPEN ISSUES (both require atlasent-api / operator action, NOT
+      # an atlasent-action code change — do not "fix" either by spoofing the
+      # actor or context below):
+      #   1. STILL OPEN. The last real (non-bootstrap) gate runs (2026-06-29,
+      #      run IDs 28344572087 / 28344637307) failed closed with
       #      "AtlaSent Gate: Authentication failed (HTTP 401)" from
       #      `POST /v1-evaluate` — before any policy was evaluated. This is
       #      the runtime's own `denyResponse("unauthenticated", ...)`
@@ -72,24 +72,28 @@ jobs:
       #      `validate_api_key`. Needs an operator to verify/rotate the
       #      `ATLASENT_API_KEY` / `ATLASENT_BASE_URL` repo secrets against
       #      the runtime project (kttccumlnmdtupgbyfue) in atlasent-api.
-      #   2. Independently, the `package.release` policy bundle currently
-      #      seeded on the runtime (atlasent-api migrations
-      #      20260623000004/…005/20260708000000) only allows
-      #      `actor_id = 'github:github-actions[bot]'`, and its two allow
-      #      templates additionally require either `context.signed_tag =
-      #      true` (never set anywhere in this repo) or `context.workflow =
-      #      'Publish to PyPI'` (this workflow's `GITHUB_WORKFLOW` /
-      #      `context.workflow` is literally "Release" — it never matches).
-      #      Meanwhile `actor: ${{ github.actor }}` below is the *human* who
-      #      pushed the release tag on the documented RELEASING.md flow
-      #      (confirmed live: actor "github:bettyc925" in run 28344637307),
-      #      not the bot. No combination this workflow can produce satisfies
-      #      the current policy — it appears to have been authored for a
-      #      different (PyPI-publishing) CI pipeline and reused here without
-      #      its own template. This needs an atlasent-api policy change
-      #      (e.g. a template scoped to this repo/workflow, or a durable
-      #      allow-listed human release-manager identity) — see the PR that
-      #      introduced this comment for the full write-up.
+      #      This gate WILL STILL 401 until that verification happens, even
+      #      after issue 2 below is activated for the production org.
+      #   2. FIXED IN atlasent-api, PENDING PRODUCTION-ORG ACTIVATION (as of
+      #      2026-08-10, migration 20260830000000_package_release_action_
+      #      release_template.sql). The `package.release` policy bundle's
+      #      two templates (seeded by 20260623000004/…005/20260708000000)
+      #      only ever allowed `actor_id = 'github:github-actions[bot]'`
+      #      plus either `context.signed_tag = true` (never set anywhere in
+      #      this repo) or `context.workflow = 'Publish to PyPI'` (this
+      #      workflow is named "Release" — it never matched). Meanwhile
+      #      `actor: ${{ github.actor }}` below is the *human* who pushed
+      #      the release tag on the documented RELEASING.md flow (confirmed
+      #      live: actor "github:bettyc925" in run 28344637307), not the
+      #      bot — the existing templates were authored for atlasent-sdk's
+      #      PyPI publisher and reused here without a matching template. The
+      #      migration above adds a third template scoped to this exact
+      #      repo + workflow + event + version-tag ref + actor (not a bare
+      #      actor allow-list). It still needs an operator to run
+      #      `SELECT public.seed_package_release_bundle('<atlasent's real
+      #      org uuid>')` against production before this gate can actually
+      #      pass on a real (non-demo-org) release — the migration only
+      #      auto-activates the demo org.
       - name: AtlaSent release gate
         if: ${{ github.event.inputs.bootstrap != 'true' }}
         uses: ./

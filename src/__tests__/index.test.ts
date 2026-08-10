@@ -17,14 +17,23 @@ vi.mock("@atlasent/enforce", async (importOriginal) => {
   };
 });
 
+// Mocked so tests can inject controlled PR-review evidence without a real
+// GitHub API call. Defaults (set in beforeEach below) match what the real
+// resolveApprovals() returns with no GITHUB_TOKEN in the test env: no
+// evidence, source "none" — i.e. every pre-existing test's behavior is
+// unchanged unless it explicitly overrides the mock.
+vi.mock("../approvals", () => ({ resolveApprovals: vi.fn() }));
+
 import { enforce, evaluate, EnforceError } from "@atlasent/enforce";
 import type { Decision } from "@atlasent/enforce";
+import { resolveApprovals } from "../approvals";
 
 // Import run() after mocking to ensure the mock is in place.
 import { run } from "../index";
 
 const mockEnforce = enforce as unknown as ReturnType<typeof vi.fn>;
 const mockEvaluate = evaluate as unknown as ReturnType<typeof vi.fn>;
+const mockResolveApprovals = resolveApprovals as unknown as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -104,6 +113,18 @@ beforeEach(() => {
 
   mockEnforce.mockReset();
   mockEvaluate.mockReset();
+
+  // Default: no PR-review evidence (mirrors the real resolveApprovals()
+  // behavior with no GITHUB_TOKEN set, which every pre-existing test in this
+  // file relies on implicitly). Individual tests override with
+  // mockResolvedValueOnce to inject controlled evidence.
+  mockResolveApprovals.mockReset();
+  mockResolveApprovals.mockResolvedValue({
+    approvals: 0,
+    approving_reviewers: [],
+    pr_number: null,
+    source: "none",
+  });
 });
 
 afterEach(() => {
@@ -453,5 +474,136 @@ describe("evaluate-only (issue-permit) mode", () => {
     const outputs = readOutputs(outputFile);
     expect(outputs["verified"]).toBe("true");
     expect(outputs["permit-issued"]).toBe("true");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. Verified/derived context fields cannot be overridden by operator input
+//
+// Regression test for a real vulnerability: a prior version spread the
+// operator-supplied `context` YAML input LAST when building the EnforceConfig
+// context, so a workflow author could write
+// `context: '{"approvals": 999, "repository": "evil/repo"}'` and silently
+// override the real GitHub-API-derived approval count and the real
+// repository/ref/sha/workflow read from the GitHub Actions environment. This
+// defeats the entire purpose of deriving those facts. See
+// atlasent-keys#<trust-root-gate-hardening> and the comment above the
+// `context:` object in index.ts.
+// ---------------------------------------------------------------------------
+
+describe("verified/derived context fields resist operator override", () => {
+  function setGitHubContext(overrides: Partial<Record<string, string>> = {}) {
+    const defaults: Record<string, string> = {
+      GITHUB_REPOSITORY: "AtlaSent-Systems-Inc/atlasent-keys",
+      GITHUB_REF: "refs/heads/main",
+      GITHUB_SHA: "abc123real",
+      GITHUB_RUN_ID: "999",
+      GITHUB_RUN_NUMBER: "1",
+      GITHUB_WORKFLOW: "publish-trust-root",
+      GITHUB_EVENT_NAME: "push",
+      GITHUB_SERVER_URL: "https://github.com",
+    };
+    for (const [k, v] of Object.entries({ ...defaults, ...overrides })) {
+      process.env[k] = v;
+    }
+  }
+
+  it("a real 0-approval PR cannot be overridden by a self-asserted context.approvals", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setGitHubContext();
+    // Operator-supplied context claims 999 approvals and a fabricated
+    // reviewer list — this must NOT reach the runtime.
+    setInput("context", JSON.stringify({ approvals: 999, approving_reviewers: ["nobody"] }));
+
+    mockResolveApprovals.mockResolvedValueOnce({
+      approvals: 0,
+      approving_reviewers: [],
+      pr_number: 1930,
+      source: "pr-reviews",
+    });
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    const calls = (mockEnforce as unknown as { mock: { calls: Array<Array<unknown>> } }).mock.calls;
+    const enforceConfig = calls[0][0] as { context: Record<string, unknown> };
+    expect(enforceConfig.context["approvals"]).toBe(0);
+    expect(enforceConfig.context["approving_reviewers"]).toEqual([]);
+  });
+
+  it("a genuine approval count from PR reviews passes through unmodified", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setGitHubContext();
+
+    mockResolveApprovals.mockResolvedValueOnce({
+      approvals: 2,
+      approving_reviewers: ["alice", "bob"],
+      pr_number: 42,
+      source: "pr-reviews",
+    });
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    const calls = (mockEnforce as unknown as { mock: { calls: Array<Array<unknown>> } }).mock.calls;
+    const enforceConfig = calls[0][0] as { context: Record<string, unknown> };
+    expect(enforceConfig.context["approvals"]).toBe(2);
+    expect(enforceConfig.context["approving_reviewers"]).toEqual(["alice", "bob"]);
+  });
+
+  it("repository/ref/sha/workflow read from the real GitHub Actions env cannot be overridden by context", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setGitHubContext({
+      GITHUB_REPOSITORY: "AtlaSent-Systems-Inc/atlasent-keys",
+      GITHUB_REF: "refs/heads/main",
+      GITHUB_SHA: "realsha123",
+      GITHUB_WORKFLOW: "publish-trust-root",
+    });
+    setInput(
+      "context",
+      JSON.stringify({
+        repository: "attacker/evil-repo",
+        ref: "refs/heads/attacker-branch",
+        sha: "fakesha",
+        workflow: "totally-different-workflow",
+        // A legitimate extra field not derived by the action — must still
+        // pass through untouched.
+        artifact: "trust-root",
+      }),
+    );
+
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    const calls = (mockEnforce as unknown as { mock: { calls: Array<Array<unknown>> } }).mock.calls;
+    const enforceConfig = calls[0][0] as { context: Record<string, unknown> };
+    expect(enforceConfig.context["repository"]).toBe("AtlaSent-Systems-Inc/atlasent-keys");
+    expect(enforceConfig.context["ref"]).toBe("refs/heads/main");
+    expect(enforceConfig.context["sha"]).toBe("realsha123");
+    expect(enforceConfig.context["workflow"]).toBe("publish-trust-root");
+    // Non-colliding operator-supplied fields still flow through.
+    expect(enforceConfig.context["artifact"]).toBe("trust-root");
+  });
+
+  it("approvals-from: none still honors an explicit operator-supplied approvals (intentional opt-out)", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("approvals-from", "none");
+    setGitHubContext();
+    setInput("context", JSON.stringify({ approvals: 2 }));
+
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    // resolveApprovals must not even be consulted in "none" mode.
+    expect(mockResolveApprovals).not.toHaveBeenCalled();
+    const calls = (mockEnforce as unknown as { mock: { calls: Array<Array<unknown>> } }).mock.calls;
+    const enforceConfig = calls[0][0] as { context: Record<string, unknown> };
+    expect(enforceConfig.context["approvals"]).toBe(2);
   });
 });

@@ -8,6 +8,7 @@ import {
   TRIAL_BLINDING_SETUP_ACTION,
   TRIAL_UNBLINDING_EMERGENCY_ACTION,
   TRIAL_UNBLINDING_EXECUTE_ACTION,
+  TRUST_ROOT_PUBLISH_ACTION,
   assertProtectedAction,
   normalizeProtectedAction,
 } from "../canonicalAction";
@@ -89,8 +90,12 @@ describe("canonicalAction", () => {
       expect(GATE_PERMITTED_ACTIONS.has(TRIAL_UNBLINDING_EMERGENCY_ACTION)).toBe(true);
     });
 
+    it("permits trust_root.publish", () => {
+      expect(GATE_PERMITTED_ACTIONS.has(TRUST_ROOT_PUBLISH_ACTION)).toBe(true);
+    });
+
     it("is a conservative explicit allow-list (not open to arbitrary types)", () => {
-      expect(GATE_PERMITTED_ACTIONS.size).toBe(5);
+      expect(GATE_PERMITTED_ACTIONS.size).toBe(6);
       // A well-formed but unlisted action is NOT gate-permitted, even though
       // its format is valid — the runtime policy is the authority, but the
       // gate's client-side guard stays explicit.
@@ -100,6 +105,11 @@ describe("canonicalAction", () => {
     it("package.release is distinct from production.deploy", () => {
       expect(PACKAGE_RELEASE_ACTION).toBe("package.release");
       expect(PACKAGE_RELEASE_ACTION).not.toBe(PRODUCTION_DEPLOY_ACTION);
+    });
+
+    it("trust_root.publish is well-formed and distinct from production.deploy", () => {
+      expect(TRUST_ROOT_PUBLISH_ACTION).toBe("trust_root.publish");
+      expect(TRUST_ROOT_PUBLISH_ACTION).not.toBe(PRODUCTION_DEPLOY_ACTION);
     });
   });
 });

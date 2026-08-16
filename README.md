@@ -1,621 +1,297 @@
 # AtlaSent Gate Action
 
-GitHub Action for the **CI/CD deployment authorization** domain of [AtlaSent](https://www.atlasent.io/) — execution-time authorization infrastructure for governed computational action.
+Execution-time authorization for consequential GitHub Actions.
 
-Require execution-time authorization before critical CI/CD actions run. Drop AtlaSent into any GitHub Actions workflow with a single step.
+AtlaSent evaluates an attempted action before it executes, issues a scoped permit
+when the action is authorized, and verifies that permit before the protected step
+runs. A deny, hold, escalation, invalid permit, infrastructure failure, or binding
+mismatch fails closed.
 
-The deploy gate is one source of authority — a CI/CD check that confirms a change is safe to ship. A human approval, a policy rule, or a risk-engine decision are others. Whatever authorizes the deploy, the result is the same: a single-use permit, verified before the deploy step runs and recorded as audit evidence.
-
+```text
+workflow attempts action
+        │
+        ▼
+AtlaSent evaluates organizational authority
+        │
+   ┌────┴────┐
+   │         │
+ permit     deny / hold / escalate / error
+   │         │
+ verify      └──────────────► protected step does not run
+   │
+   ▼
+protected step may run
 ```
-Push to main → AtlaSent evaluates → permit issued → deploy
-                                  → denied       → fail with reason
-```
 
-## Quick Start
+## Release status
+
+The security fix that prevents caller-supplied context from overriding verified
+GitHub-derived facts is on `main` at commit
+`01cfce7461c3ebff736ca3396deb2467cf2829a1`. Until the next signed `v1` release
+moves the floating tag, external workflows should pin that reviewed commit SHA
+rather than relying on the older `@v1` tag.
+
+After the signed release is published and `@v1` moves, the normal floating-major
+form is `AtlaSent-Systems-Inc/atlasent-action@v1`.
+
+## Quick start
 
 ```yaml
-- uses: AtlaSent-Systems-Inc/atlasent-action@v1
+- name: Authorization gate
+  id: gate
+  uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
     ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
   with:
     action: production.deploy
     target-id: ${{ github.repository }}
+
+- name: Deploy
+  if: steps.gate.outputs.verified == 'true'
+  run: ./deploy.sh
 ```
 
-## Full Configuration
+**Gate on `verified`, not on `decision`.** `verified=true` means the action was
+allowed and the server successfully verified the single-use permit.
+
+## Supported protected actions
+
+The GitHub Action intentionally has a conservative client-side allowlist for its
+single-evaluation path. Current values are:
+
+- `production.deploy`
+- `package.release`
+- `trial.blinding.setup`
+- `trial.unblinding.execute`
+- `trial.unblinding.emergency`
+- `trust_root.publish`
+
+This allowlist is input validation, **not the authorization authority**. Passing
+client-side validation does not authorize an action; the AtlaSent runtime policy
+still decides whether the request is allowed, denied, held, or escalated.
+
+Other action namespaces can be governed through AtlaSent SDK and MCP integration
+surfaces. A new action type must be deliberately added to this GitHub Action
+before the single-evaluation path will forward it.
+
+## GitHub-derived facts cannot be overridden
+
+The optional `context` input is useful for application-specific facts such as
+service name, change-window state, or deployment metadata. Caller-supplied
+context is applied first.
+
+Facts derived or verified from the GitHub runtime are then applied last and win
+on collision. These include repository, ref, SHA, workflow/run metadata, PR
+number/run URL, and — when `approvals-from: pr-reviews` is enabled — approval
+count and approving-reviewer identities.
+
+That ordering is security-significant: a workflow cannot claim a different
+repository or manufacture an approval count by placing those keys in `context`.
+Non-colliding application context is preserved.
+
+## PR-review approvals
+
+By default, `approvals-from: pr-reviews` asks the GitHub API for the pull
+request's current reviews and derives:
+
+- `context.approvals`
+- `context.approving_reviewers`
+
+Provide `GITHUB_TOKEN` when the policy depends on review evidence:
 
 ```yaml
-- name: Authorization Gate
+- name: Authorization gate
   id: gate
-  uses: AtlaSent-Systems-Inc/atlasent-action@v1
+  uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
     ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+    GITHUB_TOKEN: ${{ github.token }}
   with:
     action: production.deploy
-    actor: ${{ github.actor }}
-    target-id: api-service
     environment: live
-    fail-on-deny: 'true'
-    context: '{"team": "platform", "service": "api"}'
-    # state_snapshot is injected automatically — no need to include it here
+    context: '{"change_window": true}'
 ```
 
-## Artifact binding & execution-boundary verification
+If review lookup fails, the derived approval count falls to zero. For an
+approval-gated policy that is the fail-closed direction: the workflow does not
+invent approval evidence.
 
-By default the gate step evaluates, verifies the permit, and outputs `verified`;
-your deploy step guards on `if: steps.gate.outputs.verified == 'true'`. That is
-fully supported and unchanged.
+Set `approvals-from: none` only when the selected policy does not depend on
+GitHub-review-derived approval evidence or when a different, explicitly trusted
+authority source is being used.
 
-For a stronger guarantee — **a workflow must not be able to evaluate one artifact
-and execute another** — bind the artifact digest into the authorization and
-re-verify the permit *at the execution boundary*, immediately before the deploy:
+## Stronger execution-boundary pattern
+
+The default one-step mode performs evaluate → permit → verify in the gate step.
+For a stronger boundary across jobs, bind the built artifact into the permit,
+issue without consuming it, then consume it immediately before execution.
 
 ```yaml
 jobs:
   build:
     runs-on: ubuntu-latest
-    outputs: { digest: "${{ steps.d.outputs.digest }}" }
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - run: ./build.sh out/
-      - id: d
+      - id: digest
         run: echo "digest=sha256:$(tar -cf - out | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
-  gate:
+  authorize:
     needs: build
     runs-on: ubuntu-latest
-    outputs: { permit: "${{ steps.g.outputs.permit-token }}" }
+    outputs:
+      permit: ${{ steps.gate.outputs.permit-token }}
     steps:
-      - id: g
-        uses: AtlaSent-Systems-Inc/atlasent-action@v1
-        env: { ATLASENT_API_KEY: "${{ secrets.ATLASENT_API_KEY }}", ATLASENT_BASE_URL: "${{ secrets.ATLASENT_BASE_URL }}" }
-        with:
-          action: production.deploy
-          environment: production
-          artifact-digest: ${{ needs.build.outputs.digest }}   # canonical binding
-          # ISSUE the permit but do NOT verify/consume it here — the single-use
-          # permit is consumed at the execution boundary below. Without this the
-          # gate would consume the permit and the deploy-step verify would fail
-          # PERMIT_ALREADY_USED (replay_blocked).
-          mode: evaluate-only
-
-  deploy:
-    needs: [build, gate]
-    runs-on: ubuntu-latest
-    steps:
-      # THE EXECUTION BOUNDARY — re-verify the permit against the live runtime,
-      # re-binding environment + artifact digest. Fails closed on a missing,
-      # modified, expired, replayed, denied, or context-mismatched permit.
-      - id: verify
-        uses: AtlaSent-Systems-Inc/atlasent-action@v1
-        env: { ATLASENT_API_KEY: "${{ secrets.ATLASENT_API_KEY }}", ATLASENT_BASE_URL: "${{ secrets.ATLASENT_BASE_URL }}" }
-        with:
-          verify-permit: "true"
-          permit-token: ${{ needs.gate.outputs.permit }}
-          action: production.deploy
-          environment: production
-          artifact-digest: ${{ needs.build.outputs.digest }}
-      - if: steps.verify.outputs.verified == 'true'
-        run: ./deploy.sh out/
-```
-
-- **`mode: evaluate-only`** on the gate step ISSUES a permit without verifying or
-  consuming it, so the single-use permit survives for the boundary step to consume.
-  This step outputs `permit-token` (unconsumed) + `permit-issued: true` with
-  `verified: false` — gate the deploy on the **boundary** step's `verified`, never
-  on the gate step. (The default one-step gate consumes the permit in place; that
-  is still fully supported when you don't need a separate boundary step.)
-- **`artifact-digest`** is sent to evaluate as the canonical top-level
-  `execution_payload_hash` (never buried in context) and the runtime binds it into
-  the permit. Presenting a different digest at verify → `PAYLOAD_MISMATCH`.
-- **`verify-permit: "true"`** runs verify-only against the live runtime at the
-  deploy boundary. It fails the step closed and sets `verify-outcome` /
-  `verify-error-code` (e.g. `PAYLOAD_MISMATCH`, `ENVIRONMENT_MISMATCH`,
-  `PERMIT_EXPIRED`, `PERMIT_ALREADY_USED`, `MISSING_PERMIT`).
-
-**Compatibility:** all of this is additive and opt-in. Existing single-step gate
-workflows keep working unchanged; `artifact-digest`, `verify-permit`, the
-`permit-token` input, and the `verify-outcome` / `verify-error-code` outputs are
-new optional surface. Adopt the boundary pattern when you want artifact-substitution
-and cross-step replay protection at the point of execution.
-
-## Beyond deploys — any protected action
-
-The gate is not deployment-specific. `production.deploy` is just the default
-`action` value; the same evaluate → permit → verify → fail-closed mechanic
-authorizes **any** provisioned action class. Set `action` (and `target-id`) to
-the class you want to gate — the action, the wire contract, and the fail-closed
-behavior are identical.
-
-For example, a GxP clinical-trial unblinding gate (ICH E6(R2) §4.8 / 21 CFR
-Part 11), where the runtime enforces that class's dual-authorization, verified
-human approval, and per-class MFA at evaluate time:
-
-```yaml
-jobs:
-  unblind:
-    runs-on: ubuntu-latest
-    steps:
-      - name: AtlaSent clinical unblinding gate
-        id: gate
-        uses: AtlaSent-Systems-Inc/atlasent-action@v1
+      - id: gate
+        uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
         env:
           ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
           ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
         with:
-          action: trial.unblinding.execute   # or trial.unblinding.emergency, package.release, data.release, …
-          target-id: trial:NCT12345678
+          action: production.deploy
           environment: production
+          artifact-digest: ${{ needs.build.outputs.digest }}
+          mode: evaluate-only
 
-      - name: Perform the unblinding
-        if: steps.gate.outputs.verified == 'true'   # gate on verified, not decision
-        run: ./scripts/unblind.sh
+  deploy:
+    needs: [build, authorize]
+    runs-on: ubuntu-latest
+    steps:
+      - id: verify
+        uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+        with:
+          verify-permit: 'true'
+          permit-token: ${{ needs.authorize.outputs.permit }}
+          action: production.deploy
+          environment: production
+          artifact-digest: ${{ needs.build.outputs.digest }}
+
+      - if: steps.verify.outputs.verified == 'true'
+        run: ./deploy.sh out/
 ```
 
-The action does **not** restrict `action` to a fixed allowlist — it validates
-only the format (dot-separated lowercase identifiers, 2–4 segments) and forwards
-the class to the control plane, where the policy is the authority. So any action
-class provisioned in your AtlaSent org works — `package.release`,
-`trial.unblinding.emergency`, `data.release`, your own custom classes — with no
-code change to this action. Recognized clinical/package constants are listed in
-`src/canonicalAction.ts`.
+`artifact-digest` is bound into the authorization as the execution payload hash.
+A permit issued for one digest and verified against another fails with
+`PAYLOAD_MISMATCH`. `mode: evaluate-only` deliberately leaves the single-use
+permit unconsumed so the later boundary step can verify and consume it.
 
-## Required context: `state_snapshot`
+## Clinical example
 
-All `production.deploy` evaluations (and all action classes in the AtlaSent system) **require a `state_snapshot`** in the request body. Omitting it results in an immediate `SNAPSHOT_REQUIRED` deny regardless of policy.
-
-**The action injects `state_snapshot` automatically** from the GitHub Actions runtime (`source: "github-actions"`, `complete: true`, `run_id: ${{ github.run_id }}`). No extra configuration is needed for the standard case.
-
-If you need to override the snapshot (e.g. to attach a pre-collected environment diff), pass it as a top-level `state_snapshot` key in the `context` input. The action will use your value instead of the auto-injected one:
+The same execution contract can gate a provisioned clinical action:
 
 ```yaml
-# Only needed if you want to override the auto-injected snapshot:
-context: |
-  {
-    "state_snapshot": {
-      "source": "buildkite",
-      "complete": true,
-      "run_id": "$BUILDKITE_BUILD_ID"
-    }
-  }
-```
-
-> **Why is this required?** AtlaSent enforces that every protected action is evaluated against a known, captured state — this closes the TOCTOU (time-of-check, time-of-use) window by proving the workflow observed the environment before the gate ran.
-
-## Using Outputs
-
-The action sets several outputs you can reference in subsequent steps.
-**Always gate on `verified`, not `decision`** — `verified=true` means the evaluation returned `allow` AND the server confirmed the permit token hasn't been replayed.
-
-```yaml
-- name: Authorization Gate
+- name: Clinical unblinding gate
   id: gate
-  uses: AtlaSent-Systems-Inc/atlasent-action@v1
+  uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
     ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
   with:
-    action: production.deploy
-    target-id: api-service
+    action: trial.unblinding.execute
+    target-id: trial:NCT12345678
+    environment: production
 
-- name: Deploy
+- name: Perform unblinding
   if: steps.gate.outputs.verified == 'true'
-  run: |
-    echo "Proof hash: ${{ steps.gate.outputs.proof-hash }}"
-    echo "Risk score: ${{ steps.gate.outputs.risk-score }}"
-    ./deploy.sh
+  run: ./scripts/unblind.sh
 ```
 
-### Outputs — single-eval path
+The GitHub Action does not itself decide whether an unblinding is authorized.
+The runtime evaluates the organization's policy, identity/approval evidence, and
+required bindings for that action class.
 
-| Output          | Description                                                            |
-|-----------------|------------------------------------------------------------------------|
-| `verified`      | `"true"` only when `decision=allow` AND permit verified; `"false"` otherwise |
-| `decision`      | The evaluation result: `allow`, `deny`, `hold`, or `escalate`          |
-| `permit-token`  | Single-use permit token (already consumed; kept for audit reference)   |
-| `evaluation-id` | Unique evaluation ID for the audit trail                               |
-| `proof-hash`    | Cryptographic proof hash for tamper detection                          |
-| `risk-score`    | Numeric risk score 0–100; empty string when not assessed               |
+## State snapshot
 
-### Outputs — batch path (`evaluations` input set)
+AtlaSent evaluations require a state snapshot so authorization is tied to known
+execution state. The standard GitHub path injects a snapshot from the Actions
+runtime automatically.
 
-| Output      | Description                                                                                      |
-|-------------|--------------------------------------------------------------------------------------------------|
-| `verified`  | `"true"` only when every allow decision verified; `"false"` otherwise                            |
-| `decisions` | JSON array of per-item results: `{decision, verified, evaluationId, permitToken, reasons, verifyOutcome}` |
-| `batch-id`  | Server-assigned batch ID, `chunked-<ts>` when client-side chunking ran, or `loop-<ts>` for the sequential fallback |
+A custom snapshot can be supplied when a workflow needs to attach a pre-collected
+state representation. Treat it as decision-bearing evidence: do not use a custom
+snapshot merely to force a policy match.
 
-## Inputs
+## Core inputs
 
-### Single-eval inputs
-
-| Input          | Required | Default                | Description                                             |
-|----------------|----------|------------------------|---------------------------------------------------------|
-| `ATLASENT_API_KEY` env | Yes | — | AtlaSent API key (`ask_live_*` or `ask_test_*`). |
-| `ATLASENT_BASE_URL` env | Yes (pilot profile) | — | Runtime base URL for your AtlaSent V1 authority service. |
-| `action`       | Yes*     | —                      | Action type to evaluate (e.g. `production.deploy`). Ignored when `evaluations` is set. |
-| `actor`        | No       | `${{ github.actor }}`  | Actor identity                                          |
-| `target-id`    | No       | —                      | Target resource being acted on (service, artifact, etc) |
-| `environment`  | No       | Auto-detected          | `live` for `main`/`master`, `test` otherwise            |
-| `api-url`      | No       | `ATLASENT_BASE_URL` or `https://api.atlasent.io` | AtlaSent API base URL override. **Self-hosted / pilot: set this to your project URL ending in `/functions/v1`. The `api.atlasent.io` apex 404s unless a custom domain is verified — which looks like a broken gate.** |
-| `fail-on-deny` | No       | `true`                 | Deprecated for pilot mode; deny/hold/escalate still fail closed. |
-| `context`      | No       | `{}`                   | Additional JSON context for evaluation. Overrides auto-derived values (e.g. an explicit `approvals` here wins over PR-review-derived approvals). |
-| `approvals-from` | No     | `pr-reviews`           | Source of `context.approvals`. `pr-reviews` (default) counts distinct reviewers whose latest PR review is `APPROVED` and injects `context.approvals` + `context.approving_reviewers`; `none` disables it. Requires `GITHUB_TOKEN`. Fail-open-to-zero. |
-
-### Approvals from PR reviews
-
-The canonical `production.deploy` policy template `allow-2-approvals-change-window` allows only when `context.approvals >= 2`. By default the action derives that count from the pull request's reviews — no second integration required — so a deploy with two approving reviews is permitted and one without is blocked.
-
-Pass the token so the action can read reviews, and ensure the deploy is associated with a PR (a `pull_request` event, or a `push`/merge to `main` whose commit has an associated PR):
-
-```yaml
-- name: Authorization Gate
-  id: gate
-  uses: AtlaSent-Systems-Inc/atlasent-action@v1
-  env:
-    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
-    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
-    GITHUB_TOKEN: ${{ github.token }}      # lets the gate read PR reviews
-  with:
-    action: production.deploy
-    environment: live
-    # change_window is an operator signal — supply it explicitly:
-    context: '{"change_window": true}'
-
-- name: Deploy
-  if: steps.gate.outputs.verified == 'true'
-  run: ./deploy.sh
-```
-
-`change_window` is a deliberate operator signal and is **not** auto-derived — set it in `context` (or use a template that does not require it). The approval lookup is best-effort and **fails open to zero**: if the GitHub API can't be reached, `approvals` is `0`, which denies a count-gated deploy (the fail-closed direction).
-
-### Batch inputs (v2.1)
-
-| Input              | Required | Default   | Description                                                          |
-|--------------------|----------|-----------|----------------------------------------------------------------------|
-| `evaluations`      | No       | —         | JSON array of evaluation requests. When set, single-eval inputs are ignored. |
-| `wait-for-id`      | No       | —         | Evaluation ID to block on until it reaches a terminal state (allow/deny). |
-| `wait-timeout-ms`  | No       | `600000`  | Max milliseconds to wait for a terminal decision (default: 10 min). |
-| `v2-batch`         | No       | `false`   | Use the `/v1-evaluate/batch` endpoint instead of the sequential loop. Falls back to the loop automatically when the endpoint returns 404 or only one item is supplied. |
-| `v2-streaming`     | No       | `false`   | Use Server-Sent Events for `wait-for-id` polling instead of HTTP polling. |
-
-## Streaming wait (v2.1)
-
-For long-running approvals such as change-window gates, enable `v2-streaming` to consume the AtlaSent SSE stream instead of polling. The step blocks until the evaluator reaches a terminal decision or `wait-timeout-ms` elapses:
-
-```yaml
-- uses: AtlaSent-Systems-Inc/atlasent-action@v1
-  env:
-    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
-    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
-  with:
-    action: production.deploy
-    actor: ${{ github.actor }}
-    v2-streaming: 'true'
-    wait-timeout-ms: '600000'
-```
-
-When `v2-streaming` is `false` (the default) the action falls back to 5-second HTTP polling — behaviour is identical, only the transport differs.
-
-## GitHub identity in the policy context
-
-The `actor` input defaults to `${{ github.actor }}`, so no additional identity setup is needed. The action automatically embeds the GitHub username in the evaluation context sent to AtlaSent.
-
-> **No OIDC exchange.** `ATLASENT_API_KEY` is what authenticates the workflow against the AtlaSent API. The GitHub `actor` value is a string the action embeds in the evaluation context so policies can branch on human identity. If you want true OIDC trust between GitHub and AtlaSent (no long-lived API key), file a feature request — the wire today does not support it.
-
-To branch on GitHub identity, write your AtlaSent policy against the `actor` field directly (e.g. `actor == "github:octocat"` or `actor in team:"github:platform-eng"`).
-
-```yaml
-- uses: AtlaSent-Systems-Inc/atlasent-action@v1
-  env:
-    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
-    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
-  with:
-    action: production.deploy
-    # actor defaults to ${{ github.actor }} — no extra config needed
-```
-
-## Batch Mode
-
-Evaluate multiple actions in a single step:
-
-```yaml
-- name: Batch Authorization Gate
-  id: gate
-  uses: AtlaSent-Systems-Inc/atlasent-action@v1
-  env:
-    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
-    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
-  with:
-    v2-batch: 'true'
-    evaluations: |
-      [
-        {"action": "production.deploy", "actor": "${{ github.actor }}", "environment": "live", "context": {"service": "api"}},
-        {"action": "production.deploy", "actor": "${{ github.actor }}", "environment": "live", "context": {"service": "worker"}},
-        {"action": "production.deploy", "actor": "${{ github.actor }}", "environment": "live", "context": {"service": "web"}}
-      ]
-
-- name: Deploy
-  if: steps.gate.outputs.verified == 'true'
-  run: ./deploy.sh
-```
-
-See [`docs/batch-example.yml`](./docs/batch-example.yml) for a fully-commented end-to-end workflow.
-
-### Batch auto-fallback (V2-D3)
-
-The `/v1-evaluate/batch` endpoint is **closed-by-default per tenant** — the
-`v2_batch` flag must be flipped on by AtlaSent operations before a given org
-can use it. To keep workflows portable across orgs at different rollout stages,
-the action falls back automatically:
-
-| Condition                                              | Transport                                       |
-|--------------------------------------------------------|-------------------------------------------------|
-| `v2-batch: false` (default)                            | Per-item `/v1-evaluate` loop                    |
-| `v2-batch: true` AND only 1 item supplied              | Per-item `/v1-evaluate` loop (no batch benefit) |
-| `v2-batch: true` AND `/v1-evaluate/batch` returns 404 | Per-item `/v1-evaluate` loop (tenant flag off)  |
-| `v2-batch: true` AND `items.length > 100`              | Multiple `/v1-evaluate/batch` POSTs, chunked client-side to the 100-item server cap |
-| `v2-batch: true` AND `/v1-evaluate/batch` returns 5xx | Step fails (fail-closed — does NOT silently downgrade) |
-
-`batch-id` distinguishes the path that actually ran: a UUID for server-side
-batches, `chunked-<ts>` when the action chunked client-side, and `loop-<ts>`
-for the per-item fallback.
-
-## Phase B7 Connectors
-
-The GitHub Actions step is the reference connector. Phase B7 ships two additional
-connectors — **webhook** and **AI-agent** — that implement the same
-`evaluate → verify → verifyPermit` contract and are importable from
-`@atlasent/action/connectors` (or from the package root).
-
-### Webhook connector
-
-Gates incoming webhook payloads in any Express/Hono/Node.js server.
-
-```typescript
-import { webhookGuard } from '@atlasent/action/connectors';
-
-const guard = webhookGuard({
-  apiKey: process.env.ATLASENT_API_KEY!,
-  // apiUrl: 'https://api.atlasent.io',   // default
-  // environment: 'live',
-  // failClosed: true,                    // default — 403/500 on deny/error
-});
-```
-
-**Standalone evaluation** — call `guard.evaluate(payload)` directly and handle
-the result yourself. Useful in Hono, raw `http.createServer`, or any
-non-Express framework:
-
-```typescript
-app.post('/hooks/deploy', async (c) => {
-  const payload = await c.req.json();
-  const result = await guard.evaluate(payload);
-
-  if (result.decision !== 'allow' || !result.verified) {
-    return c.json({ error: result.reason ?? 'denied' }, 403);
-  }
-
-  // Safe to proceed — permit verified
-  await executeDeploy(payload);
-  return c.json({ status: 'executed' });
-});
-```
-
-**Express middleware** — mount `guard.middleware` to block automatically:
-
-```typescript
-import express from 'express';
-const app = express();
-app.use(express.json());
-
-// The middleware responds 403/500 on deny/hold/error and calls next() on allow.
-// req.atlasent holds the full result for downstream handlers.
-app.post('/hooks/deploy', guard.middleware, (req, res) => {
-  const { evaluationId, riskScore } = req.atlasent!;
-  res.json({ status: 'executed', evaluationId });
-});
-```
-
-**Custom payload extraction** — when your payload uses different field names:
-
-```typescript
-const guard = webhookGuard({
-  apiKey: process.env.ATLASENT_API_KEY!,
-  extractor: (payload) => ({
-    action_type: payload.event_type as string,
-    actor_id:    `user:${payload.triggered_by as string}`,
-    context:     { repo: payload.repository },
-  }),
-});
-```
-
-**Result shape** — `guard.evaluate()` always resolves (never throws on
-infra errors):
-
-```typescript
-interface WebhookGuardResult {
-  decision: 'allow' | 'deny' | 'hold' | 'escalate' | 'error';
-  verified: boolean;      // true only when decision=allow AND verifyPermit passed
-  evaluationId?: string;
-  proofHash?: string;
-  riskScore?: number;
-  reason?: string;        // deny/hold reason or infra error message
-  error?: EnforceError;   // present on decision='error'
-}
-```
-
-> **Always gate on `verified`, not `decision`.**  
-> `verified=true` means the evaluation returned `allow` AND the permit token
-> was confirmed server-side. An `allow` without `verified` means permit
-> verification failed — the connector treats this as a block.
-
-### AI-agent connector
-
-Guards LangChain-style tool execution. Before any tool call, the guard
-evaluates the call against AtlaSent and blocks (`AgentGuardError`) on
-deny or hold.
-
-**AgentGuard class:**
-
-```typescript
-import { AgentGuard, AgentGuardError } from '@atlasent/action/connectors';
-
-const guard = new AgentGuard({
-  apiKey: process.env.ATLASENT_API_KEY!,
-  // defaultActorId: 'service:my-agent',
-  // environment: 'live',
-  // blockOnHold: true,   // default — hold blocks like deny
-});
-
-try {
-  const result = await guard.call(
-    webSearchTool,
-    { query: 'latest CVEs' },
-    { agentId: 'security-scanner', sessionId: 'sess-42' },
-  );
-} catch (err) {
-  if (err instanceof AgentGuardError) {
-    console.error(`Blocked: ${err.decision} — ${err.message}`);
-    // err.toolName      → 'web_search'
-    // err.evaluationId  → AtlaSent evaluation id for audit
-  }
-}
-```
-
-**Wrap a tool** so every call is automatically guarded:
-
-```typescript
-const guardedSearch = guard.wrap(webSearchTool, { agentId: 'planner' });
-// guardedSearch has the same interface as webSearchTool
-const results = await guardedSearch.call({ query: 'hello' });
-```
-
-**Wrap an entire toolkit** at once:
-
-```typescript
-const tools = guard.wrapAll(
-  [webSearchTool, codeExecutorTool, fileReadTool],
-  { agentId: 'executor', sessionId: currentSessionId },
-);
-// Pass `tools` to your LangChain agent — every call goes through AtlaSent
-```
-
-**agentGuard() factory** — convenience shorthand:
-
-```typescript
-import { agentGuard } from '@atlasent/action/connectors';
-
-const guard = agentGuard({ apiKey: process.env.ATLASENT_API_KEY! });
-
-// Direct call:
-const result = await guard.call(tool, args, { agentId: 'planner-v2' });
-
-// Wrap:
-const wrapped = guard.wrap(tool, { agentId: 'planner-v2' });
-
-// Underlying AgentGuard instance:
-console.log(guard.guard instanceof AgentGuard); // true
-```
-
-**Actor resolution** — the connector resolves the actor forwarded to AtlaSent
-in the following priority order:
-
-1. `ctx.agentId` → `"agent:<agentId>"`
-2. `ctx.userId` → `"user:<userId>"`
-3. `config.defaultActorId`
-4. `"agent:unknown"` (default fallback)
-
-**AgentGuardError** fields:
-
-```typescript
-class AgentGuardError extends Error {
-  decision:    'deny' | 'hold' | 'escalate' | 'error';
-  toolName:    string;   // tool.name that was blocked
-  evaluationId?: string; // AtlaSent evaluation id for the audit trail
-}
-```
-
-### Connector import paths
-
-```typescript
-// Subpath (preferred for tree-shaking):
-import { webhookGuard, AgentGuard, agentGuard, AgentGuardError }
-  from '@atlasent/action/connectors';
-
-// Or from the package root:
-import { webhookGuard, AgentGuard, agentGuard, AgentGuardError }
-  from '@atlasent/action';
-```
-
-### Enforcement contract
-
-All B7 connectors implement the same contract as the GitHub Actions reference:
-
-1. **Evaluate** — POST `/v1-evaluate` with `action_type`, `actor_id`, and context.
-2. **Decide** — non-`allow` decisions block immediately (no verifyPermit call).
-3. **Verify permit** — POST `/v1-verify-permit` to confirm the token hasn't
-   been replayed. Fail-closed: a missing permit token or failed verification blocks.
-4. **Execute** — only reached when all three steps pass.
-
-## SDK 2.11.0 Sub-clients
-
-As of `@atlasent/sdk@2.11.0`, action authors have access to typed sub-clients on the top-level `AtlaSentClient` instance. These are available wherever the SDK client is imported:
-
-| Sub-client | Description |
+| Input | Purpose |
 |---|---|
-| `client.auth` | Token refresh and IdP connection listing. Use to exchange short-lived tokens or enumerate configured identity providers. |
-| `client.scim` | SCIM 2.0 user and group provisioning. Manage users and groups in the AtlaSent directory via a standards-compliant interface. |
-| `client.evidenceBundles` | Generate and download evidence bundles for audit and compliance workflows. Bundles are Ed25519-signed and chain back to the append-only audit log. |
+| `action` | Protected action type for the single-evaluation path. |
+| `actor` | Actor identity; defaults to `github.actor`. |
+| `target-id` | Resource or object being acted on. |
+| `environment` | Execution environment. |
+| `context` | Additional application context; verified/derived GitHub facts win on collision. |
+| `approvals-from` | `pr-reviews` (default) or `none`. |
+| `artifact-digest` | SHA-256 artifact/execution binding. |
+| `mode` | `enforce` (default) or `evaluate-only`. |
+| `verify-permit` | Run verify-only at the execution boundary. |
+| `permit-token` | Permit to verify in boundary mode. |
+| `api-url` | Runtime base URL override. |
 
-In addition, `verifyEvidenceBundle(bundle)` is now exported from the SDK root for **offline bundle verification** — confirm the cryptographic integrity of a bundle without a network call. Useful in regulated environments where evidence artifacts are archived and re-verified later.
+`ATLASENT_API_KEY` authenticates the workflow to the AtlaSent runtime.
+`ATLASENT_BASE_URL` should be set for pilot or self-hosted deployments.
 
-```typescript
-import { AtlaSentClient, verifyEvidenceBundle } from '@atlasent/sdk';
+For the complete machine-readable input/output surface, see [`action.yml`](./action.yml).
 
-const client = new AtlaSentClient({ apiKey: process.env.ATLASENT_API_KEY! });
+## Core outputs
 
-// Generate an evidence bundle after a governed deploy
-const bundle = await client.evidenceBundles.generate({ evaluationId: 'eval-xyz' });
+| Output | Meaning |
+|---|---|
+| `verified` | `true` only after successful permit verification. |
+| `decision` | `allow`, `deny`, `hold`, or `escalate` on the single-eval path. |
+| `permit-token` | Permit token; consumed in normal mode, unconsumed in `evaluate-only`. |
+| `permit-issued` | Whether a permit was minted. Do not use this to gate execution. |
+| `evaluation-id` | Audit-lineage identifier. |
+| `proof-hash` | Cryptographic proof reference when returned by the runtime. |
+| `verify-outcome` | Coarse permit-verification result. |
+| `verify-error-code` | Precise runtime verification error code on failure. |
 
-// Verify offline at any future point
-const ok = await verifyEvidenceBundle(bundle);
-```
+## Fail-closed behavior
 
-## How It Works
+The protected step must not execute when:
 
-1. **Evaluate** — POST `/v1-evaluate` with `action_type`, `actor_id`, `target_id`, and a context object populated from GitHub workflow metadata (repo, ref, sha, workflow, run id, PR number, optional user-supplied `context`).
-2. **Decide** — Server returns `allow` / `deny` / `hold` / `escalate` plus a single-use `permit_token` (only when `allow`) and an optional `risk-score`.
-3. **Verify permit** — POST `/v1-verify-permit` to confirm the token hasn't been replayed. `verified=true` only when both steps pass.
-4. **Proceed or block** — deny/hold/escalate are fail-closed outcomes and fail the step in pilot mode.
-5. **Audit** — Every evaluation writes to the AtlaSent append-only, hash-chained audit log. The `evaluation-id` and `proof-hash` outputs reference the record.
+- the authorization decision is `deny`, `hold`, or `escalate`;
+- no permit is issued when one is required;
+- permit verification fails;
+- execution bindings differ;
+- a permit is expired, revoked, invalid, or already consumed;
+- the AtlaSent authority service is unavailable or authentication fails.
 
-## Protecting `main`
+A governance control that silently bypasses itself when its authority source is
+unreachable would create false assurance; this action therefore fails closed.
 
-Add the action as a required check:
+## Other modes
 
-1. Add secrets `ATLASENT_API_KEY` and `ATLASENT_BASE_URL` in **Settings → Secrets and variables → Actions**
-2. Wire the step into `.github/workflows/deploy.yaml`
-3. Enable **Settings → Branches → Branch protection rules** and mark the workflow as required
+The repository also contains additional CI-oriented surfaces such as batch
+evaluation, policy sync, release-candidate verification, governance-agent
+findings, VQP re-derivation, trajectory verification, and evidence-bundle
+output. Their machine-readable configuration is in [`action.yml`](./action.yml).
+They do not change the core rule: a protected execution path should proceed only
+when its required authorization and verification checks have actually passed.
 
-## Fail-closed on infrastructure errors
+For agent-tool interception rather than GitHub CI, use the public
+[`atlasent-mcp-server`](https://github.com/AtlaSent-Systems-Inc/atlasent-mcp-server)
+or the public [`atlasent-sdk`](https://github.com/AtlaSent-Systems-Inc/atlasent-sdk).
+For independent audit-chain verification, use
+[`atlasent-verify`](https://github.com/AtlaSent-Systems-Inc/atlasent-verify).
 
-If the action cannot reach the AtlaSent API (DNS, timeout, 5xx, 401/403, 429), it fails the step with `decision=error`. A security gate that silently lets deploys through when its authority source is unreachable is worse than no gate, so this is the default and recommended behaviour.
+## Security
 
-Infrastructure failures and non-allow policy decisions (`deny` / `hold` / `escalate`) are all fail-closed in pilot mode.
+Do not put API keys, private signing material, or customer secrets in workflow
+source or the `context` input. Use GitHub Actions secrets for credentials.
 
-## Documentation
-
-- Full docs: <https://atlasent.io/docs>
-- API key guide: [docs/api-keys.md](https://github.com/AtlaSent-Systems-Inc/atlasent-api/blob/main/docs/api-keys.md)
-- Examples: <https://github.com/AtlaSent-Systems-Inc/atlasent-examples>
+The `actor` field is authorization context; the API key authenticates the caller.
+Do not treat a caller-supplied actor string by itself as proof of a human's
+identity unless the applicable runtime policy explicitly binds it to trusted
+identity evidence.
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](./LICENSE). See [NOTICE](./NOTICE) for attribution.
+Licensed under the [Apache License, Version 2.0](./LICENSE).
 
 Copyright (c) AtlaSent IP Holdings LLC
-
-Commercial licensing inquiries: [legal@atlasent.io](mailto:legal@atlasent.io)

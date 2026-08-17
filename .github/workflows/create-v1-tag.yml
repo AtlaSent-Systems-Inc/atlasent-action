@@ -19,15 +19,117 @@ on:
 
 permissions:
   contents: write
+  statuses: write   # required for the AtlaSent gate's best-effort commit-status post
 
 jobs:
   move-tag:
     runs-on: ubuntu-latest
+    # Dedicated GitHub Environment for this workflow, distinct from any other
+    # capability class in this repo (matches the least-privilege,
+    # per-repo/environment ATLASENT_API_KEY precedent in
+    # atlasent-control-plane's aws-enforcement-apply.yml). This job previously
+    # had NO job-level `environment:` at all, meaning it shared a bare
+    # repo-level `ATLASENT_API_KEY` secret with every other workflow in this
+    # repo — fixed as part of the same change that adds the policy binding
+    # below, since the two are the same "who/what can repoint @v1" control:
+    # this is a REAL, GitHub-enforced access boundary (only a job declaring
+    # `tag-authority` can even read the secret), independent of and
+    # additional to the AtlaSent policy check itself.
+    environment: tag-authority
+    permissions:
+      contents: write
+      statuses: write   # required for the AtlaSent gate's best-effort commit-status post
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── AtlaSent gate ────────────────────────────────────────────────────
+      # This workflow force-repoints the floating `v1` tag that every
+      # consumer's `uses: AtlaSent-Systems-Inc/atlasent-action@v1` resolves
+      # to, org-wide — without going through release.yml's build/sign/verify
+      # pipeline at all. Gate it the same way release.yml gates a real
+      # release, on the action's own code (uses: ./), so a repoint is
+      # authorized by the same build it repoints trust to.
+      #
+      # Same action type as release.yml (`package.release`) — moving what
+      # `@v1` resolves to is the same class of "which build is the released
+      # one" decision as cutting a release, just via a different path. This
+      # is NOT release.yml's gate and does not share its template: template D
+      # (atlasent-api migrations 20260838000000/20260852000000/20260853000000)
+      # authorizes a human release manager on a genuine `refs/tags/vX.Y.Z`
+      # push; a `workflow_dispatch` run here is always a BRANCH ref, so D
+      # structurally cannot (and should not) match it.
+      #
+      # FOUNDER DECISION (this session): "authorize a real repository-bound
+      # GitHub Actions service identity. Bind repository, workflow,
+      # environment and tag target; remove placeholders without adding
+      # wildcards." Implemented as atlasent-api migration
+      # 20260911000000_package_release_create_v1_tag_service_identity.sql,
+      # template `package_release_create_v1_tag_service_identity` — four
+      # exact-match dimensions, no wildcard/prefix/regex anywhere in it:
+      #   1. repository   — context.repository/context.repo ==
+      #                      'AtlaSent-Systems-Inc/atlasent-action' (already
+      #                      auto-derived from GITHUB_REPOSITORY and forced to
+      #                      win over this step's own `context:` input by
+      #                      atlasent-action's context-override fix — see
+      #                      src/index.ts getGitHubContext()).
+      #   2. workflow      — context.workflow == 'Move v1 floating tag' (this
+      #                      workflow's exact `name:`, same auto-derive/force
+      #                      mechanism as #1; unique among this repo's
+      #                      workflow names).
+      #   3. environment   — context.gh_environment == 'tag-authority' (the
+      #                      job-level Environment declared above — a literal
+      #                      here because GitHub does not expose the job's
+      #                      environment name as a plain env var the way it
+      #                      does GITHUB_REPOSITORY/GITHUB_WORKFLOW).
+      #   4. tag target    — context.tag_target == 'v1' (literal; this
+      #                      workflow only ever repoints the `v1` alias).
+      #
+      # ACTOR is the CI job's own service identity, `github-actions[bot]`,
+      # hardcoded here — NOT `${{ github.actor }}` (the human who clicked
+      # "Run workflow", which denied ACTOR_NOT_ALLOWED under the old
+      # allow-list and would deny NO_TEMPLATE_MATCH under the new one, since
+      # no template authorizes a human to move this specific alias). This
+      # mirrors the exact precedent already shipped in atlasent-keys'
+      # publish-trust-root.yml: the pipeline's own service/workflow identity
+      # authorizes, not the human who triggered it; `github.actor` is carried
+      # below as `context.triggering_actor` for audit provenance only, never
+      # as the authorizing identity.
+      #
+      # HONESTY NOTE (see the PR description for the full investigation):
+      # this is self-asserted CONTEXT MATCHING, not cryptographic identity
+      # verification. AtlaSent has no mechanism today that verifies a real
+      # GitHub Actions OIDC token's signed claims (repository/workflow_ref/
+      # environment) — `_shared/actor_identity.ts`'s `requires_verified_actor`
+      # verifies a caller-constructed, pre-shared-key-signed assertion, not
+      # GitHub's own OIDC JWT, and this action has no OIDC-token-acquisition
+      # code in its `src/`. A future, more complete fix would request a real
+      # `id-token: write` OIDC token here and have the runtime verify it
+      # against GitHub's issuer — tracked as a known gap, not silently
+      # presented as already done. This binding is no weaker than every
+      # other gate in this org (template D above, and atlasent-keys'
+      # publish-trust-root.yml, bind actor_id + context the same
+      # self-asserted way) — it is exactly as strong as the rest of this
+      # org's fleet, not a regression, but not the fully-verified mechanism
+      # the founder's phrasing ultimately describes either.
+      #
+      # No `skip_gate` bypass for this workflow — deliberately kept absent
+      # (see the PR description for why); this remains a rare, sensitive,
+      # manual-only operation.
+      - name: AtlaSent tag-move gate
+        uses: ./
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          # Must be a GATE_PERMITTED_ACTIONS value (src/canonicalAction.ts).
+          action: package.release
+          actor: github-actions[bot]
+          environment: prod
+          context: '{"repo": "${{ github.repository }}", "ref": "${{ github.ref }}", "workflow": "${{ github.workflow }}", "gh_environment": "tag-authority", "tag_target": "v1", "triggering_actor": "${{ github.actor }}", "target_tag": "${{ github.event.inputs.target_tag }}", "commit_sha": "${{ github.event.inputs.commit_sha }}"}'
 
       - name: Resolve and move v1
         run: |

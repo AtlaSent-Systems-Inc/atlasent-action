@@ -19,15 +19,61 @@ on:
 
 permissions:
   contents: write
+  statuses: write   # required for the AtlaSent gate's best-effort commit-status post
 
 jobs:
   move-tag:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      statuses: write   # required for the AtlaSent gate's best-effort commit-status post
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── AtlaSent gate ────────────────────────────────────────────────────
+      # This workflow force-repoints the floating `v1` tag that every
+      # consumer's `uses: AtlaSent-Systems-Inc/atlasent-action@v1` resolves
+      # to, org-wide — without going through release.yml's build/sign/verify
+      # pipeline at all. Gate it the same way release.yml gates a real
+      # release, on the action's own code (uses: ./), so a repoint is
+      # authorized by the same build it repoints trust to.
+      #
+      # Same action type as release.yml (`package.release`) — moving what
+      # `@v1` resolves to is the same class of "which build is the released
+      # one" decision as cutting a release, just via a different path.
+      #
+      # KNOWN: this call is EXPECTED TO DENY today, same as release.yml's
+      # gate, and for an even more direct reason. The org's `package.release`
+      # policy (atlasent-api migration 20260838000000) gates on
+      # `allow_actors` BEFORE any template runs, and that list is
+      # `{github:github-actions[bot], <release-manager allow-list>}` — the
+      # release-manager entry is a deliberately unmatchable placeholder
+      # (`github:__TODO_CONFIRM_RELEASE_MANAGER__`, per that migration's
+      # "FOUNDER DECISION REQUIRED" note). `actor: ${{ github.actor }}`
+      # below is the human who dispatched this workflow, never the bot, so
+      # this denies ACTOR_NOT_ALLOWED before any template — including
+      # template D, which in any case requires a `refs/tags/vX.Y.Z` ref;
+      # workflow_dispatch runs against a branch ref, not a tag, so it
+      # wouldn't match D even for an allow-listed actor. This is the SAME
+      # underlying founder-decision gap release.yml documents, not a new
+      # one, and not something to "fix" by widening the allow-list or
+      # spoofing actor/context here. Do not add a `skip_gate` bypass for
+      # this workflow — see the PR description for why.
+      - name: AtlaSent tag-move gate
+        uses: ./
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          # Must be a GATE_PERMITTED_ACTIONS value (src/canonicalAction.ts).
+          action: package.release
+          actor: ${{ github.actor }}
+          environment: prod
+          context: '{"repo": "${{ github.repository }}", "ref": "${{ github.ref }}", "workflow": "${{ github.workflow }}", "target_tag": "${{ github.event.inputs.target_tag }}", "commit_sha": "${{ github.event.inputs.commit_sha }}"}'
 
       - name: Resolve and move v1
         run: |

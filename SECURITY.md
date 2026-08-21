@@ -57,22 +57,24 @@ We follow [responsible disclosure](https://cheatsheetseries.owasp.org/cheatsheet
 - **API key handling**: `ATLASENT_API_KEY` is passed as a GitHub Actions secret and used as a Bearer token. It is never echoed to logs. The action calls `core.setSecret()` at startup to mask the key if it appears in any output.
 - **Fail-closed**: If the AtlaSent API is unreachable or returns an error, the action exits with a non-zero exit code and fails the workflow step. It never silently defaults to `allow`.
 - **Inputs**: All action inputs (`actor`, `action`, `target-id`, `context`, etc.) are validated before forwarding to the AtlaSent API. No shell interpolation is performed on input values.
-- **Outputs**: The action sets `decision` (`allow`/`deny`), `permit-id`, and `reason` as step outputs. These are not masked since they are not secrets, but callers should not use `permit-id` as a credential.
+- **Outputs**: The action sets `decision` (`allow`/`deny`/`hold`/`escalate`), `verified`, and `permit-token` as step outputs. These are not masked since they are not secrets, but callers should not use `permit-token` as a credential — gate execution on `verified`, not `decision`.
 - **Supply chain**: The action bundles its compiled output in `dist/index.js`. The build is reproducible from source via `npm run build`. Pin to a specific commit SHA in production workflows.
 - **Permissions**: The action requires no GitHub token by default. It only needs network access to the AtlaSent API endpoint.
 
 ## Recommended usage
 
 ```yaml
-- uses: atlasent-systems-inc/atlasent-action@v1  # pin to SHA in production
+- uses: AtlaSent-Systems-Inc/atlasent-action@v1  # pin to SHA in production
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
   with:
-    api-key: ${{ secrets.ATLASENT_API_KEY }}
     action: production.deploy
     actor: ${{ github.actor }}
     target-id: ${{ github.repository }}
 ```
 
-**Never** pass `api-key` as a plain string. Always use `${{ secrets.YOUR_SECRET }}`.
+**Never** hardcode `ATLASENT_API_KEY` as a plain string in the workflow. Always reference it via `${{ secrets.YOUR_SECRET }}`.
 
 ## Security contact
 

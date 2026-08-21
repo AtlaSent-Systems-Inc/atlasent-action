@@ -62,50 +62,43 @@ jobs:
       # KNOWN OPEN ISSUES (both require atlasent-api / operator action, NOT
       # an atlasent-action code change — do not "fix" either by spoofing the
       # actor or context below):
-      #   1. STILL OPEN. The last real (non-bootstrap) gate runs (2026-06-29,
-      #      run IDs 28344572087 / 28344637307) failed closed with
-      #      "AtlaSent Gate: Authentication failed (HTTP 401)" from
-      #      `POST /v1-evaluate` — before any policy was evaluated. This is
-      #      the runtime's own `denyResponse("unauthenticated", ...)`
-      #      ("API key not found or inactive"), thrown when
-      #      `ATLASENT_API_KEY` doesn't resolve to an active row via
-      #      `validate_api_key`. Needs an operator to verify/rotate the
-      #      `ATLASENT_API_KEY` / `ATLASENT_BASE_URL` repo secrets against
-      #      the runtime project (kttccumlnmdtupgbyfue) in atlasent-api.
-      #      This gate WILL STILL 401 until that verification happens, even
-      #      after issue 2 below is activated for the production org.
-      #   2. FIXED IN SHAPE, DELIBERATELY INERT PENDING A FOUNDER DECISION
-      #      (atlasent-api migration 20260838000000_package_release_
-      #      atlasent_action_gate.sql). The `package.release` policy
-      #      bundle's two existing templates (seeded by
-      #      20260623000004/…005/20260708000000) only ever allowed
-      #      `actor_id = 'github:github-actions[bot]'` plus either
-      #      `context.signed_tag = true` (never set anywhere in this repo)
-      #      or `context.workflow = 'Publish to PyPI'` (this workflow is
-      #      named "Release" — it never matched). Meanwhile
-      #      `actor: ${{ github.actor }}` below is the *human* who pushed
-      #      the release tag on the documented RELEASING.md flow (confirmed
-      #      live: actor "github:bettyc925" in run 28344637307), not the
-      #      bot — the existing templates were authored for atlasent-sdk's
-      #      PyPI publisher and reused here without a matching template.
-      #
-      #      The fix adds a third template scoped to this exact repo +
-      #      a strict vX.Y.Z tag-ref regex + a durable release-manager
-      #      allow-list — deliberately NOT a re-add of the old one-off
-      #      `github:bettyc925` TEMP exception. That allow-list currently
-      #      holds a single placeholder identity
-      #      (`github:__TODO_CONFIRM_RELEASE_MANAGER__`) that cannot match
-      #      any real GitHub actor_id (double underscores aren't legal in
-      #      GitHub usernames) — so today this template is a
-      #      structurally-correct no-op and this gate STILL denies every
-      #      real release exactly as before. It stays that way until an
-      #      operator/founder decides who the durable authorized release
-      #      managers for this repo are, ships a follow-up migration (or
-      #      amends the placeholder) naming them, and runs
-      #      `SELECT public.seed_package_release_bundle('<atlasent's real
-      #      org uuid>')` against production. See that migration's own
-      #      "FOUNDER DECISION REQUIRED" comment block for the full
-      #      write-up.
+      #   1. STILL OPEN (unverified as of 2026-08-21). The last real
+      #      (non-bootstrap) gate runs (2026-06-29, run IDs 28344572087 /
+      #      28344637307) failed closed with "AtlaSent Gate: Authentication
+      #      failed (HTTP 401)" from `POST /v1-evaluate` — before any policy
+      #      was evaluated. This is the runtime's own
+      #      `denyResponse("unauthenticated", ...)` ("API key not found or
+      #      inactive"), thrown when `ATLASENT_API_KEY` doesn't resolve to
+      #      an active row via `validate_api_key`. Needs an operator to
+      #      verify/rotate the `ATLASENT_API_KEY` / `ATLASENT_BASE_URL` repo
+      #      secrets against the runtime project (kttccumlnmdtupgbyfue) in
+      #      atlasent-api. This gate will still 401 until that verification
+      #      happens, independent of issue 2's status below.
+      #   2. RESOLVED IN SHAPE AND DECIDED — apply status unconfirmed on
+      #      production as of 2026-08-21 (updated; this comment previously
+      #      described this as "pending a founder decision," which is now
+      #      stale). The founder decision WAS made and recorded, twice, in
+      #      atlasent-api: migration `20260852000000_package_release_
+      #      manager_bettyc925.sql` replaced the `package.release`
+      #      allow-list's placeholder identity with `github:bettyc925` as
+      #      the release-manager identity ("for now ... revisit around
+      #      2026-11-11" — a ~3-month window from the 2026-08-10 decision,
+      #      not a permanent grant), and `20260853000000_seed_package_
+      #      release_atlasent_action_gate.sql` activated the resulting
+      #      template D for this repo's confirmed real org
+      #      (`1a67b4ca-70d5-4e0b-bebf-0aca6cca21e7`). Both migrations are
+      #      merged to atlasent-api's `main` and confirmed applied on
+      #      **staging** (verified directly against a `deploy-staging.yml`
+      #      run's migration-list output, not inferred from the migration
+      #      log). **Production apply status was not directly verified** —
+      #      per atlasent-api's own hard-won lesson, neither a migration-log
+      #      entry nor deploy-run timing proves an object exists on a given
+      #      target; only a direct query does (`docs/MIGRATION_LOG.md`'s own
+      #      "production object verification is evidence" rule). If this
+      #      gate is still denying on a real (non-bootstrap) release attempt
+      #      after issue 1 is resolved, check whether these two migrations
+      #      have actually reached the production runtime project — that is
+      #      now the remaining gap, not an open decision.
       - name: AtlaSent release gate
         if: ${{ github.event.inputs.bootstrap != 'true' }}
         uses: ./

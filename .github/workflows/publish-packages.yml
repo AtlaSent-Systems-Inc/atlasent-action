@@ -28,13 +28,100 @@ on:
         description: 'Publish to npm (false = build + test only, dry run)'
         type: boolean
         default: false
+      skip_gate:
+        # EMERGENCY ONLY. Bypasses the AtlaSent publish gate for this manual
+        # run. Unreachable on tag-triggered runs (no `inputs` context there)
+        # — only a manual dispatch can set it. Every use is logged loudly.
+        # Mirrors the pattern already shipped for this repo's other publish
+        # surfaces' peers (e.g. atlasent-control-plane's
+        # publish-marketplace-images.yml, atlasent-keys'
+        # publish-trust-root.yml).
+        description: 'EMERGENCY: bypass the AtlaSent publish gate for this manual run'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
   id-token: write   # required for npm provenance (Sigstore OIDC)
+  statuses: write   # required for the AtlaSent gate's best-effort commit-status post
 
 jobs:
+  # ── AtlaSent publish gate (dogfood) ─────────────────────────────────────
+  # This workflow is a SECOND, independent npm-publish surface in this repo —
+  # release.yml (which ships the dist/index.js action bundle as a GitHub
+  # Release) already gates its release with `package.release`, but this
+  # separate tag trigger (`npm-v*.*.*`), which publishes the real, public
+  # @atlasent/enforce and @atlasent/action packages to the npm registry, had
+  # NO AtlaSent authorization check of any kind. Found by the same
+  # dogfooding-audit sweep that gated the equivalent publish surfaces in
+  # atlasent-control-plane (image/tenant/Terraform-apply workflows) and
+  # atlasent-keys (trust-root publish).
+  #
+  # Gated on the action's OWN code (uses: ./), same as release.yml and
+  # create-v1-tag.yml in this repo — each publish is authorized by the very
+  # build it is publishing. Same `package.release` action type as
+  # release.yml: publishing @atlasent/action and @atlasent/enforce to npm is
+  # the same class of "release a package" decision as cutting the action's
+  # GitHub Release, just via a different distribution channel — prefer this
+  # repo's own internal-consistency precedent over the `production.deploy`
+  # convention used by unrelated repos' image/artifact gates.
+  #
+  # No dedicated GitHub Environment — mirrors release.yml, the closest
+  # precedent (also a version-tag-triggered package release), which reads
+  # ATLASENT_API_KEY as a bare repo secret. This is a deliberately different
+  # choice from create-v1-tag.yml's dedicated `tag-authority` Environment,
+  # which exists because repointing the floating `v1` alias is a rarer,
+  # higher-blast-radius, org-wide trust operation than an ordinary version
+  # release.
+  #
+  # KNOWN OPEN ISSUE (same as release.yml, not re-litigated here): the
+  # `package.release` policy bundle's release-manager allow-list is still a
+  # placeholder pending a founder decision (see release.yml's gate comment
+  # for the full write-up) — until that lands, this gate denies every real
+  # (non-bootstrap, non-skip_gate) run by design, same as release.yml today.
+  # Requires an `ATLASENT_API_KEY` secret (scopes `evaluate:write` +
+  # `verify:execute`); until provisioned/activated, every run — including
+  # ordinary tag pushes — fails at the gate step.
+  gate:
+    name: AtlaSent publish gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write   # required for the AtlaSent gate's best-effort commit-status post
+    outputs:
+      verified: ${{ steps.atlasent_gate.outputs.verified }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: AtlaSent publish gate
+        id: atlasent_gate
+        if: ${{ !inputs.skip_gate }}
+        uses: ./
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          # Must be a GATE_PERMITTED_ACTIONS value (src/canonicalAction.ts).
+          action: package.release
+          actor: ${{ github.actor }}
+          environment: prod
+          context: '{"ref": "${{ github.ref }}", "repo": "${{ github.repository }}", "artifact": "npm-packages"}'
+
+      - name: Surface gate outcome (deny is loud, and blocks)
+        if: ${{ !inputs.skip_gate && failure() && steps.atlasent_gate.outcome == 'failure' }}
+        run: |
+          echo "::error title=ATLASENT GATE DID NOT ALLOW::The AtlaSent publish gate step failed (deny/hold/escalate or gate error). Publishing @atlasent/enforce and @atlasent/action to npm is BLOCKED. Actor: ${{ github.actor }}. If this is a workflow_dispatch run with a genuine policy-activation gap (not a real policy violation), re-run with skip_gate=true — that bypass is logged and loud, not silent. skip_gate has no effect on tag-triggered runs."
+
+      - name: Gate bypass warning
+        if: ${{ inputs.skip_gate }}
+        run: |
+          echo "::warning title=PUBLISH GATE BYPASSED::skip_gate=true — AtlaSent authorization gate was bypassed by ${{ github.actor }} for this npm package publish. This run is NOT authorize-before-execute compliant. Use only to recover from a genuine gate deadlock; re-enable the gate on the next run."
+
   publish:
+    name: Publish
+    needs: gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -53,7 +140,7 @@ jobs:
       - run: npm test -w @atlasent/enforce -w @atlasent/action
 
       - name: Resolve whether to publish
-        id: gate
+        id: resolve
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
@@ -64,14 +151,19 @@ jobs:
       # Publish enforce first (action depends on it), then action. npm uses the
       # publishConfig (access: public, provenance: true) declared in each
       # package.json; --provenance is passed explicitly for clarity.
+      #
+      # Fail-closed: gated on the AtlaSent gate job's `verified` output (or an
+      # explicit `skip_gate` bypass) in addition to the pre-existing
+      # publish-intent resolution above. Gate error/deny/timeout means these
+      # steps do not run.
       - name: Publish @atlasent/enforce
-        if: ${{ steps.gate.outputs.publish == 'true' }}
+        if: ${{ steps.resolve.outputs.publish == 'true' && (needs.gate.outputs.verified == 'true' || inputs.skip_gate) }}
         run: npm publish -w @atlasent/enforce --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @atlasent/action
-        if: ${{ steps.gate.outputs.publish == 'true' }}
+        if: ${{ steps.resolve.outputs.publish == 'true' && (needs.gate.outputs.verified == 'true' || inputs.skip_gate) }}
         run: npm publish -w @atlasent/action --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

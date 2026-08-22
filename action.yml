@@ -224,6 +224,69 @@ inputs:
       alter the gate decision. Set to "false" to suppress PR comments.
     required: false
     default: 'true'
+  # ── Change Brief (production-change impact preparation) ──────────────────────────────
+  change-brief:
+    description: |
+      When "true", run in change-brief mode instead of evaluate: gather this
+      run's real GitHub/CI facts (base/head SHA, changed files, check-run
+      conclusions) and call v1-change-brief so a human reviewer sees what is
+      changing, what AtlaSent can establish, and what remains unknown —
+      BEFORE a deploy is authorized. Mints no permit and authorizes nothing;
+      a separate evaluate/verify step (the default `action:` mode) remains
+      the actual authorization gate. Mutually exclusive with evaluate,
+      policy-sync, release-mode, governance-agents, vqp-snapshot-id, and
+      trajectory-verify. Requires GITHUB_TOKEN (for the diff/check-run reads)
+      in addition to ATLASENT_API_KEY.
+    required: false
+    default: 'false'
+  change-brief-action:
+    description: 'Protected action type for the brief. Defaults to the `action` input, then production.deploy. Unlike evaluate mode, not restricted to a client-side allowlist — the runtime action-class configuration is the real authority.'
+    required: false
+    default: ''
+  change-brief-target-system:
+    description: 'target_system for the brief subject. Defaults to "github".'
+    required: false
+    default: ''
+  change-brief-target-id:
+    description: 'target_id for the brief subject. Defaults to the `target-id` input, then the repository (owner/repo).'
+    required: false
+    default: ''
+  change-brief-base-sha:
+    description: 'Explicit base revision override. Required for events other than pull_request/push (e.g. workflow_dispatch), where no base SHA can be resolved automatically.'
+    required: false
+    default: ''
+  change-brief-head-sha:
+    description: 'Explicit head revision override. Defaults to the resolved PR head SHA (pull_request events) or GITHUB_SHA.'
+    required: false
+    default: ''
+  change-request:
+    description: 'Optional business reason / ticket reference for the change, reproduced verbatim in the brief (never inferred from the diff).'
+    required: false
+    default: ''
+  rollback-previous-sha:
+    description: 'Previously deployed revision, if known — reported as rollback evidence rather than left as a missing-evidence gap.'
+    required: false
+    default: ''
+  rollback-workflow:
+    description: 'Name of a workflow that can roll this deployment back, if one exists.'
+    required: false
+    default: ''
+  rollback-reference:
+    description: 'A rollback runbook/reference URL or identifier, if one exists.'
+    required: false
+    default: ''
+  console-base-url:
+    description: 'Base URL of the AtlaSent console, used to build the change-brief-console-url output. Defaults to https://console.atlasent.io.'
+    required: false
+    default: ''
+  pr-comment-on-change-brief:
+    description: |
+      When "true", post the change-brief job summary as a PR comment (when a
+      PR number is detected). Default "false" — unlike pr-comment-on-deny,
+      this is opt-in, since a brief comment on every push would be noisy for
+      workflows that run change-brief mode on every commit.
+    required: false
+    default: 'false'
   # ── Post-deploy compliance evidence bundle ────────────────────────────────────────────
   evidence-bundle:
     description: |
@@ -312,6 +375,18 @@ outputs:
     description: 'JSON array of per-item decision results for the batch path. Each item: {decision, verified, evaluationId, permitToken, reasons, verifyOutcome}.'
   batch-id:
     description: 'Batch identifier for batch evaluations (either the server-assigned batchId or loop-<ts> for the sequential fallback).'
+  change-brief-id:
+    description: 'brief_id from v1-change-brief. Change-brief mode only.'
+  change-brief-recommendation:
+    description: 'The brief''s recommendation value (approve/request_evidence/escalate/deny) — a RECOMMENDATION for a human reviewer, never an authorization decision. Change-brief mode only.'
+  change-brief-classification:
+    description: 'The brief''s classification value (routine/review_ready/incomplete/exceptional/prohibited). Change-brief mode only.'
+  change-brief-material-differences-count:
+    description: 'Count of material_differences the brief reported (e.g. detected migration, workflow change). Change-brief mode only.'
+  change-brief-canonical-plan-digest:
+    description: 'The sha256:<hex> canonical_plan_digest computed for this base/head SHA pair — pass the SAME value as evaluate''s context.canonical_plan_digest so the brief and the eventual permit describe the same change. Change-brief mode only.'
+  change-brief-console-url:
+    description: 'Deep link into the AtlaSent console review screen. NOTE: does not yet carry this run''s GitHub-sourced facts (a documented gap — see README) — the job summary is the complete record. Change-brief mode only.'
   financial-governance-advice:
     description: 'JSON advisory output from financial governance assessment'
   chain-entry:

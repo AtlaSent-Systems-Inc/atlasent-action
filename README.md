@@ -265,6 +265,60 @@ The protected step must not execute when:
 A governance control that silently bypasses itself when its authority source is
 unreachable would create false assurance; this action therefore fails closed.
 
+## Change Brief mode
+
+Before a production change is authorized, a reviewer often wants to see what
+is actually changing — not just whether the gate will allow it. Set
+`change-brief: "true"` to gather this run's real GitHub/CI facts (base/head
+SHA, changed files, check-run conclusions) and call AtlaSent's
+`v1-change-brief`, instead of evaluating:
+
+```yaml
+      - name: AtlaSent Change Brief
+        id: brief
+        uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          change-brief: "true"
+          target-id: account-service
+          environment: production
+
+      - name: AtlaSent gate
+        id: gate
+        uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+        with:
+          action: production.deploy
+          target-id: account-service
+          environment: production
+```
+
+This mode **mints no permit and authorizes nothing** — it is a preparation
+artifact, per `v1-change-brief`'s own contract. A separate evaluate/verify
+step (the default `action:` mode, shown above) remains the actual
+authorization gate; do not gate a deploy on `change-brief-recommendation`.
+
+The job summary this step writes is the complete, sourced record of what was
+found (detected DB migrations, dependency/workflow changes, CI check status —
+explicitly never conflated with "tests passed", rollback readiness). The
+`change-brief-console-url` output links into the AtlaSent console review
+screen, but that page does not yet carry this run's GitHub-sourced facts (a
+known gap in the console's request shape) — treat the job summary as
+authoritative until that's closed.
+
+Key inputs: `change-brief-action` / `change-brief-target-system` /
+`change-brief-target-id` (default to `action` / `"github"` / `target-id`),
+`change-brief-base-sha` / `change-brief-head-sha` (required for events other
+than `pull_request`/`push`), `change-request`, `rollback-previous-sha` /
+`rollback-workflow` / `rollback-reference`, `console-base-url`,
+`pr-comment-on-change-brief` (default `"false"` — opt in, since a comment on
+every push would be noisy). Full reference in [`action.yml`](./action.yml).
+
 ## Other modes
 
 The repository also contains additional CI-oriented surfaces such as batch

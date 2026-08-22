@@ -45,6 +45,11 @@ import {
 import { runVqpVerify } from "./vqpVerify";
 import { resolveApprovals, type ApprovalEvidence } from "./approvals";
 import { buildGateStepSummary, type GateOutcome } from "./stepSummary";
+import {
+  ChangeBriefError,
+  renderChangeBriefStepSummary,
+  runChangeBrief,
+} from "./changeBrief";
 
 function getApiKey(): string {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -787,6 +792,141 @@ async function runPolicySyncStep(apiKey: string, apiUrl: string): Promise<void> 
 }
 
 // ---------------------------------------------------------------------------
+// Change Brief step — preparation artifact for human review.
+//
+// Gathers GitHub/CI facts this run already has access to (base/head SHA,
+// changed files, check-run conclusions) and calls v1-change-brief. Never
+// authorizes anything and never gates a deploy on its own — a separate
+// evaluate/verify (the default `action:` mode) remains the actual
+// authorization boundary. This step's job is to give a human reviewer real
+// facts instead of "no change tool connected".
+// ---------------------------------------------------------------------------
+
+async function runChangeBriefStep(apiKey: string, apiUrl: string): Promise<void> {
+  const gh = getGitHubContext();
+  const actor = getInput("actor") || "unknown";
+  const environment = resolveEnvironment(getInput("environment"), gh.ref, apiKey);
+  const actionType = (
+    getInput("change-brief-action") || getInput("action") || PRODUCTION_DEPLOY_ACTION
+  ).trim();
+  const targetSystem = getInput("change-brief-target-system") || "github";
+  const targetId = getInput("change-brief-target-id") || getInput("target-id") || gh.repository;
+  const changeRequest = getInput("change-request") || undefined;
+  const consoleBaseUrl = (getInput("console-base-url") || "https://console.atlasent.io").replace(
+    /\/$/,
+    "",
+  );
+
+  const rollbackPreviousSha = getInput("rollback-previous-sha") || undefined;
+  const rollbackWorkflow = getInput("rollback-workflow") || undefined;
+  const rollbackReference = getInput("rollback-reference") || undefined;
+  const rollback =
+    rollbackPreviousSha || rollbackWorkflow || rollbackReference
+      ? {
+          previous_deployed_sha: rollbackPreviousSha ?? null,
+          rollback_workflow: rollbackWorkflow ?? null,
+          rollback_reference: rollbackReference ?? null,
+        }
+      : undefined;
+
+  info(
+    `AtlaSent Change Brief: preparing "${actionType}" for ${targetSystem}/${targetId} ` +
+      `(${environment}), commit ${gh.sha.slice(0, 8)}`,
+  );
+
+  const clearOutputs = (): void => {
+    setOutput("change-brief-id", "");
+    setOutput("change-brief-recommendation", "");
+    setOutput("change-brief-classification", "");
+    setOutput("change-brief-material-differences-count", "");
+    setOutput("change-brief-canonical-plan-digest", "");
+    setOutput("change-brief-console-url", "");
+  };
+
+  let result;
+  try {
+    result = await runChangeBrief({
+      apiKey,
+      apiUrl,
+      actionType,
+      targetSystem,
+      targetId,
+      environment,
+      actorId: `github:${actor}`,
+      changeRequest,
+      githubToken: process.env["GITHUB_TOKEN"],
+      githubApiBase: process.env["GITHUB_API_URL"],
+      repository: gh.repository,
+      eventName: gh.event_name,
+      eventPath: process.env["GITHUB_EVENT_PATH"],
+      fallbackSha: gh.sha,
+      fallbackRef: gh.ref,
+      overrideBaseSha: getInput("change-brief-base-sha") || undefined,
+      overrideHeadSha: getInput("change-brief-head-sha") || undefined,
+      workflow: {
+        name: gh.workflow,
+        run_id: gh.run_id,
+        run_url: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+      },
+      rollback,
+      log: info,
+      warn: warning,
+    });
+  } catch (err) {
+    clearOutputs();
+    const message =
+      err instanceof ChangeBriefError || err instanceof Error ? err.message : String(err);
+    setFailed(`AtlaSent Change Brief: ${message}`);
+    return;
+  }
+
+  const { brief, canonicalPlanDigest } = result;
+
+  setOutput("change-brief-id", brief.brief_id);
+  setOutput("change-brief-recommendation", brief.recommendation.value);
+  setOutput("change-brief-classification", brief.classification.value);
+  setOutput("change-brief-material-differences-count", String(brief.material_differences.length));
+  setOutput("change-brief-canonical-plan-digest", canonicalPlanDigest);
+
+  // NOTE: this deep link does NOT carry `github_change_plan` — the console's
+  // /change-brief route builds its request from URL query params only, and a
+  // structured fact blob (changed-file lists, check-run arrays) doesn't fit
+  // in a URL. A human following this link today gets the base identity
+  // (subject/reviewer/consequence, all sourced independently of GitHub) but
+  // NOT the GitHub-sourced impact/material_differences this step just
+  // computed — those are in the Job Summary below, which is the authoritative
+  // record of this run's facts until that gap is closed.
+  const consoleUrl =
+    `${consoleBaseUrl}/change-brief?` +
+    new URLSearchParams({
+      action_type: actionType,
+      target_system: targetSystem,
+      target_id: targetId,
+      environment,
+      canonical_plan_digest: canonicalPlanDigest,
+      actor_id: `github:${actor}`,
+    }).toString();
+  setOutput("change-brief-console-url", consoleUrl);
+
+  info(`  Brief ID:             ${brief.brief_id}`);
+  info(`  Recommendation:       ${brief.recommendation.value}`);
+  info(`  Classification:       ${brief.classification.value}`);
+  info(`  Material differences: ${brief.material_differences.length}`);
+
+  const summary =
+    renderChangeBriefStepSummary(result) +
+    "\n" +
+    `[Continue in the AtlaSent console](${consoleUrl}) — note: that page does not yet carry ` +
+    "this run's GitHub-sourced facts (see this action's README); the table above is the full picture.\n";
+  appendToStepSummary(summary);
+
+  const commentEnabled = getInput("pr-comment-on-change-brief").toLowerCase() === "true";
+  if (commentEnabled && gh.pr_number) {
+    await postPRComment({ repository: gh.repository, prNumber: gh.pr_number, body: summary });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Release-candidate post-deploy mode
 // ---------------------------------------------------------------------------
 
@@ -1079,6 +1219,17 @@ export async function run(): Promise<void> {
   // `governance-fail-on-severity` input is opt-in.
   if (getInput("governance-agents")) {
     await runGovernanceAgentsStep(apiKey, apiUrl);
+    return;
+  }
+
+  // ── Change Brief path ────────────────────────────────────────────────────
+  //
+  // A preparation artifact for human review — gathers GitHub/CI facts and
+  // calls v1-change-brief. Mints no permit and authorizes nothing; a
+  // separate evaluate/verify step (the default `action:` mode) remains the
+  // actual authorization boundary for the deploy itself.
+  if (getInput("change-brief").toLowerCase() === "true") {
+    await runChangeBriefStep(apiKey, apiUrl);
     return;
   }
 

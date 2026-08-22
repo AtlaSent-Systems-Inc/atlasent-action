@@ -1704,6 +1704,393 @@ function buildGateStepSummary(input) {
   return lines.join("\n");
 }
 
+// src/changeBrief.ts
+var fs3 = __toESM(require("fs"));
+var GITHUB_API_DEFAULT = "https://api.github.com";
+function canonicalize(value) {
+  if (value === null || typeof value !== "object")
+    return JSON.stringify(value);
+  if (Array.isArray(value))
+    return `[${value.map(canonicalize).join(",")}]`;
+  const obj = value;
+  const keys = Object.keys(obj).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalize(obj[k])}`).join(",")}}`;
+}
+async function computeGithubPlanDigest(input) {
+  const projection = {
+    plan_format: "git-sha",
+    repository: input.repository,
+    base_sha: input.base_sha,
+    head_sha: input.head_sha,
+    ref: input.ref ?? null
+  };
+  const encoded = new TextEncoder().encode(canonicalize(projection));
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", encoded);
+  const hex = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `sha256:${hex}`;
+}
+function resolveBaseHead(args) {
+  const readFile = args.readFile ?? ((p) => fs3.readFileSync(p, "utf-8"));
+  const empty = {
+    base_sha: args.overrideBase || null,
+    head_sha: args.overrideHead || args.fallbackSha,
+    ref: args.fallbackRef || null,
+    pull_request_number: null,
+    pr_author: null,
+    merge_actor: null,
+    pr_url: null
+  };
+  if (args.overrideBase && args.overrideHead) {
+    return { ...empty, base_sha: args.overrideBase, head_sha: args.overrideHead };
+  }
+  if (!args.eventPath)
+    return empty;
+  let payload;
+  try {
+    payload = JSON.parse(readFile(args.eventPath));
+  } catch {
+    return empty;
+  }
+  if ((args.eventName === "pull_request" || args.eventName === "pull_request_target") && payload && typeof payload === "object") {
+    const pr = payload.pull_request;
+    if (pr?.base?.sha && pr?.head?.sha) {
+      return {
+        base_sha: args.overrideBase || pr.base.sha,
+        head_sha: args.overrideHead || pr.head.sha,
+        ref: pr.head.ref ?? args.fallbackRef ?? null,
+        pull_request_number: payload.number ?? null,
+        pr_author: pr.user?.login ?? null,
+        merge_actor: pr.merged_by?.login ?? null,
+        pr_url: pr.html_url ?? null
+      };
+    }
+  }
+  if (args.eventName === "push" && payload && typeof payload === "object") {
+    const push = payload;
+    const ALL_ZERO = /^0+$/;
+    if (push.before && push.after && !ALL_ZERO.test(push.before)) {
+      return {
+        base_sha: args.overrideBase || push.before,
+        head_sha: args.overrideHead || push.after,
+        ref: args.fallbackRef || null,
+        pull_request_number: null,
+        pr_author: null,
+        merge_actor: null,
+        pr_url: null
+      };
+    }
+  }
+  return empty;
+}
+function ghHeaders2(token) {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
+}
+var COMPARE_FILES_SOFT_CAP = 300;
+var STATUS_MAP = {
+  added: "added",
+  removed: "removed",
+  modified: "modified",
+  renamed: "renamed",
+  copied: "copied",
+  changed: "changed",
+  unchanged: "unchanged"
+};
+async function fetchChangedFiles(args) {
+  const fetchImpl = args.fetchImpl ?? fetch;
+  const apiBase = (args.apiBase ?? GITHUB_API_DEFAULT).replace(/\/+$/, "");
+  const url = `${apiBase}/repos/${args.repository}/compare/${args.base_sha}...${args.head_sha}`;
+  try {
+    const res = await fetchImpl(url, { headers: ghHeaders2(args.token) });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "<unreadable>");
+      return {
+        ok: false,
+        files: [],
+        truncated: false,
+        additions_total: 0,
+        deletions_total: 0,
+        compare_url: null,
+        error: `compare failed (${res.status}): ${text.slice(0, 200)}`
+      };
+    }
+    const data = await res.json();
+    const rawFiles = data.files ?? [];
+    const files = rawFiles.map((f) => ({
+      path: f.filename,
+      additions: f.additions,
+      deletions: f.deletions,
+      status: STATUS_MAP[f.status] ?? "modified",
+      previous_path: f.previous_filename ?? null
+    }));
+    return {
+      ok: true,
+      files,
+      truncated: rawFiles.length >= COMPARE_FILES_SOFT_CAP,
+      additions_total: files.reduce((sum, f) => sum + f.additions, 0),
+      deletions_total: files.reduce((sum, f) => sum + f.deletions, 0),
+      compare_url: data.html_url ?? null
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      files: [],
+      truncated: false,
+      additions_total: 0,
+      deletions_total: 0,
+      compare_url: null,
+      error: err instanceof Error ? err.message : String(err)
+    };
+  }
+}
+var MAX_CHECK_RUN_PAGES = 10;
+var CHECK_RUNS_PER_PAGE = 100;
+async function fetchCheckRuns(args) {
+  const fetchImpl = args.fetchImpl ?? fetch;
+  const apiBase = (args.apiBase ?? GITHUB_API_DEFAULT).replace(/\/+$/, "");
+  const checks = [];
+  for (let page = 1; page <= MAX_CHECK_RUN_PAGES; page++) {
+    const url = `${apiBase}/repos/${args.repository}/commits/${args.ref}/check-runs?per_page=${CHECK_RUNS_PER_PAGE}&page=${page}`;
+    let batch;
+    try {
+      const res = await fetchImpl(url, { headers: ghHeaders2(args.token) });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "<unreadable>");
+        return { ok: false, checks: [], error: `check-runs failed (${res.status}): ${text.slice(0, 200)}` };
+      }
+      const data = await res.json();
+      batch = data.check_runs ?? [];
+    } catch (err) {
+      return { ok: false, checks: [], error: err instanceof Error ? err.message : String(err) };
+    }
+    if (batch.length === 0)
+      break;
+    for (const c of batch) {
+      checks.push({
+        name: c.name,
+        status: c.status ?? "queued",
+        conclusion: c.conclusion ?? null,
+        html_url: c.html_url ?? null
+      });
+    }
+    if (batch.length < CHECK_RUNS_PER_PAGE)
+      break;
+  }
+  return { ok: true, checks };
+}
+var ChangeBriefError = class extends Error {
+};
+async function runChangeBrief(opts) {
+  const log = opts.log ?? (() => {
+  });
+  const warn = opts.warn ?? (() => {
+  });
+  const now = (opts.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+  const token = (opts.githubToken ?? "").trim();
+  if (!token) {
+    throw new ChangeBriefError(
+      "change-brief mode requires GITHUB_TOKEN to read the diff and check runs (pass `env: GITHUB_TOKEN: ${{ github.token }}`)."
+    );
+  }
+  const resolved = resolveBaseHead({
+    eventName: opts.eventName,
+    eventPath: opts.eventPath,
+    fallbackSha: opts.fallbackSha,
+    fallbackRef: opts.fallbackRef,
+    overrideBase: opts.overrideBaseSha,
+    overrideHead: opts.overrideHeadSha,
+    readFile: opts.readFile
+  });
+  if (!resolved.base_sha) {
+    warn(
+      `AtlaSent change-brief: no base revision could be resolved for this event ("${opts.eventName}") \u2014 the brief's baseline comparison will report "not possible" rather than a fabricated diff. Pass change-brief-base-sha / change-brief-head-sha explicitly for events other than pull_request/push.`
+    );
+  }
+  let changed_files = [];
+  let changed_files_truncated = false;
+  let additions_total = 0;
+  let deletions_total = 0;
+  let compare_url = null;
+  if (resolved.base_sha) {
+    const compare = await fetchChangedFiles({
+      repository: opts.repository,
+      base_sha: resolved.base_sha,
+      head_sha: resolved.head_sha,
+      token,
+      apiBase: opts.githubApiBase,
+      fetchImpl: opts.fetchImpl
+    });
+    if (compare.ok) {
+      changed_files = compare.files;
+      changed_files_truncated = compare.truncated;
+      additions_total = compare.additions_total;
+      deletions_total = compare.deletions_total;
+      compare_url = compare.compare_url;
+      log(`AtlaSent change-brief: ${changed_files.length} file(s) changed (+${additions_total}/-${deletions_total}).`);
+      if (compare.truncated) {
+        warn(
+          `AtlaSent change-brief: the changed-file list hit GitHub's compare API cap (${COMPARE_FILES_SOFT_CAP}+ files) \u2014 this diff may be incomplete.`
+        );
+      }
+    } else {
+      warn(`AtlaSent change-brief: could not read the diff (${compare.error}) \u2014 proceeding without it.`);
+    }
+  }
+  const checksResult = await fetchCheckRuns({
+    repository: opts.repository,
+    ref: resolved.head_sha,
+    token,
+    apiBase: opts.githubApiBase,
+    fetchImpl: opts.fetchImpl
+  });
+  if (!checksResult.ok) {
+    warn(`AtlaSent change-brief: could not read check runs (${checksResult.error}) \u2014 proceeding without them.`);
+  }
+  const facts = {
+    repository: opts.repository,
+    pull_request_number: resolved.pull_request_number,
+    base_sha: resolved.base_sha ?? resolved.head_sha,
+    head_sha: resolved.head_sha,
+    ref: resolved.ref,
+    environment: opts.environment,
+    actor: opts.actorId,
+    pr_author: resolved.pr_author,
+    merge_actor: resolved.merge_actor,
+    changed_files,
+    changed_files_truncated,
+    additions_total,
+    deletions_total,
+    checks: checksResult.checks,
+    workflow: opts.workflow ?? null,
+    rollback: opts.rollback ?? null,
+    pr_url: resolved.pr_url,
+    compare_url,
+    retrieved_at: now
+  };
+  const canonicalPlanDigest = await computeGithubPlanDigest({
+    repository: opts.repository,
+    base_sha: resolved.base_sha ?? resolved.head_sha,
+    head_sha: resolved.head_sha,
+    ref: resolved.ref
+  });
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const url = `${opts.apiUrl.replace(/\/$/, "")}/v1-change-brief`;
+  let res;
+  try {
+    res = await fetchImpl(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${opts.apiKey}`
+      },
+      body: JSON.stringify({
+        action_type: opts.actionType,
+        target_system: opts.targetSystem,
+        target_id: opts.targetId,
+        environment: opts.environment,
+        canonical_plan_digest: canonicalPlanDigest,
+        actor_id: opts.actorId,
+        change_request: opts.changeRequest,
+        plan_format: "git-sha",
+        github_change_plan: facts
+      })
+    });
+  } catch (err) {
+    throw new ChangeBriefError(
+      `Network error reaching ${url}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const body = await res.json();
+      detail = body.error ?? body.message ?? "";
+    } catch {
+    }
+    throw new ChangeBriefError(`v1-change-brief responded ${res.status}${detail ? `: ${detail}` : ""}`);
+  }
+  let brief;
+  try {
+    brief = await res.json();
+  } catch {
+    throw new ChangeBriefError("Could not parse JSON response from v1-change-brief");
+  }
+  return { facts, canonicalPlanDigest, brief };
+}
+function findingLine(label, finding) {
+  if (!finding)
+    return `| ${label} | _not reported_ |`;
+  if (finding.determination === "unavailable") {
+    return `| ${label} | \u26AA Unknown \u2014 ${finding.unavailable_reason ?? "no reason given"} |`;
+  }
+  return `| ${label} | \`${JSON.stringify(finding.value)}\` (${finding.determination}) |`;
+}
+var SIGNIFICANCE_EMOJI = {
+  decision_relevant: "\u{1F7E0}",
+  notable: "\u{1F7E1}",
+  informational: "\u26AA"
+};
+function renderChangeBriefStepSummary(result) {
+  const { brief, facts, canonicalPlanDigest } = result;
+  const lines = [
+    "",
+    "## \u{1F4CB} AtlaSent Change Brief",
+    "",
+    `**Recommendation:** \`${brief.recommendation.value}\` \u2014 ${brief.recommendation.rationale}`,
+    "",
+    `| Field | Value |`,
+    `|---|---|`,
+    `| Brief ID | \`${brief.brief_id}\` |`,
+    `| Classification | \`${brief.classification.value}\` |`,
+    `| Repository | \`${facts.repository}\` |`,
+    `| Base \u2192 Head | \`${facts.base_sha.slice(0, 8)}\` \u2192 \`${facts.head_sha.slice(0, 8)}\` |`,
+    `| Files changed | ${facts.changed_files.length} (+${facts.additions_total}/-${facts.deletions_total}) |`,
+    `| Canonical plan digest | \`${canonicalPlanDigest}\` |`,
+    `| Baseline comparison | ${brief.baseline.comparison_possible ? "\u2705 possible" : "\u26AA not possible"} |`
+  ];
+  if (brief.material_differences.length > 0) {
+    lines.push("", "### Material differences from baseline", "");
+    for (const d of brief.material_differences) {
+      lines.push(`- ${SIGNIFICANCE_EMOJI[d.significance] ?? "\u26AA"} **${d.kind}** (${d.significance}): ${d.description}`);
+    }
+  }
+  const blockingMissing = brief.missing_evidence.filter((m) => m.blocking);
+  const nonBlockingMissing = brief.missing_evidence.filter((m) => !m.blocking);
+  if (blockingMissing.length > 0) {
+    lines.push("", "### \u26D4 Blocking evidence missing", "");
+    for (const m of blockingMissing)
+      lines.push(`- **${m.kind}**: ${m.precise_question}`);
+  }
+  if (nonBlockingMissing.length > 0) {
+    lines.push("", "### What needs review", "");
+    for (const m of nonBlockingMissing)
+      lines.push(`- **${m.kind}**: ${m.precise_question}`);
+  }
+  lines.push(
+    "",
+    "### Impact",
+    "",
+    "| Field | Value |",
+    "|---|---|",
+    findingLine("Affected principals", brief.impact.affected_principals),
+    findingLine("Affected records", brief.impact.affected_records),
+    findingLine("Permissions added", brief.impact.permissions_added),
+    findingLine("Data access introduced", brief.impact.data_access_introduced)
+  );
+  if (brief.impact.blast_radius_note) {
+    lines.push("", `> ${brief.impact.blast_radius_note}`);
+  }
+  lines.push(
+    "",
+    "> This is a preparation artifact for human review. It authorizes nothing \u2014 a separate evaluate/permit step gates execution.",
+    ""
+  );
+  return lines.join("\n");
+}
+
 // src/index.ts
 function getApiKey() {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -1734,8 +2121,8 @@ function getInput(name, required2 = false) {
 function setOutput(name, value) {
   const outputFile = process.env["GITHUB_OUTPUT"];
   if (outputFile) {
-    const fs3 = require("node:fs");
-    fs3.appendFileSync(outputFile, `${name}=${value}
+    const fs4 = require("node:fs");
+    fs4.appendFileSync(outputFile, `${name}=${value}
 `);
   }
 }
@@ -1946,8 +2333,8 @@ function appendToStepSummary(content) {
   const summaryFile = process.env["GITHUB_STEP_SUMMARY"];
   if (summaryFile) {
     try {
-      const fs3 = require("node:fs");
-      fs3.appendFileSync(summaryFile, content);
+      const fs4 = require("node:fs");
+      fs4.appendFileSync(summaryFile, content);
     } catch {
     }
   }
@@ -2216,6 +2603,100 @@ async function runPolicySyncStep(apiKey, apiUrl) {
     info(`  Run ID: ${run2.id}`);
   }
 }
+async function runChangeBriefStep(apiKey, apiUrl) {
+  const gh = getGitHubContext();
+  const actor = getInput("actor") || "unknown";
+  const environment = resolveEnvironment(getInput("environment"), gh.ref, apiKey);
+  const actionType = (getInput("change-brief-action") || getInput("action") || PRODUCTION_DEPLOY_ACTION).trim();
+  const targetSystem = getInput("change-brief-target-system") || "github";
+  const targetId = getInput("change-brief-target-id") || getInput("target-id") || gh.repository;
+  const changeRequest = getInput("change-request") || void 0;
+  const consoleBaseUrl = (getInput("console-base-url") || "https://console.atlasent.io").replace(
+    /\/$/,
+    ""
+  );
+  const rollbackPreviousSha = getInput("rollback-previous-sha") || void 0;
+  const rollbackWorkflow = getInput("rollback-workflow") || void 0;
+  const rollbackReference = getInput("rollback-reference") || void 0;
+  const rollback = rollbackPreviousSha || rollbackWorkflow || rollbackReference ? {
+    previous_deployed_sha: rollbackPreviousSha ?? null,
+    rollback_workflow: rollbackWorkflow ?? null,
+    rollback_reference: rollbackReference ?? null
+  } : void 0;
+  info(
+    `AtlaSent Change Brief: preparing "${actionType}" for ${targetSystem}/${targetId} (${environment}), commit ${gh.sha.slice(0, 8)}`
+  );
+  const clearOutputs = () => {
+    setOutput("change-brief-id", "");
+    setOutput("change-brief-recommendation", "");
+    setOutput("change-brief-classification", "");
+    setOutput("change-brief-material-differences-count", "");
+    setOutput("change-brief-canonical-plan-digest", "");
+    setOutput("change-brief-console-url", "");
+  };
+  let result;
+  try {
+    result = await runChangeBrief({
+      apiKey,
+      apiUrl,
+      actionType,
+      targetSystem,
+      targetId,
+      environment,
+      actorId: `github:${actor}`,
+      changeRequest,
+      githubToken: process.env["GITHUB_TOKEN"],
+      githubApiBase: process.env["GITHUB_API_URL"],
+      repository: gh.repository,
+      eventName: gh.event_name,
+      eventPath: process.env["GITHUB_EVENT_PATH"],
+      fallbackSha: gh.sha,
+      fallbackRef: gh.ref,
+      overrideBaseSha: getInput("change-brief-base-sha") || void 0,
+      overrideHeadSha: getInput("change-brief-head-sha") || void 0,
+      workflow: {
+        name: gh.workflow,
+        run_id: gh.run_id,
+        run_url: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`
+      },
+      rollback,
+      log: info,
+      warn: warning
+    });
+  } catch (err) {
+    clearOutputs();
+    const message = err instanceof ChangeBriefError || err instanceof Error ? err.message : String(err);
+    setFailed(`AtlaSent Change Brief: ${message}`);
+    return;
+  }
+  const { brief, canonicalPlanDigest } = result;
+  setOutput("change-brief-id", brief.brief_id);
+  setOutput("change-brief-recommendation", brief.recommendation.value);
+  setOutput("change-brief-classification", brief.classification.value);
+  setOutput("change-brief-material-differences-count", String(brief.material_differences.length));
+  setOutput("change-brief-canonical-plan-digest", canonicalPlanDigest);
+  const consoleUrl = `${consoleBaseUrl}/change-brief?` + new URLSearchParams({
+    action_type: actionType,
+    target_system: targetSystem,
+    target_id: targetId,
+    environment,
+    canonical_plan_digest: canonicalPlanDigest,
+    actor_id: `github:${actor}`
+  }).toString();
+  setOutput("change-brief-console-url", consoleUrl);
+  info(`  Brief ID:             ${brief.brief_id}`);
+  info(`  Recommendation:       ${brief.recommendation.value}`);
+  info(`  Classification:       ${brief.classification.value}`);
+  info(`  Material differences: ${brief.material_differences.length}`);
+  const summary = renderChangeBriefStepSummary(result) + `
+[Continue in the AtlaSent console](${consoleUrl}) \u2014 note: that page does not yet carry this run's GitHub-sourced facts (see this action's README); the table above is the full picture.
+`;
+  appendToStepSummary(summary);
+  const commentEnabled = getInput("pr-comment-on-change-brief").toLowerCase() === "true";
+  if (commentEnabled && gh.pr_number) {
+    await postPRComment({ repository: gh.repository, prNumber: gh.pr_number, body: summary });
+  }
+}
 async function runReleaseModeStep() {
   const cpUrl = getInput("control-plane-url", true);
   const cpToken = getInput("control-plane-token") || (process.env["ATLASENT_CP_TOKEN"] ?? "").trim();
@@ -2434,6 +2915,10 @@ async function run() {
   }
   if (getInput("governance-agents")) {
     await runGovernanceAgentsStep(apiKey, apiUrl);
+    return;
+  }
+  if (getInput("change-brief").toLowerCase() === "true") {
+    await runChangeBriefStep(apiKey, apiUrl);
     return;
   }
   if (getInput("verify-permit").toLowerCase() === "true") {

@@ -164,6 +164,24 @@ describe("resolveBaseHead", () => {
     expect(resolved.base_sha).toBeNull();
     expect(resolved.head_sha).toBe("z".repeat(40));
   });
+
+  it("a base-only override applies on its own for an unrecognized event (workflow_dispatch), with head falling back to fallbackSha", () => {
+    // Regression: overrideBase used to be silently dropped whenever
+    // overrideHead was absent, because the no-event fallback hardcoded
+    // base_sha to null instead of honoring overrideBase independently.
+    // change-brief-head-sha is documented to default to GITHUB_SHA
+    // (fallbackSha here), so a workflow_dispatch run supplying only
+    // change-brief-base-sha must still get a real comparison.
+    const resolved = resolveBaseHead({
+      eventName: "workflow_dispatch",
+      eventPath: undefined,
+      fallbackSha: "z".repeat(40),
+      fallbackRef: "refs/heads/main",
+      overrideBase: "c".repeat(40),
+    });
+    expect(resolved.base_sha).toBe("c".repeat(40));
+    expect(resolved.head_sha).toBe("z".repeat(40));
+  });
 });
 
 // ── GitHub REST reads ────────────────────────────────────────────────────
@@ -207,6 +225,38 @@ describe("fetchChangedFiles", () => {
     expect(result.ok).toBe(false);
     expect(result.files).toEqual([]);
   });
+
+  it("flags truncated when the file list hits GitHub's documented compare-API soft cap", async () => {
+    const manyFiles = Array.from({ length: 300 }, (_, i) => ({
+      filename: `src/file-${i}.ts`,
+      additions: 1,
+      deletions: 0,
+      status: "modified",
+    }));
+    const { fn } = makeFetch([{ match: "/compare/", body: { files: manyFiles } }]);
+    const result = await fetchChangedFiles({
+      repository: "acme/api",
+      base_sha: "aaa",
+      head_sha: "bbb",
+      token: "t",
+      fetchImpl: fn,
+    });
+    expect(result.truncated).toBe(true);
+  });
+
+  it("an ordinary small diff is not flagged as truncated", async () => {
+    const { fn } = makeFetch([
+      { match: "/compare/", body: { files: [{ filename: "src/a.ts", additions: 1, deletions: 0, status: "modified" }] } },
+    ]);
+    const result = await fetchChangedFiles({
+      repository: "acme/api",
+      base_sha: "aaa",
+      head_sha: "bbb",
+      token: "t",
+      fetchImpl: fn,
+    });
+    expect(result.truncated).toBe(false);
+  });
 });
 
 describe("fetchCheckRuns", () => {
@@ -220,6 +270,23 @@ describe("fetchCheckRuns", () => {
     const result = await fetchCheckRuns({ repository: "acme/api", ref: "bbb", token: "t", fetchImpl: fn });
     expect(result.ok).toBe(true);
     expect(result.checks).toEqual([{ name: "build", status: "completed", conclusion: "success", html_url: null }]);
+  });
+
+  it("follows pagination across pages instead of silently dropping check runs beyond page 1", async () => {
+    let calls = 0;
+    const fn = (async (url: string) => {
+      calls++;
+      const isPage2 = url.includes("page=2");
+      const body = isPage2
+        ? { check_runs: [{ name: "page2-check", status: "completed", conclusion: "success" }] }
+        : { check_runs: Array.from({ length: 100 }, (_, i) => ({ name: `check-${i}`, status: "completed", conclusion: "success" })) };
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const result = await fetchCheckRuns({ repository: "acme/api", ref: "bbb", token: "t", fetchImpl: fn });
+    expect(calls).toBe(2); // page 1 (100, full) -> page 2 (1, short) -> stop
+    expect(result.checks).toHaveLength(101);
+    expect(result.checks.at(-1)?.name).toBe("page2-check");
   });
 });
 

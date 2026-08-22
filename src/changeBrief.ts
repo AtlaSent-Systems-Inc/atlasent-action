@@ -63,6 +63,14 @@ export interface GithubChangePlanFacts {
   pr_author?: string | null;
   merge_actor?: string | null;
   changed_files: GithubChangedFile[];
+  /**
+   * True when the changed-file list may be incomplete — GitHub's compare API
+   * caps `files` at ~300 entries (see COMPARE_FILES_SOFT_CAP below). Mirrors
+   * atlasent-api's `GitHubChangePlanFacts.changed_files_truncated`, which the
+   * classification/evidence modules there use to disclose a partial diff
+   * rather than presenting it as the complete one.
+   */
+  changed_files_truncated?: boolean;
   additions_total: number;
   deletions_total: number;
   checks: GithubCheckRun[];
@@ -165,8 +173,13 @@ export function resolveBaseHead(args: {
   readFile?: (path: string) => string;
 }): ResolvedBaseHead {
   const readFile = args.readFile ?? ((p: string) => fs.readFileSync(p, "utf-8"));
+  // `overrideBase` must apply on its own, not only when `overrideHead` is ALSO
+  // given — `change-brief-head-sha` is documented to fall back to GITHUB_SHA
+  // (already `args.fallbackSha` here), so a workflow_dispatch run supplying
+  // only change-brief-base-sha must still get a real comparison instead of
+  // silently losing the override to this fallback's hardcoded `base_sha: null`.
   const empty: ResolvedBaseHead = {
-    base_sha: null,
+    base_sha: args.overrideBase || null,
     head_sha: args.overrideHead || args.fallbackSha,
     ref: args.fallbackRef || null,
     pull_request_number: null,
@@ -250,6 +263,14 @@ interface GithubCompareApiResponse {
   html_url?: string;
 }
 
+// GitHub's compare API returns a successful response but caps `files` at
+// this many entries for a large comparison — silently, with no error and no
+// indication in the response shape itself. Mirrors atlasent-api's
+// `COMPARE_FILES_SOFT_CAP` (github-fetch.ts): treating a capped list as the
+// complete diff would let a migration or workflow change outside the
+// returned subset disappear from the brief without any warning.
+const COMPARE_FILES_SOFT_CAP = 300;
+
 const STATUS_MAP: Record<string, GithubChangedFile["status"]> = {
   added: "added",
   removed: "removed",
@@ -277,6 +298,7 @@ export async function fetchChangedFiles(args: {
 }): Promise<{
   ok: boolean;
   files: GithubChangedFile[];
+  truncated: boolean;
   additions_total: number;
   deletions_total: number;
   compare_url: string | null;
@@ -292,6 +314,7 @@ export async function fetchChangedFiles(args: {
       return {
         ok: false,
         files: [],
+        truncated: false,
         additions_total: 0,
         deletions_total: 0,
         compare_url: null,
@@ -299,7 +322,8 @@ export async function fetchChangedFiles(args: {
       };
     }
     const data = (await res.json()) as GithubCompareApiResponse;
-    const files: GithubChangedFile[] = (data.files ?? []).map((f) => ({
+    const rawFiles = data.files ?? [];
+    const files: GithubChangedFile[] = rawFiles.map((f) => ({
       path: f.filename,
       additions: f.additions,
       deletions: f.deletions,
@@ -309,6 +333,7 @@ export async function fetchChangedFiles(args: {
     return {
       ok: true,
       files,
+      truncated: rawFiles.length >= COMPARE_FILES_SOFT_CAP,
       additions_total: files.reduce((sum, f) => sum + f.additions, 0),
       deletions_total: files.reduce((sum, f) => sum + f.deletions, 0),
       compare_url: data.html_url ?? null,
@@ -317,6 +342,7 @@ export async function fetchChangedFiles(args: {
     return {
       ok: false,
       files: [],
+      truncated: false,
       additions_total: 0,
       deletions_total: 0,
       compare_url: null,
@@ -334,7 +360,14 @@ interface GithubCheckRunsApiResponse {
   }>;
 }
 
-/** Read check runs via `GET /repos/:owner/:repo/commits/:ref/check-runs`. Never throws. */
+// Following `approvals.ts`'s `fetchAllReviews` pagination convention: page by
+// number, stop at a short batch, cap the page count as a sane upper bound. A
+// commit with more than 100 check runs otherwise silently loses whichever
+// runs land on page 2+ — including a still-queued or failing required check.
+const MAX_CHECK_RUN_PAGES = 10;
+const CHECK_RUNS_PER_PAGE = 100;
+
+/** Read check runs via `GET /repos/:owner/:repo/commits/:ref/check-runs`, following pagination. Never throws. */
 export async function fetchCheckRuns(args: {
   repository: string;
   ref: string;
@@ -344,24 +377,35 @@ export async function fetchCheckRuns(args: {
 }): Promise<{ ok: boolean; checks: GithubCheckRun[]; error?: string }> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const apiBase = (args.apiBase ?? GITHUB_API_DEFAULT).replace(/\/+$/, "");
-  const url = `${apiBase}/repos/${args.repository}/commits/${args.ref}/check-runs?per_page=100`;
-  try {
-    const res = await fetchImpl(url, { headers: ghHeaders(args.token) });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "<unreadable>");
-      return { ok: false, checks: [], error: `check-runs failed (${res.status}): ${text.slice(0, 200)}` };
+  const checks: GithubCheckRun[] = [];
+  for (let page = 1; page <= MAX_CHECK_RUN_PAGES; page++) {
+    const url =
+      `${apiBase}/repos/${args.repository}/commits/${args.ref}/check-runs` +
+      `?per_page=${CHECK_RUNS_PER_PAGE}&page=${page}`;
+    let batch: GithubCheckRunsApiResponse["check_runs"];
+    try {
+      const res = await fetchImpl(url, { headers: ghHeaders(args.token) });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "<unreadable>");
+        return { ok: false, checks: [], error: `check-runs failed (${res.status}): ${text.slice(0, 200)}` };
+      }
+      const data = (await res.json()) as GithubCheckRunsApiResponse;
+      batch = data.check_runs ?? [];
+    } catch (err) {
+      return { ok: false, checks: [], error: err instanceof Error ? err.message : String(err) };
     }
-    const data = (await res.json()) as GithubCheckRunsApiResponse;
-    const checks: GithubCheckRun[] = (data.check_runs ?? []).map((c) => ({
-      name: c.name,
-      status: (c.status as GithubCheckRun["status"]) ?? "queued",
-      conclusion: (c.conclusion as GithubCheckRun["conclusion"]) ?? null,
-      html_url: c.html_url ?? null,
-    }));
-    return { ok: true, checks };
-  } catch (err) {
-    return { ok: false, checks: [], error: err instanceof Error ? err.message : String(err) };
+    if (batch.length === 0) break;
+    for (const c of batch) {
+      checks.push({
+        name: c.name,
+        status: (c.status as GithubCheckRun["status"]) ?? "queued",
+        conclusion: (c.conclusion as GithubCheckRun["conclusion"]) ?? null,
+        html_url: c.html_url ?? null,
+      });
+    }
+    if (batch.length < CHECK_RUNS_PER_PAGE) break;
   }
+  return { ok: true, checks };
 }
 
 // ── v1-change-brief request/response ────────────────────────────────────
@@ -474,6 +518,7 @@ export async function runChangeBrief(opts: RunChangeBriefOptions): Promise<RunCh
   }
 
   let changed_files: GithubChangedFile[] = [];
+  let changed_files_truncated = false;
   let additions_total = 0;
   let deletions_total = 0;
   let compare_url: string | null = null;
@@ -488,10 +533,17 @@ export async function runChangeBrief(opts: RunChangeBriefOptions): Promise<RunCh
     });
     if (compare.ok) {
       changed_files = compare.files;
+      changed_files_truncated = compare.truncated;
       additions_total = compare.additions_total;
       deletions_total = compare.deletions_total;
       compare_url = compare.compare_url;
       log(`AtlaSent change-brief: ${changed_files.length} file(s) changed (+${additions_total}/-${deletions_total}).`);
+      if (compare.truncated) {
+        warn(
+          "AtlaSent change-brief: the changed-file list hit GitHub's compare API cap " +
+            `(${COMPARE_FILES_SOFT_CAP}+ files) — this diff may be incomplete.`,
+        );
+      }
     } else {
       warn(`AtlaSent change-brief: could not read the diff (${compare.error}) — proceeding without it.`);
     }
@@ -519,6 +571,7 @@ export async function runChangeBrief(opts: RunChangeBriefOptions): Promise<RunCh
     pr_author: resolved.pr_author,
     merge_actor: resolved.merge_actor,
     changed_files,
+    changed_files_truncated,
     additions_total,
     deletions_total,
     checks: checksResult.checks,

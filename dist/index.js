@@ -1732,7 +1732,7 @@ async function computeGithubPlanDigest(input) {
 function resolveBaseHead(args) {
   const readFile = args.readFile ?? ((p) => fs3.readFileSync(p, "utf-8"));
   const empty = {
-    base_sha: null,
+    base_sha: args.overrideBase || null,
     head_sha: args.overrideHead || args.fallbackSha,
     ref: args.fallbackRef || null,
     pull_request_number: null,
@@ -1789,6 +1789,7 @@ function ghHeaders2(token) {
     "X-GitHub-Api-Version": "2022-11-28"
   };
 }
+var COMPARE_FILES_SOFT_CAP = 300;
 var STATUS_MAP = {
   added: "added",
   removed: "removed",
@@ -1809,6 +1810,7 @@ async function fetchChangedFiles(args) {
       return {
         ok: false,
         files: [],
+        truncated: false,
         additions_total: 0,
         deletions_total: 0,
         compare_url: null,
@@ -1816,7 +1818,8 @@ async function fetchChangedFiles(args) {
       };
     }
     const data = await res.json();
-    const files = (data.files ?? []).map((f) => ({
+    const rawFiles = data.files ?? [];
+    const files = rawFiles.map((f) => ({
       path: f.filename,
       additions: f.additions,
       deletions: f.deletions,
@@ -1826,6 +1829,7 @@ async function fetchChangedFiles(args) {
     return {
       ok: true,
       files,
+      truncated: rawFiles.length >= COMPARE_FILES_SOFT_CAP,
       additions_total: files.reduce((sum, f) => sum + f.additions, 0),
       deletions_total: files.reduce((sum, f) => sum + f.deletions, 0),
       compare_url: data.html_url ?? null
@@ -1834,6 +1838,7 @@ async function fetchChangedFiles(args) {
     return {
       ok: false,
       files: [],
+      truncated: false,
       additions_total: 0,
       deletions_total: 0,
       compare_url: null,
@@ -1841,27 +1846,40 @@ async function fetchChangedFiles(args) {
     };
   }
 }
+var MAX_CHECK_RUN_PAGES = 10;
+var CHECK_RUNS_PER_PAGE = 100;
 async function fetchCheckRuns(args) {
   const fetchImpl = args.fetchImpl ?? fetch;
   const apiBase = (args.apiBase ?? GITHUB_API_DEFAULT).replace(/\/+$/, "");
-  const url = `${apiBase}/repos/${args.repository}/commits/${args.ref}/check-runs?per_page=100`;
-  try {
-    const res = await fetchImpl(url, { headers: ghHeaders2(args.token) });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "<unreadable>");
-      return { ok: false, checks: [], error: `check-runs failed (${res.status}): ${text.slice(0, 200)}` };
+  const checks = [];
+  for (let page = 1; page <= MAX_CHECK_RUN_PAGES; page++) {
+    const url = `${apiBase}/repos/${args.repository}/commits/${args.ref}/check-runs?per_page=${CHECK_RUNS_PER_PAGE}&page=${page}`;
+    let batch;
+    try {
+      const res = await fetchImpl(url, { headers: ghHeaders2(args.token) });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "<unreadable>");
+        return { ok: false, checks: [], error: `check-runs failed (${res.status}): ${text.slice(0, 200)}` };
+      }
+      const data = await res.json();
+      batch = data.check_runs ?? [];
+    } catch (err) {
+      return { ok: false, checks: [], error: err instanceof Error ? err.message : String(err) };
     }
-    const data = await res.json();
-    const checks = (data.check_runs ?? []).map((c) => ({
-      name: c.name,
-      status: c.status ?? "queued",
-      conclusion: c.conclusion ?? null,
-      html_url: c.html_url ?? null
-    }));
-    return { ok: true, checks };
-  } catch (err) {
-    return { ok: false, checks: [], error: err instanceof Error ? err.message : String(err) };
+    if (batch.length === 0)
+      break;
+    for (const c of batch) {
+      checks.push({
+        name: c.name,
+        status: c.status ?? "queued",
+        conclusion: c.conclusion ?? null,
+        html_url: c.html_url ?? null
+      });
+    }
+    if (batch.length < CHECK_RUNS_PER_PAGE)
+      break;
   }
+  return { ok: true, checks };
 }
 var ChangeBriefError = class extends Error {
 };
@@ -1892,6 +1910,7 @@ async function runChangeBrief(opts) {
     );
   }
   let changed_files = [];
+  let changed_files_truncated = false;
   let additions_total = 0;
   let deletions_total = 0;
   let compare_url = null;
@@ -1906,10 +1925,16 @@ async function runChangeBrief(opts) {
     });
     if (compare.ok) {
       changed_files = compare.files;
+      changed_files_truncated = compare.truncated;
       additions_total = compare.additions_total;
       deletions_total = compare.deletions_total;
       compare_url = compare.compare_url;
       log(`AtlaSent change-brief: ${changed_files.length} file(s) changed (+${additions_total}/-${deletions_total}).`);
+      if (compare.truncated) {
+        warn(
+          `AtlaSent change-brief: the changed-file list hit GitHub's compare API cap (${COMPARE_FILES_SOFT_CAP}+ files) \u2014 this diff may be incomplete.`
+        );
+      }
     } else {
       warn(`AtlaSent change-brief: could not read the diff (${compare.error}) \u2014 proceeding without it.`);
     }
@@ -1935,6 +1960,7 @@ async function runChangeBrief(opts) {
     pr_author: resolved.pr_author,
     merge_actor: resolved.merge_actor,
     changed_files,
+    changed_files_truncated,
     additions_total,
     deletions_total,
     checks: checksResult.checks,

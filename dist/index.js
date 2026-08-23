@@ -284,7 +284,12 @@ var require_dist = __commonJS({
         escalation_id: raw["escalation_id"],
         chainEntry: raw["chain_entry"] ?? null,
         snapshot: raw["snapshot"] ?? null,
-        auditHash: raw["audit_hash"]
+        // Real wire field is `audit_entry_hash` (see v1-evaluate/handler.ts and
+        // v1-verify-permit/handler.ts). `audit_hash` is accepted too in case an
+        // older API build still emits it, but it does not exist on the current
+        // response shape — reading only that name left the `audit-hash` action
+        // output permanently empty.
+        auditHash: raw["audit_entry_hash"] ?? raw["audit_hash"]
       };
     }
     function extractRiskScore(raw) {

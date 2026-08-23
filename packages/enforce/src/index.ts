@@ -456,7 +456,12 @@ function mapDecision(raw: Record<string, unknown>): Decision {
     escalation_id: raw["escalation_id"] as string | undefined,
     chainEntry: (raw["chain_entry"] as Record<string, unknown> | null | undefined) ?? null,
     snapshot: (raw["snapshot"] as Record<string, unknown> | null | undefined) ?? null,
-    auditHash: raw["audit_hash"] as string | undefined,
+    // Real wire field is `audit_entry_hash` (see v1-evaluate/handler.ts and
+    // v1-verify-permit/handler.ts). `audit_hash` is accepted too in case an
+    // older API build still emits it, but it does not exist on the current
+    // response shape — reading only that name left the `audit-hash` action
+    // output permanently empty.
+    auditHash: (raw["audit_entry_hash"] ?? raw["audit_hash"]) as string | undefined,
   };
 }
 

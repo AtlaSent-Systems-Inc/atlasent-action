@@ -208,4 +208,32 @@ describe("evaluate", () => {
     expect(d.authority_basis).toBeUndefined();
     expect(d.escalation_id).toBeUndefined();
   });
+
+  // atlasent-api's v1-evaluate/v1-verify-permit handlers emit `audit_entry_hash`
+  // (see the `...(auditEntryHash && { audit_entry_hash: auditEntryHash })` spread
+  // in handler.ts) — there is no `audit_hash` field on the real response. Reading
+  // only `audit_hash` left the `audit-hash` action output permanently empty in
+  // production. `audit_hash` stays accepted as a fallback for any older/other
+  // build that might still emit it.
+  it("maps the real wire field audit_entry_hash to auditHash", async () => {
+    mockResponse(200, { decision: "allow", audit_entry_hash: "sha256:real-hash" });
+    const d = await evaluate(BASE_CONFIG);
+    expect(d.auditHash).toBe("sha256:real-hash");
+  });
+
+  it("falls back to legacy audit_hash when audit_entry_hash is absent", async () => {
+    mockResponse(200, { decision: "allow", audit_hash: "sha256:legacy-hash" });
+    const d = await evaluate(BASE_CONFIG);
+    expect(d.auditHash).toBe("sha256:legacy-hash");
+  });
+
+  it("prefers audit_entry_hash over audit_hash when both are present", async () => {
+    mockResponse(200, {
+      decision: "allow",
+      audit_entry_hash: "sha256:real-hash",
+      audit_hash: "sha256:legacy-hash",
+    });
+    const d = await evaluate(BASE_CONFIG);
+    expect(d.auditHash).toBe("sha256:real-hash");
+  });
 });

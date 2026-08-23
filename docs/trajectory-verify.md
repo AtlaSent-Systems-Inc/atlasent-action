@@ -24,21 +24,27 @@ jobs:
   deploy:
     steps:
       # 1. Authorize the trajectory
+      #    action.yml has no dedicated proposed-trajectory/desired-state
+      #    inputs — pass them inside the generic `context` JSON blob, which
+      #    is forwarded verbatim to /v1-evaluate as part of `context`.
       - uses: atlasent-systems-inc/atlasent-action@v1
         id: authorize
         with:
           action: production.deploy
           target-id: my-service
-          proposed_trajectory: |
-            {"steps": [
-              {"step_id": "pre-flight",    "description": "Run tests and security scan"},
-              {"step_id": "build",         "description": "Build Docker image"},
-              {"step_id": "deploy-canary", "description": "Canary deploy (5%)"},
-              {"step_id": "deploy-full",   "description": "Full production deploy"}
-            ]}
-          desired_state: '{"description": "v1.2.3 deployed to production"}'
+          context: |
+            {
+              "proposed_trajectory": {"steps": [
+                {"step_id": "pre-flight",    "description": "Run tests and security scan"},
+                {"step_id": "build",         "description": "Build Docker image"},
+                {"step_id": "deploy-canary", "description": "Canary deploy (5%)"},
+                {"step_id": "deploy-full",   "description": "Full production deploy"}
+              ]},
+              "desired_state": {"description": "v1.2.3 deployed to production"}
+            }
         env:
           ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
 
       # 2. Verify before each step
       - uses: atlasent-systems-inc/atlasent-action@v1
@@ -49,6 +55,7 @@ jobs:
           trajectory-step-name: 'Pre-flight checks'
         env:
           ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
 
       - run: npm test && npm run security-scan
 
@@ -59,6 +66,7 @@ jobs:
           trajectory-step-id: build
         env:
           ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
 
       - run: docker build -t myapp:${{ github.sha }} .
 

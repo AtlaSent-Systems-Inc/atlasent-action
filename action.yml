@@ -62,10 +62,14 @@ inputs:
     description: 'JSON array of evaluation requests for batch mode, e.g. [{"action":"production.deploy","actor":"alice"}]. When set, single-eval inputs (action, actor, context) are ignored.'
     required: false
   wait-for-id:
-    description: 'Evaluation ID to block on until it reaches a terminal state (allow/deny). Used with hold/escalate decisions that require async approval.'
+    description: 'Batch mode only: evaluation ID to block on until it reaches a terminal state (allow/deny). For the normal single-action path, set wait-for-approval: "true"; it waits on the exact evaluation ID returned by that evaluation.'
     required: false
+  wait-for-approval:
+    description: 'Single-action mode only. When "true", a hold or escalation waits for a human decision on the exact evaluation that produced it. A terminal allow must return a fresh permit bound to the original action, actor, target, environment, and artifact digest; that permit is then verified before this step can succeed. Default "false" preserves immediate fail-closed behavior.'
+    required: false
+    default: 'false'
   wait-timeout-ms:
-    description: 'Maximum milliseconds to wait for a terminal decision when wait-for-id is set (default: 600000 = 10 min).'
+    description: 'Maximum milliseconds to wait for a terminal decision when wait-for-approval or wait-for-id is set (default: 600000 = 10 min; maximum: 3600000 = 60 min).'
     required: false
     default: '600000'
   v2-batch:
@@ -73,7 +77,7 @@ inputs:
     required: false
     default: 'false'
   v2-streaming:
-    description: 'Enable Server-Sent Events stream for wait-for-id polling (default: false, falls back to HTTP polling).'
+    description: 'Enable Server-Sent Events while waiting for human approval (default: false, falls back to HTTP polling).'
     required: false
     default: 'false'
   financial-governance:
@@ -365,6 +369,8 @@ outputs:
     description: 'The numeric risk score from the Decision response. Empty string when the evaluator did not return a risk assessment. Single-eval path only.'
   verified:
     description: '"true" when evaluate=allow AND verify-permit=true for ALL evaluations; "false" otherwise (fail-closed). Set on both single and batch paths, and in verify-permit (boundary) mode.'
+  waited-for-approval:
+    description: '"true" when single-action wait-for-approval observed a hold or escalation and waited for its terminal decision. "false" when no approval wait was needed or enabled. Single-action path only.'
   permit-issued:
     description: '"true" when a permit was minted on the single-eval path. In evaluate-only mode this is "true" while verified is "false" (issued but not consumed — re-verify at the execution boundary). "false" on non-allow or when no permit was minted. Do NOT gate a deploy on this — gate on verified.'
   verify-outcome:

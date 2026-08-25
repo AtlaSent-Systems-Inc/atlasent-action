@@ -30,7 +30,11 @@ describe("waitForTerminalDecision", () => {
 
   function pollResp(decision: string) {
     return new Response(
-      JSON.stringify({ decision, evaluatedAt: "2026-04-30T00:00:00Z" }),
+      JSON.stringify({
+        evaluation_id: "ev-123",
+        decision,
+        evaluated_at: "2026-04-30T00:00:00Z",
+      }),
       { status: 200 },
     );
   }
@@ -114,7 +118,7 @@ describe("waitForTerminalDecision", () => {
   it("stream: returns allow from first SSE event", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
-        sseStream({ decision: "allow", evaluatedAt: "2026-04-30T00:00:00Z" }),
+        sseStream({ evaluation_id: "ev-123", decision: "allow", evaluated_at: "2026-04-30T00:00:00Z" }),
         { status: 200 },
       ),
     );
@@ -132,8 +136,8 @@ describe("waitForTerminalDecision", () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         sseStream(
-          { decision: "hold", evaluatedAt: "2026-04-30T00:00:00Z" },
-          { decision: "deny", evaluatedAt: "2026-04-30T00:00:01Z" },
+          { evaluation_id: "ev-123", decision: "hold", evaluated_at: "2026-04-30T00:00:00Z" },
+          { evaluation_id: "ev-123", decision: "deny", evaluated_at: "2026-04-30T00:00:01Z" },
         ),
         { status: 200 },
       ),
@@ -147,7 +151,7 @@ describe("waitForTerminalDecision", () => {
   it("stream: sends evaluationId in POST body", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
-        sseStream({ decision: "allow", evaluatedAt: "2026-04-30T00:00:00Z" }),
+        sseStream({ evaluation_id: "ev-123", decision: "allow", evaluated_at: "2026-04-30T00:00:00Z" }),
         { status: 200 },
       ),
     );
@@ -163,5 +167,35 @@ describe("waitForTerminalDecision", () => {
     await expect(
       waitForTerminalDecision({ ...BASE_OPTS, v2Streaming: true }),
     ).rejects.toThrow(/500/);
+  });
+
+  it("polling: fails closed when a terminal response does not echo the requested evaluation ID", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ evaluation_id: "ev-other", decision: "allow" }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(waitForTerminalDecision(BASE_OPTS)).rejects.toThrow(/ID mismatch/);
+  });
+
+  it("normalizes snake_case terminal permit fields", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          evaluation_id: "ev-123",
+          decision: "allow",
+          permit_token: "pt-terminal",
+          execution_hash_expected: "sha256:original",
+          evaluated_at: "2026-04-30T00:00:00Z",
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const result = await waitForTerminalDecision(BASE_OPTS);
+    expect(result.permitToken).toBe("pt-terminal");
+    expect(result.executionHashExpected).toBe("sha256:original");
   });
 });

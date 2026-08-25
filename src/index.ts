@@ -14,7 +14,15 @@
 // masking secrets, and translating EnforceResult / EnforceError into step
 // outputs and exit codes.
 
-import { enforce, evaluate, reverifyPermit, requiredBindingsFor, EnforceError } from "@atlasent/enforce";
+import {
+  enforce,
+  evaluate,
+  reverifyPermit,
+  requiredBindingsFor,
+  verify,
+  verifyPermit,
+  EnforceError,
+} from "@atlasent/enforce";
 import type { Decision, EnforceConfig } from "@atlasent/enforce";
 import { GateInfraError } from "./gate";
 import { runV21 } from "./v21";
@@ -50,6 +58,8 @@ import {
   renderChangeBriefStepSummary,
   runChangeBrief,
 } from "./changeBrief";
+import { waitForTerminalDecision } from "./stream";
+import type { Decision as WaitingDecision } from "./types";
 
 function getApiKey(): string {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -429,6 +439,78 @@ function setDecisionOutputs(d: Decision): void {
   setOutput("chain-entry", JSON.stringify(d.chainEntry ?? null));
   setOutput("snapshot", JSON.stringify(d.snapshot ?? null));
   setOutput("audit-hash", d.auditHash ?? "");
+}
+
+const MAX_APPROVAL_WAIT_TIMEOUT_MS = 3_600_000;
+
+function approvalWaitTimeoutMs(): number {
+  const raw = getInput("wait-timeout-ms") || "600000";
+  const timeoutMs = Number(raw);
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > MAX_APPROVAL_WAIT_TIMEOUT_MS
+  ) {
+    setFailed(
+      `wait-timeout-ms must be a whole number from 1 to ${MAX_APPROVAL_WAIT_TIMEOUT_MS} (got "${raw}")`,
+    );
+  }
+  return timeoutMs;
+}
+
+/**
+ * Convert a terminal approval response back to the canonical enforcement
+ * decision shape. The originally evaluated ID and artifact binding remain the
+ * source of truth; a response that refers to a different evaluation or a
+ * different artifact is rejected before its permit can be verified.
+ */
+function resumeDecision(
+  initial: Decision,
+  terminal: WaitingDecision,
+  config: EnforceConfig,
+): Decision {
+  if (!initial.evaluationId) {
+    throw new EnforceError(
+      "approval wait refused: hold/escalation response did not include an evaluation_id",
+      "evaluate",
+      initial,
+    );
+  }
+  if (terminal.id !== initial.evaluationId) {
+    throw new EnforceError(
+      `approval wait refused: terminal decision ID ${terminal.id ?? "missing"} does not match initial evaluation ${initial.evaluationId}`,
+      "evaluate",
+      initial,
+    );
+  }
+
+  const expectedHash = initial.executionHashExpected ?? config.executionPayloadHash;
+  if (
+    expectedHash &&
+    terminal.executionHashExpected &&
+    terminal.executionHashExpected !== expectedHash
+  ) {
+    throw new EnforceError(
+      "approval wait refused: terminal permit is bound to a different artifact digest",
+      "verify-permit",
+      initial,
+    );
+  }
+
+  return {
+    decision: terminal.decision,
+    evaluationId: initial.evaluationId,
+    permitToken: terminal.permitToken,
+    proofHash: terminal.proofHash,
+    // A freshly issued permit must retain the original artifact binding. If
+    // the runtime does not echo it on the terminal response, use the original
+    // evaluated binding when verifyPermit re-presents the context.
+    executionHashExpected: expectedHash,
+    riskScore: terminal.riskScore,
+    denyReason: terminal.denyReason,
+    holdReason: terminal.holdReason,
+    auditHash: terminal.auditHash,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1484,12 +1566,78 @@ export async function run(): Promise<void> {
     },
   };
 
+  // A workflow opts in to waiting; the default remains immediate fail-closed
+  // behavior so an existing gate cannot unexpectedly occupy a runner. When
+  // enabled, the action waits only on the evaluation it just created — never
+  // on a caller-supplied ID — and still verifies the newly-issued permit under
+  // the original action, actor, target, environment, and artifact bindings.
+  const waitForApproval = getInput("wait-for-approval").toLowerCase() === "true";
+  const useStreamingForApproval = getInput("v2-streaming").toLowerCase() === "true";
+  setOutput("waited-for-approval", "false");
+
   let enforceResult: Awaited<ReturnType<typeof enforce>>;
   try {
-    if (evaluateOnly) {
-      // Issue the permit only — do NOT verify/consume it here. evaluate()
-      // throws EnforceError (phase "evaluate") on any non-allow, so the
-      // fail-closed handler below is shared with the enforce path.
+    if (waitForApproval) {
+      let decision = await evaluate(config);
+
+      if (decision.decision === "hold" || decision.decision === "escalate") {
+        if (!decision.evaluationId) {
+          throw new EnforceError(
+            "approval wait refused: hold/escalation response did not include an evaluation_id",
+            "evaluate",
+            decision,
+          );
+        }
+
+        const timeoutMs = approvalWaitTimeoutMs();
+        setOutput("waited-for-approval", "true");
+        info(
+          `AtlaSent Gate: ${decision.decision} for evaluation ${decision.evaluationId}; ` +
+            `waiting up to ${timeoutMs}ms for an authorized human decision`,
+        );
+
+        let terminal: WaitingDecision;
+        try {
+          terminal = await waitForTerminalDecision({
+            apiUrl,
+            apiKey,
+            evaluationId: decision.evaluationId,
+            timeoutMs,
+            v2Streaming: useStreamingForApproval,
+          });
+        } catch (waitError) {
+          throw new EnforceError(
+            `approval wait failed: ${waitError instanceof Error ? waitError.message : String(waitError)}`,
+            "evaluate",
+            decision,
+          );
+        }
+
+        decision = resumeDecision(decision, terminal, config);
+        info(
+          `AtlaSent Gate: approval wait resolved ${decision.decision} for evaluation ${decision.evaluationId}`,
+        );
+      }
+
+      if (evaluateOnly) {
+        // Evaluate-only still refuses terminal deny/hold/escalate. A terminal
+        // allow leaves its fresh permit unconsumed for a separate
+        // verify-permit step immediately at the execution boundary.
+        verify(decision);
+        enforceResult = { result: undefined, decision, verifyOutcome: undefined };
+      } else {
+        verify(decision);
+        const verifiedPermit = await verifyPermit(config, decision);
+        enforceResult = {
+          result: undefined,
+          decision,
+          verifyOutcome: verifiedPermit.outcome,
+        };
+      }
+    } else if (evaluateOnly) {
+      // Issue the permit only — do NOT verify/consume it here. A non-allow
+      // result reaches the fail-closed permit check below, preserving the
+      // existing evaluate-only behavior.
       const decision = await evaluate(config);
       enforceResult = { result: undefined, decision, verifyOutcome: undefined };
     } else {

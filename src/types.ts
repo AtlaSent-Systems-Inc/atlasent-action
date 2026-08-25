@@ -23,6 +23,13 @@ export interface Decision {
   decision: "allow" | "deny" | "hold" | "escalate";
   permitToken?: string;
   proofHash?: string;
+  /** Runtime-bound artifact digest, if the terminal response echoes it. */
+  executionHashExpected?: string;
+  /** Optional terminal-decision details, retained for the action summary. */
+  denyReason?: string;
+  holdReason?: string;
+  auditHash?: string;
+  riskScore?: number;
   reasons?: string[];
   evaluatedAt: string;
   /** Set after verify-permit round-trip. True only when evaluate=allow AND verify=true. */

@@ -81,9 +81,9 @@ var require_dist = __commonJS({
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.EnforceError = void 0;
     exports2.evaluate = evaluate2;
-    exports2.verify = verify;
+    exports2.verify = verify2;
     exports2.requiredBindingsFor = requiredBindingsFor4;
-    exports2.verifyPermit = verifyPermit3;
+    exports2.verifyPermit = verifyPermit4;
     exports2.reverifyPermit = reverifyPermit2;
     exports2.enforce = enforce2;
     var transport_1 = require_transport();
@@ -169,7 +169,7 @@ var require_dist = __commonJS({
       }
       return mapDecision(raw);
     }
-    function verify(decision) {
+    function verify2(decision) {
       switch (decision.decision) {
         case "allow":
           return;
@@ -240,7 +240,7 @@ var require_dist = __commonJS({
         r.push("payload_hash");
       return r;
     }
-    async function verifyPermit3(config, decision) {
+    async function verifyPermit4(config, decision) {
       if (!decision.permitToken) {
         throw new EnforceError2("evaluate returned allow but no permit_token \u2014 refusing to execute without verifiable permit", "verify-permit", decision);
       }
@@ -262,8 +262,8 @@ var require_dist = __commonJS({
     }
     async function enforce2(config, fn) {
       const decision = await evaluate2(config);
-      verify(decision);
-      const vp = await verifyPermit3(config, decision);
+      verify2(decision);
+      const vp = await verifyPermit4(config, decision);
       const result = await fn();
       return { result, decision, verifyOutcome: vp.outcome };
     }
@@ -553,6 +553,50 @@ function required(env, key) {
 // src/stream.ts
 var POLL_INTERVAL_MS = 5e3;
 var SSE_LINE = /^data: (.+)$/;
+var ApprovalResponseBindingError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ApprovalResponseBindingError";
+  }
+};
+function parseDecision(raw) {
+  if (!raw || typeof raw !== "object")
+    return null;
+  const value = raw;
+  const decision = value["decision"];
+  if (decision !== "allow" && decision !== "deny" && decision !== "hold" && decision !== "escalate") {
+    return null;
+  }
+  const string = (key) => typeof value[key] === "string" ? value[key] : void 0;
+  const number = (key) => typeof value[key] === "number" ? value[key] : void 0;
+  const rawReasons = value["reasons"];
+  const reasons = Array.isArray(rawReasons) ? rawReasons.filter((reason) => typeof reason === "string") : void 0;
+  return {
+    id: string("evaluation_id") ?? string("evaluationId") ?? string("id"),
+    decision,
+    permitToken: string("permit_token") ?? string("permitToken"),
+    proofHash: string("proof_hash") ?? string("proofHash"),
+    executionHashExpected: string("execution_hash_expected") ?? string("executionHashExpected") ?? string("payload_hash"),
+    denyReason: string("deny_reason") ?? string("denyReason"),
+    holdReason: string("hold_reason") ?? string("holdReason"),
+    auditHash: string("audit_entry_hash") ?? string("audit_hash") ?? string("auditHash"),
+    riskScore: number("risk_score") ?? number("riskScore"),
+    reasons,
+    evaluatedAt: string("evaluated_at") ?? string("evaluatedAt") ?? (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+function terminalDecision(raw, evaluationId) {
+  const decision = parseDecision(raw);
+  if (!decision || decision.decision !== "allow" && decision.decision !== "deny") {
+    return null;
+  }
+  if (!decision.id || decision.id !== evaluationId) {
+    throw new ApprovalResponseBindingError(
+      `atlasent approval response evaluation ID mismatch (expected ${evaluationId}, got ${decision.id ?? "missing"})`
+    );
+  }
+  return decision;
+}
 async function waitForTerminalDecision(opts) {
   if (opts.v2Streaming) {
     return waitViaStream(opts);
@@ -590,8 +634,14 @@ async function waitViaStream(opts) {
         const m = SSE_LINE.exec(line);
         if (!m)
           continue;
-        const event = JSON.parse(m[1]);
-        if (event.decision === "allow" || event.decision === "deny") {
+        let raw;
+        try {
+          raw = JSON.parse(m[1]);
+        } catch {
+          continue;
+        }
+        const event = terminalDecision(raw, opts.evaluationId);
+        if (event) {
           return event;
         }
       }
@@ -613,14 +663,15 @@ async function waitViaPolling(opts) {
         }
       );
       if (r.ok) {
-        const decision = await r.json();
-        if (decision.decision === "allow" || decision.decision === "deny") {
+        const decision = terminalDecision(await r.json(), opts.evaluationId);
+        if (decision) {
           return decision;
         }
       }
     } catch (err) {
-      if (err instanceof Error && err.name === "AbortError")
+      if (err instanceof ApprovalResponseBindingError || err instanceof Error && err.name === "AbortError") {
         throw err;
+      }
     }
     await new Promise((res) => setTimeout(res, POLL_INTERVAL_MS));
   }
@@ -2334,6 +2385,55 @@ function setDecisionOutputs(d) {
   setOutput("snapshot", JSON.stringify(d.snapshot ?? null));
   setOutput("audit-hash", d.auditHash ?? "");
 }
+var MAX_APPROVAL_WAIT_TIMEOUT_MS = 36e5;
+function approvalWaitTimeoutMs() {
+  const raw = getInput("wait-timeout-ms") || "600000";
+  const timeoutMs = Number(raw);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_APPROVAL_WAIT_TIMEOUT_MS) {
+    setFailed(
+      `wait-timeout-ms must be a whole number from 1 to ${MAX_APPROVAL_WAIT_TIMEOUT_MS} (got "${raw}")`
+    );
+  }
+  return timeoutMs;
+}
+function resumeDecision(initial, terminal, config) {
+  if (!initial.evaluationId) {
+    throw new import_enforce3.EnforceError(
+      "approval wait refused: hold/escalation response did not include an evaluation_id",
+      "evaluate",
+      initial
+    );
+  }
+  if (terminal.id !== initial.evaluationId) {
+    throw new import_enforce3.EnforceError(
+      `approval wait refused: terminal decision ID ${terminal.id ?? "missing"} does not match initial evaluation ${initial.evaluationId}`,
+      "evaluate",
+      initial
+    );
+  }
+  const expectedHash = initial.executionHashExpected ?? config.executionPayloadHash;
+  if (expectedHash && terminal.executionHashExpected && terminal.executionHashExpected !== expectedHash) {
+    throw new import_enforce3.EnforceError(
+      "approval wait refused: terminal permit is bound to a different artifact digest",
+      "verify-permit",
+      initial
+    );
+  }
+  return {
+    decision: terminal.decision,
+    evaluationId: initial.evaluationId,
+    permitToken: terminal.permitToken,
+    proofHash: terminal.proofHash,
+    // A freshly issued permit must retain the original artifact binding. If
+    // the runtime does not echo it on the terminal response, use the original
+    // evaluated binding when verifyPermit re-presents the context.
+    executionHashExpected: expectedHash,
+    riskScore: terminal.riskScore,
+    denyReason: terminal.denyReason,
+    holdReason: terminal.holdReason,
+    auditHash: terminal.auditHash
+  };
+}
 function appendToStepSummary(content) {
   const summaryFile = process.env["GITHUB_STEP_SUMMARY"];
   if (summaryFile) {
@@ -3120,9 +3220,60 @@ async function run() {
       } : {}
     }
   };
+  const waitForApproval = getInput("wait-for-approval").toLowerCase() === "true";
+  const useStreamingForApproval = getInput("v2-streaming").toLowerCase() === "true";
+  setOutput("waited-for-approval", "false");
   let enforceResult;
   try {
-    if (evaluateOnly) {
+    if (waitForApproval) {
+      let decision = await (0, import_enforce3.evaluate)(config);
+      if (decision.decision === "hold" || decision.decision === "escalate") {
+        if (!decision.evaluationId) {
+          throw new import_enforce3.EnforceError(
+            "approval wait refused: hold/escalation response did not include an evaluation_id",
+            "evaluate",
+            decision
+          );
+        }
+        const timeoutMs = approvalWaitTimeoutMs();
+        setOutput("waited-for-approval", "true");
+        info(
+          `AtlaSent Gate: ${decision.decision} for evaluation ${decision.evaluationId}; waiting up to ${timeoutMs}ms for an authorized human decision`
+        );
+        let terminal;
+        try {
+          terminal = await waitForTerminalDecision({
+            apiUrl,
+            apiKey,
+            evaluationId: decision.evaluationId,
+            timeoutMs,
+            v2Streaming: useStreamingForApproval
+          });
+        } catch (waitError) {
+          throw new import_enforce3.EnforceError(
+            `approval wait failed: ${waitError instanceof Error ? waitError.message : String(waitError)}`,
+            "evaluate",
+            decision
+          );
+        }
+        decision = resumeDecision(decision, terminal, config);
+        info(
+          `AtlaSent Gate: approval wait resolved ${decision.decision} for evaluation ${decision.evaluationId}`
+        );
+      }
+      if (evaluateOnly) {
+        (0, import_enforce3.verify)(decision);
+        enforceResult = { result: void 0, decision, verifyOutcome: void 0 };
+      } else {
+        (0, import_enforce3.verify)(decision);
+        const verifiedPermit = await (0, import_enforce3.verifyPermit)(config, decision);
+        enforceResult = {
+          result: void 0,
+          decision,
+          verifyOutcome: verifiedPermit.outcome
+        };
+      }
+    } else if (evaluateOnly) {
       const decision = await (0, import_enforce3.evaluate)(config);
       enforceResult = { result: void 0, decision, verifyOutcome: void 0 };
     } else {

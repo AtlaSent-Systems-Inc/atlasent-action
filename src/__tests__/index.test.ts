@@ -14,8 +14,11 @@ vi.mock("@atlasent/enforce", async (importOriginal) => {
     ...original,
     enforce: vi.fn(),
     evaluate: vi.fn(),
+    verifyPermit: vi.fn(),
   };
 });
+
+vi.mock("../stream", () => ({ waitForTerminalDecision: vi.fn() }));
 
 // Mocked so tests can inject controlled PR-review evidence without a real
 // GitHub API call. Defaults (set in beforeEach below) match what the real
@@ -24,16 +27,19 @@ vi.mock("@atlasent/enforce", async (importOriginal) => {
 // unchanged unless it explicitly overrides the mock.
 vi.mock("../approvals", () => ({ resolveApprovals: vi.fn() }));
 
-import { enforce, evaluate, EnforceError } from "@atlasent/enforce";
+import { enforce, evaluate, verifyPermit, EnforceError } from "@atlasent/enforce";
 import type { Decision } from "@atlasent/enforce";
 import { resolveApprovals } from "../approvals";
+import { waitForTerminalDecision } from "../stream";
 
 // Import run() after mocking to ensure the mock is in place.
 import { run } from "../index";
 
 const mockEnforce = enforce as unknown as ReturnType<typeof vi.fn>;
 const mockEvaluate = evaluate as unknown as ReturnType<typeof vi.fn>;
+const mockVerifyPermit = verifyPermit as unknown as ReturnType<typeof vi.fn>;
 const mockResolveApprovals = resolveApprovals as unknown as ReturnType<typeof vi.fn>;
+const mockWaitForTerminalDecision = waitForTerminalDecision as unknown as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -113,6 +119,8 @@ beforeEach(() => {
 
   mockEnforce.mockReset();
   mockEvaluate.mockReset();
+  mockVerifyPermit.mockReset();
+  mockWaitForTerminalDecision.mockReset();
 
   // Default: no PR-review evidence (mirrors the real resolveApprovals()
   // behavior with no GITHUB_TOKEN set, which every pre-existing test in this
@@ -251,6 +259,148 @@ describe("allow response", () => {
     expect(outputs["evaluation-id"]).toBe("ev-abc");
     expect(outputs["proof-hash"]).toBe("ph-xyz");
     expect(outputs["risk-score"]).toBe("42");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2b. Single-action approval wait/resume
+// ---------------------------------------------------------------------------
+
+describe("single-action approval wait/resume", () => {
+  function enableApprovalWait() {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("wait-for-approval", "true");
+    setInput("wait-timeout-ms", "30000");
+    setInput("artifact-digest", "sha256:original");
+  }
+
+  it("waits on the returned hold ID, then verifies a fresh terminal permit", async () => {
+    enableApprovalWait();
+    mockEvaluate.mockResolvedValueOnce(
+      makeDecision({
+        decision: "hold",
+        evaluationId: "ev-held",
+        executionHashExpected: "sha256:original",
+      }),
+    );
+    mockWaitForTerminalDecision.mockResolvedValueOnce({
+      id: "ev-held",
+      decision: "allow",
+      permitToken: "pt-fresh",
+      executionHashExpected: "sha256:original",
+      evaluatedAt: "2026-08-25T00:00:00Z",
+    });
+    mockVerifyPermit.mockResolvedValueOnce({ verified: true, outcome: "verified" });
+
+    await run();
+
+    expect(mockEnforce).not.toHaveBeenCalled();
+    expect(mockWaitForTerminalDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        evaluationId: "ev-held",
+        timeoutMs: 30000,
+        v2Streaming: false,
+      }),
+    );
+    expect(mockVerifyPermit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "production.deploy",
+        executionPayloadHash: "sha256:original",
+      }),
+      expect.objectContaining({
+        decision: "allow",
+        evaluationId: "ev-held",
+        permitToken: "pt-fresh",
+        executionHashExpected: "sha256:original",
+      }),
+    );
+
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("allow");
+    expect(outputs["verified"]).toBe("true");
+    expect(outputs["waited-for-approval"]).toBe("true");
+  });
+
+  it("uses the streaming transport only when explicitly requested", async () => {
+    enableApprovalWait();
+    setInput("v2-streaming", "true");
+    mockEvaluate.mockResolvedValueOnce(makeDecision({ decision: "hold", evaluationId: "ev-stream" }));
+    mockWaitForTerminalDecision.mockResolvedValueOnce({
+      id: "ev-stream",
+      decision: "allow",
+      permitToken: "pt-stream",
+      evaluatedAt: "2026-08-25T00:00:00Z",
+    });
+    mockVerifyPermit.mockResolvedValueOnce({ verified: true, outcome: "verified" });
+
+    await run();
+
+    expect(mockWaitForTerminalDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ evaluationId: "ev-stream", v2Streaming: true }),
+    );
+  });
+
+  it("fails closed on approval-wait timeout and retains the held decision", async () => {
+    enableApprovalWait();
+    mockEvaluate.mockResolvedValueOnce(makeDecision({ decision: "hold", evaluationId: "ev-timeout" }));
+    mockWaitForTerminalDecision.mockRejectedValueOnce(new Error("poll timeout after 30000ms"));
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    expect(mockVerifyPermit).not.toHaveBeenCalled();
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("hold");
+    expect(outputs["verified"]).toBe("false");
+    expect(outputs["waited-for-approval"]).toBe("true");
+    expect(getConsoleLogs().some((line) => line.includes("approval wait failed"))).toBe(true);
+  });
+
+  it("fails closed when the terminal response is bound to another artifact", async () => {
+    enableApprovalWait();
+    mockEvaluate.mockResolvedValueOnce(
+      makeDecision({
+        decision: "escalate",
+        evaluationId: "ev-artifact",
+        executionHashExpected: "sha256:original",
+      }),
+    );
+    mockWaitForTerminalDecision.mockResolvedValueOnce({
+      id: "ev-artifact",
+      decision: "allow",
+      permitToken: "pt-wrong-artifact",
+      executionHashExpected: "sha256:substituted",
+      evaluatedAt: "2026-08-25T00:00:00Z",
+    });
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    expect(mockVerifyPermit).not.toHaveBeenCalled();
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("escalate");
+    expect(outputs["verified"]).toBe("false");
+    expect(getConsoleLogs().some((line) => line.includes("different artifact digest"))).toBe(true);
+  });
+
+  it("keeps a post-approval permit unconsumed in evaluate-only mode for boundary verification", async () => {
+    enableApprovalWait();
+    setInput("mode", "evaluate-only");
+    mockEvaluate.mockResolvedValueOnce(makeDecision({ decision: "hold", evaluationId: "ev-boundary" }));
+    mockWaitForTerminalDecision.mockResolvedValueOnce({
+      id: "ev-boundary",
+      decision: "allow",
+      permitToken: "pt-boundary",
+      evaluatedAt: "2026-08-25T00:00:00Z",
+    });
+
+    await run();
+
+    expect(mockVerifyPermit).not.toHaveBeenCalled();
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("allow");
+    expect(outputs["verified"]).toBe("false");
+    expect(outputs["permit-issued"]).toBe("true");
+    expect(outputs["waited-for-approval"]).toBe("true");
   });
 });
 

@@ -122,6 +122,64 @@ Set `approvals-from: none` only when the selected policy does not depend on
 GitHub-review-derived approval evidence or when a different, explicitly trusted
 authority source is being used.
 
+## Human approval wait and safe resume
+
+For an elevated change, set `wait-for-approval: "true"`. If the runtime returns
+`hold` or `escalate`, the action waits on the **exact evaluation ID it just
+created**. A human resolves the request in the AtlaSent console. The action only
+continues on a terminal `allow` that returns a fresh permit; it rejects a
+terminal response for another evaluation or another artifact digest.
+
+Use `evaluate-only` plus a separate `verify-permit` step for the strongest
+execution boundary. The human-approved permit stays unconsumed until the step
+immediately before the protected command:
+
+```yaml
+- name: Request authorization; wait if human approval is required
+  id: authorize
+  uses: AtlaSent-Systems-Inc/atlasent-action@v1
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+  with:
+    action: production.deploy
+    environment: production
+    target-id: payments-api
+    artifact-digest: ${{ needs.build.outputs.digest }}
+    wait-for-approval: "true"
+    wait-timeout-ms: "600000"
+    mode: evaluate-only
+
+- name: Re-verify the approved permit at the execution boundary
+  id: boundary
+  if: steps.authorize.outputs.decision == 'allow'
+  uses: AtlaSent-Systems-Inc/atlasent-action@v1
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+  with:
+    verify-permit: "true"
+    permit-token: ${{ steps.authorize.outputs.permit-token }}
+    action: production.deploy
+    environment: production
+    target-id: payments-api
+    artifact-digest: ${{ needs.build.outputs.digest }}
+
+- name: Deploy
+  if: steps.boundary.outputs.verified == 'true'
+  run: ./deploy.sh
+```
+
+`wait-for-approval` is opt-in; existing workflows continue to fail immediately
+on `hold` or `escalate`. The default wait limit is ten minutes and the maximum
+is one hour. Timeout, denial, a missing terminal permit, a binding mismatch, or
+a failed re-verification blocks the deploy. The `waited-for-approval` output
+makes the waiting path visible in workflow evidence.
+
+The action does not approve a request itself: the organization's policy and an
+authorized human determine the terminal decision; the action waits, re-binds,
+and enforces it at the execution boundary.
+
 ## Stronger execution-boundary pattern
 
 The default one-step mode performs evaluate → permit → verify in the gate step.
@@ -263,6 +321,8 @@ snapshot merely to force a policy match.
 | `approvals-from` | `pr-reviews` (default) or `none`. |
 | `artifact-digest` | SHA-256 artifact/execution binding. |
 | `mode` | `enforce` (default) or `evaluate-only`. |
+| `wait-for-approval` | Wait for an authorized human decision after this single evaluation returns `hold` or `escalate`; default `false`. |
+| `wait-timeout-ms` | Approval-wait limit; default 600000 (10 min), maximum 3600000 (60 min). |
 | `verify-permit` | Run verify-only at the execution boundary. |
 | `permit-token` | Permit to verify in boundary mode. |
 | `api-url` | Runtime base URL override. |
@@ -278,6 +338,7 @@ For the complete machine-readable input/output surface, see [`action.yml`](./act
 |---|---|
 | `verified` | `true` only after successful permit verification. |
 | `decision` | `allow`, `deny`, `hold`, or `escalate` on the single-eval path. |
+| `waited-for-approval` | `true` when this action waited through a hold or escalation before its terminal decision. |
 | `permit-token` | Permit token; consumed in normal mode, unconsumed in `evaluate-only`. |
 | `permit-issued` | Whether a permit was minted. Do not use this to gate execution. |
 | `evaluation-id` | Audit-lineage identifier. |

@@ -3278,6 +3278,7 @@ async function run() {
       }
     }
   }
+  setOutput("waited-for-approval", "false");
   let enforceResult;
   try {
     if (evaluateOnly) {
@@ -3294,6 +3295,7 @@ async function run() {
         await reportEnforceFailure(err);
         return;
       }
+      setOutput("waited-for-approval", "true");
       const originalDecision = err.decision;
       info(
         `AtlaSent Gate: authorization ${originalDecision.decision.toUpperCase()} \u2014 waiting up to ${maxWaitMinutes}m for a human decision (approval_request_id=${originalDecision.approvalRequestId}).`

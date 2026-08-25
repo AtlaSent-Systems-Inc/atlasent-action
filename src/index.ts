@@ -1684,6 +1684,11 @@ export async function run(): Promise<void> {
     }
   }
 
+  // Default false; flipped to true only if the pause-and-resume branch below
+  // is actually entered, regardless of how that wait ultimately resolves —
+  // this output reports whether the action waited, not whether it allowed.
+  setOutput("waited-for-approval", "false");
+
   let enforceResult: Awaited<ReturnType<typeof enforce>>;
   try {
     if (evaluateOnly) {
@@ -1708,6 +1713,8 @@ export async function run(): Promise<void> {
         await reportEnforceFailure(err);
         return;
       }
+
+      setOutput("waited-for-approval", "true");
 
       // Non-null by canWaitForApproval above (decision hold/escalate + a
       // real approvalRequestId were both just confirmed present) — named so

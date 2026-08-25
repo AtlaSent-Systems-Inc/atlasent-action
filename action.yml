@@ -74,7 +74,7 @@ inputs:
     description: 'Batch mode (evaluations input) only — NOT the single-eval path, see wait-for-approval for that. Approval request ID to block on until it reaches a terminal state (approved/denied/...). Polls the same GET /v1/approvals/{id} endpoint wait-for-approval uses.'
     required: false
   wait-timeout-ms:
-    description: 'Maximum milliseconds to wait for a terminal decision when wait-for-id is set (default: 600000 = 10 min).'
+    description: 'Maximum milliseconds to wait for a terminal decision when wait-for-id is set (default: 600000 = 10 min; maximum: 3600000 = 60 min).'
     required: false
     default: '600000'
   v2-batch:
@@ -374,6 +374,8 @@ outputs:
     description: 'The numeric risk score from the Decision response. Empty string when the evaluator did not return a risk assessment. Single-eval path only.'
   verified:
     description: '"true" when evaluate=allow AND verify-permit=true for ALL evaluations; "false" otherwise (fail-closed). Set on both single and batch paths, and in verify-permit (boundary) mode.'
+  waited-for-approval:
+    description: '"true" when single-action wait-for-approval observed a hold or escalation and waited for its terminal decision. "false" when no approval wait was needed or enabled. Single-action path only.'
   permit-issued:
     description: '"true" when a permit was minted on the single-eval path. In evaluate-only mode this is "true" while verified is "false" (issued but not consumed — re-verify at the execution boundary). "false" on non-allow or when no permit was minted. Do NOT gate a deploy on this — gate on verified.'
   verify-outcome:

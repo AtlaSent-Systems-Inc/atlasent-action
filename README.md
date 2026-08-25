@@ -263,6 +263,8 @@ snapshot merely to force a policy match.
 | `approvals-from` | `pr-reviews` (default) or `none`. |
 | `artifact-digest` | SHA-256 artifact/execution binding. |
 | `mode` | `enforce` (default) or `evaluate-only`. |
+| `wait-for-approval` | Wait for an authorized human decision after this single evaluation returns `hold` or `escalate`; default `false`. |
+| `max-wait-minutes` | Approval-wait limit for `wait-for-approval`; default 30. |
 | `verify-permit` | Run verify-only at the execution boundary. |
 | `permit-token` | Permit to verify in boundary mode. |
 | `api-url` | Runtime base URL override. |
@@ -278,6 +280,7 @@ For the complete machine-readable input/output surface, see [`action.yml`](./act
 |---|---|
 | `verified` | `true` only after successful permit verification. |
 | `decision` | `allow`, `deny`, `hold`, or `escalate` on the single-eval path. |
+| `waited-for-approval` | `true` when this action waited through a hold or escalation before its terminal decision. |
 | `permit-token` | Permit token; consumed in normal mode, unconsumed in `evaluate-only`. |
 | `permit-issued` | Whether a permit was minted. Do not use this to gate execution. |
 | `evaluation-id` | Audit-lineage identifier. |
@@ -324,12 +327,18 @@ What actually happens, end to end:
    identity. Their action causes the **runtime** to re-evaluate and, on
    approval, mint a **fresh, short-lived permit** — this is not a status
    flag flip on the console side.
-3. The moment that resolution lands, the next poll observes it. On
-   `approved`, this step re-verifies the fresh permit against the **same**
-   `action` / `target-id` / `environment` / `artifact-digest` this step
-   originally evaluated with — exactly the same fail-closed re-verification
-   every other allow goes through. `approved` alone is never sufficient;
-   only a verified permit sets `verified: "true"`.
+3. The moment that resolution lands, the next poll observes it. The status
+   poll itself never carries the fresh permit token — a broadly-readable
+   status row must not hand out a live bearer off a plain GET. On
+   `approved`, this step makes one further call,
+   `POST /v1/approvals/{approval_request_id}/claim-permit`, an atomic
+   one-time claim: the first caller to claim receives the token; any later
+   claim (a retry, a second poller) gets nothing back. It then re-verifies
+   that claimed permit against the **same** `action` / `target-id` /
+   `environment` / `artifact-digest` this step originally evaluated with —
+   exactly the same fail-closed re-verification every other allow goes
+   through. `approved` alone is never sufficient; only a verified permit
+   sets `verified: "true"`.
 4. Denial, expiry, a timeout with no resolution, or a fresh permit that
    fails verification all fail the step closed — no deploy runs. The job
    summary and `decision` output reflect the real, final reason.

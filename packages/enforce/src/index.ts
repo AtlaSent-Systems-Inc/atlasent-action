@@ -256,13 +256,19 @@ export function verify(decision: Decision): void {
 // For a hold/escalate decision that carries approvalRequestId (see
 // mapDecision below), poll GET /v1/approvals/{id} on the runtime API —
 // atlasent-api's v1-approvals endpoint — on a bounded interval/timeout for
-// the human resolution. Returns only on a terminal, non-"pending" status:
+// the human resolution. That status poll never carries the raw permit token
+// (server-side redesign: a broadly-row-readable table must not hand one out
+// off a plain GET) — on "approved" this function makes one further call,
+// POST /v1/approvals/{id}/claim-permit, an atomic one-time claim (see
+// claimApprovalPermit above). Returns only on a terminal, non-"pending"
+// status:
 //   - status "approved": the caller should verify the returned permitToken
 //     (via verifyPermit — same fail-closed re-verification as any other
-//     allow) before proceeding. permitToken is undefined if the approval
-//     was accepted but the runtime's own reevaluation did not itself
-//     produce a fresh allow (see IMPL-026A in atlasent-api) — the caller
-//     MUST treat an approved status with no permitToken as non-allow.
+//     allow) before proceeding. permitToken is undefined either if the
+//     approval was accepted but the runtime's own reevaluation did not
+//     itself produce a fresh allow (see IMPL-026A in atlasent-api), or if
+//     the claim lost a race to a concurrent poller — the caller MUST treat
+//     an approved status with no permitToken as non-allow either way.
 //   - any other status ("denied", "denied_by_timeout", "expired", or any
 //     future value the server reports): the caller must fail closed. This
 //     function does not interpret those further — it is not this layer's
@@ -293,6 +299,44 @@ export interface ApprovalResolution {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * One-time claim of the fresh permit token minted by an approved
+ * resolution. Called exactly once, right after the status poll observes
+ * `status === "approved"` — see waitForApprovalResolution below.
+ *
+ * Fails closed by returning `undefined` (never throws) on any outcome
+ * other than a genuine claim: network/parse failure, a non-200 response,
+ * or `claimed: false` (already claimed by a concurrent poller, or the
+ * reevaluation never minted a token — e.g. it produced hold/escalate/deny
+ * despite the approval input itself being accepted, see IMPL-026A in
+ * atlasent-api). The caller already treats an "approved" resolution with
+ * no permitToken as non-allow, so under-claiming here is the safe
+ * direction — it can never turn a real denial into an allow.
+ */
+async function claimApprovalPermit(
+  config: WaitForApprovalConfig,
+  apiUrl: string,
+): Promise<string | undefined> {
+  const url = `${apiUrl}/v1/approvals/${encodeURIComponent(config.approvalId)}/claim-permit`;
+  let status: number;
+  let body: string;
+  try {
+    ({ status, body } = await post(url, "{}", { Authorization: `Bearer ${config.apiKey}` }));
+  } catch {
+    return undefined;
+  }
+  if (status !== 200) return undefined;
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(body) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  if (raw["claimed"] !== true) return undefined;
+  const permitToken = raw["permit_token"];
+  return typeof permitToken === "string" && permitToken.length > 0 ? permitToken : undefined;
 }
 
 export async function waitForApprovalResolution(
@@ -340,10 +384,23 @@ export async function waitForApprovalResolution(
       }
       const rowStatus = raw["status"] as string | undefined;
       if (rowStatus && rowStatus !== "pending") {
+        const reEvaluationDecision = raw["re_evaluation_decision"] as string | undefined;
+        // The status poll never carries the raw permit token (server-side
+        // redesign: a broadly-row-readable table must not hand out a live
+        // bearer off a plain GET). On the one terminal status that can ever
+        // have minted one, claim it exactly once via the companion
+        // claim-permit endpoint — an atomic clear-on-read RPC server-side,
+        // so a concurrent second poller/claim sees claimed:false rather than
+        // a re-served token. Every other terminal status (denied,
+        // denied_by_timeout, expired, ...) never had a token to claim.
+        const permitToken =
+          rowStatus === "approved"
+            ? await claimApprovalPermit(config, apiUrl)
+            : undefined;
         return {
           status: rowStatus,
-          reEvaluationDecision: raw["re_evaluation_decision"] as string | undefined,
-          permitToken: raw["re_evaluation_permit_token"] as string | undefined,
+          reEvaluationDecision,
+          permitToken,
         };
       }
       // status === "pending" (or absent) — keep polling.

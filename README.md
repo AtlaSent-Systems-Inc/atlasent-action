@@ -128,6 +128,21 @@ The default one-step mode performs evaluate → permit → verify in the gate st
 For a stronger boundary across jobs, bind the built artifact into the permit,
 issue without consuming it, then consume it immediately before execution.
 
+**The digest binds the *identity* of the artifact into the authorization — it
+does not by itself move the artifact's bytes between jobs, and AtlaSent verify
+only checks that the DECLARED digest matches what was authorized; it never
+sees the artifact's actual bytes.** GitHub Actions jobs run on separate,
+isolated runners with no shared filesystem, so `deploy` needs its own way to
+obtain the exact thing `digest` describes, with its own integrity check
+independent of AtlaSent's: `actions/upload-artifact` in `build`,
+`actions/download-artifact` in `deploy`, then re-hash the downloaded bytes
+and compare against `digest` **before** calling AtlaSent verify (shown
+below) — or, for a container image, push to a registry in `build` and pull
+`image@sha256:<digest>` directly in `deploy`, where the registry pull itself
+is the integrity check. Skipping both — running `deploy.sh` against
+something never independently confirmed to match the verified digest —
+silently defeats the binding this whole pattern exists to enforce.
+
 ```yaml
 jobs:
   build:
@@ -139,6 +154,10 @@ jobs:
       - run: ./build.sh out/
       - id: digest
         run: echo "digest=sha256:$(tar -cf - out | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: out/
 
   authorize:
     needs: build
@@ -161,6 +180,21 @@ jobs:
     needs: [build, authorize]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: out/
+
+      - name: Verify the downloaded bytes match the authorized digest
+        run: |
+          set -euo pipefail
+          actual="sha256:$(tar -cf - out | sha256sum | cut -d' ' -f1)"
+          expected="${{ needs.build.outputs.digest }}"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::downloaded artifact ($actual) does not match the authorized digest ($expected)"
+            exit 1
+          fi
+
       - id: verify
         uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
         env:

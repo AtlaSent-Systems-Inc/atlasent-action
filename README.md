@@ -176,6 +176,10 @@ is one hour. Timeout, denial, a missing terminal permit, a binding mismatch, or
 a failed re-verification blocks the deploy. The `waited-for-approval` output
 makes the waiting path visible in workflow evidence.
 
+The action does not approve a request itself: the organization's policy and an
+authorized human determine the terminal decision; the action waits, re-binds,
+and enforces it at the execution boundary.
+
 ## Stronger execution-boundary pattern
 
 The default one-step mode performs evaluate → permit → verify in the gate step.

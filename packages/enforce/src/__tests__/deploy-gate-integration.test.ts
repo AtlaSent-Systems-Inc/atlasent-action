@@ -27,7 +27,7 @@ describe("GitHub Deploy Gate integration contract", () => {
       .mockResolvedValueOnce(
         jsonResponse(200, {
           decision: "allow",
-          evaluation_id: "eval-deploy-1",
+          request_id: "eval-deploy-1",
           permit_token: "permit-deploy-1",
         }),
       )
@@ -68,7 +68,7 @@ describe("GitHub Deploy Gate integration contract", () => {
   it("requires an allow decision to include a verifiable permit before deployment", async () => {
     const timeline: string[] = [];
     mockPost.mockResolvedValueOnce(
-      jsonResponse(200, { decision: "allow", evaluation_id: "eval-no-permit" }),
+      jsonResponse(200, { decision: "allow", request_id: "eval-no-permit" }),
     );
 
     await expect(
@@ -92,7 +92,7 @@ describe("GitHub Deploy Gate integration contract", () => {
       .mockResolvedValueOnce(
         jsonResponse(200, {
           decision: "allow",
-          evaluation_id: "eval-replay",
+          request_id: "eval-replay",
           permit_token: "permit-replayed",
         }),
       )

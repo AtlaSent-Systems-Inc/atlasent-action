@@ -440,7 +440,16 @@ export async function enforce<T>(
 function mapDecision(raw: Record<string, unknown>): Decision {
   return {
     decision: raw["decision"] as Decision["decision"],
-    evaluationId: raw["evaluation_id"] as string | undefined,
+    // The real /v1-evaluate response field is `request_id` (see
+    // v1-evaluate/handler.ts's `return json({ ..., request_id: effectiveRequestId, ... })`
+    // — confirmed by direct source read; `evaluation_id` is never a key on the
+    // HTTP response body, only an internal DB column name on approval_requests
+    // and similar tables). Reading only `evaluation_id` left Decision.evaluationId
+    // permanently undefined for every real evaluate call (#130). `evaluation_id`
+    // is kept as a fallback in case an older or alternate response shape ever
+    // emits it, same defensive-dual-name pattern this function already uses for
+    // auditHash below.
+    evaluationId: (raw["request_id"] ?? raw["evaluation_id"]) as string | undefined,
     permitToken: raw["permit_token"] as string | undefined,
     proofHash: raw["proof_hash"] as string | undefined,
     executionHashExpected: (raw["execution_hash_expected"] ?? raw["payload_hash"]) as

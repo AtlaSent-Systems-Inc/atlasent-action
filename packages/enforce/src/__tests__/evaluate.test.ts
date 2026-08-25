@@ -22,9 +22,13 @@ describe("evaluate", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("returns a mapped Decision on a 200 allow response", async () => {
+    // request_id is the REAL /v1-evaluate wire field (see v1-evaluate/handler.ts's
+    // `return json({ ..., request_id: effectiveRequestId, ... })` — confirmed by
+    // direct source read). evaluation_id is never a key on the HTTP response body,
+    // only an internal DB column name — see #130.
     mockResponse(200, {
       decision: "allow",
-      evaluation_id: "ev-1",
+      request_id: "ev-1",
       permit_token: "pt-abc",
       proof_hash: "ph-xyz",
       risk_score: 12,
@@ -35,6 +39,18 @@ describe("evaluate", () => {
     expect(d.permitToken).toBe("pt-abc");
     expect(d.proofHash).toBe("ph-xyz");
     expect(d.riskScore).toBe(12);
+  });
+
+  it("falls back to evaluation_id when request_id is absent (defensive, not the real wire shape)", async () => {
+    mockResponse(200, { decision: "allow", evaluation_id: "ev-legacy" });
+    const d = await evaluate(BASE_CONFIG);
+    expect(d.evaluationId).toBe("ev-legacy");
+  });
+
+  it("prefers request_id over evaluation_id when both are present", async () => {
+    mockResponse(200, { decision: "allow", request_id: "ev-real", evaluation_id: "ev-legacy" });
+    const d = await evaluate(BASE_CONFIG);
+    expect(d.evaluationId).toBe("ev-real");
   });
 
   it("maps canonical risk shape { risk: { score } }", async () => {

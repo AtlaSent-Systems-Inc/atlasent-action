@@ -285,6 +285,61 @@ For the complete machine-readable input/output surface, see [`action.yml`](./act
 | `verify-outcome` | Coarse permit-verification result. |
 | `verify-error-code` | Precise runtime verification error code on failure. |
 
+## Pause-and-resume: wait for a human decision
+
+A `production.deploy` policy can require a human to review and approve
+before a deploy proceeds — the runtime returns `hold` or `escalate` rather
+than an immediate `allow`/`deny`. By default that fails the step
+immediately (fail-closed, no waiting). Set `wait-for-approval: "true"` to
+pause instead, and resume automatically once someone resolves it in
+AtlaSent Console:
+
+```yaml
+      - name: AtlaSent gate
+        id: gate
+        uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+        with:
+          action: production.deploy
+          target-id: api-service
+          environment: live
+          artifact-digest: ${{ steps.digest.outputs.digest }}
+          wait-for-approval: "true"
+          max-wait-minutes: "30"
+
+      - name: Deploy
+        if: steps.gate.outputs.verified == 'true'
+        run: ./scripts/deploy.sh
+```
+
+What actually happens, end to end:
+
+1. `/v1-evaluate` returns `hold`/`escalate` with an `approval_request_id`.
+   This step does **not** deploy yet — it polls
+   `GET /v1/approvals/{approval_request_id}` on a 5-second interval, bounded
+   by `max-wait-minutes` (default 30).
+2. A human approves or rejects in AtlaSent Console, acting under their own
+   identity. Their action causes the **runtime** to re-evaluate and, on
+   approval, mint a **fresh, short-lived permit** — this is not a status
+   flag flip on the console side.
+3. The moment that resolution lands, the next poll observes it. On
+   `approved`, this step re-verifies the fresh permit against the **same**
+   `action` / `target-id` / `environment` / `artifact-digest` this step
+   originally evaluated with — exactly the same fail-closed re-verification
+   every other allow goes through. `approved` alone is never sufficient;
+   only a verified permit sets `verified: "true"`.
+4. Denial, expiry, a timeout with no resolution, or a fresh permit that
+   fails verification all fail the step closed — no deploy runs. The job
+   summary and `decision` output reflect the real, final reason.
+
+Requires `approvals:read` on the `ATLASENT_API_KEY` scopes (in addition to
+`evaluate:write` + `verify:execute`), and only applies to the default
+`mode: enforce` — `mode: evaluate-only` is its own two-step pattern and
+combining it with `wait-for-approval` has no effect (the wait step is never
+reached; evaluate-only already leaves verification to a later step).
+
 ## Fail-closed behavior
 
 The protected step must not execute when:

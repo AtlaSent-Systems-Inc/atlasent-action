@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.post = post;
+exports.get = get;
 const node_https_1 = __importDefault(require("node:https"));
 const node_http_1 = __importDefault(require("node:http"));
 function post(url, body, headers) {
@@ -33,6 +34,32 @@ function post(url, body, headers) {
             reject(new Error("Request timed out after 30s"));
         });
         req.write(body);
+        req.end();
+    });
+}
+/** GET counterpart to post(), for the approval-status poll (no body). */
+function get(url, headers) {
+    return new Promise((resolve, reject) => {
+        const parsed = new URL(url);
+        const transport = parsed.protocol === "https:" ? node_https_1.default : node_http_1.default;
+        const req = transport.request({
+            hostname: parsed.hostname,
+            port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
+            path: parsed.pathname + parsed.search,
+            method: "GET",
+            headers,
+            timeout: 30_000,
+        }, (res) => {
+            const chunks = [];
+            res.on("data", (chunk) => chunks.push(chunk));
+            res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf-8") }));
+            res.on("error", reject);
+        });
+        req.on("error", reject);
+        req.on("timeout", () => {
+            req.destroy();
+            reject(new Error("Request timed out after 30s"));
+        });
         req.end();
     });
 }

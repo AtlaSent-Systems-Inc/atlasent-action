@@ -39,6 +39,7 @@ var require_transport = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.post = post;
+    exports2.get = get;
     var node_https_1 = __importDefault(require("node:https"));
     var node_http_1 = __importDefault(require("node:http"));
     function post(url, body, headers) {
@@ -71,6 +72,31 @@ var require_transport = __commonJS({
         req.end();
       });
     }
+    function get(url, headers) {
+      return new Promise((resolve3, reject) => {
+        const parsed = new URL(url);
+        const transport = parsed.protocol === "https:" ? node_https_1.default : node_http_1.default;
+        const req = transport.request({
+          hostname: parsed.hostname,
+          port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
+          path: parsed.pathname + parsed.search,
+          method: "GET",
+          headers,
+          timeout: 3e4
+        }, (res) => {
+          const chunks = [];
+          res.on("data", (chunk) => chunks.push(chunk));
+          res.on("end", () => resolve3({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf-8") }));
+          res.on("error", reject);
+        });
+        req.on("error", reject);
+        req.on("timeout", () => {
+          req.destroy();
+          reject(new Error("Request timed out after 30s"));
+        });
+        req.end();
+      });
+    }
   }
 });
 
@@ -82,8 +108,9 @@ var require_dist = __commonJS({
     exports2.EnforceError = void 0;
     exports2.evaluate = evaluate2;
     exports2.verify = verify;
+    exports2.waitForApprovalResolution = waitForApprovalResolution3;
     exports2.requiredBindingsFor = requiredBindingsFor4;
-    exports2.verifyPermit = verifyPermit3;
+    exports2.verifyPermit = verifyPermit4;
     exports2.reverifyPermit = reverifyPermit2;
     exports2.enforce = enforce2;
     var transport_1 = require_transport();
@@ -183,6 +210,53 @@ var require_dist = __commonJS({
           throw new EnforceError2(`Unknown decision: ${String(decision.decision)}`, "verify", decision);
       }
     }
+    var APPROVAL_POLL_INTERVAL_MS = 5e3;
+    function sleep(ms) {
+      return new Promise((resolve3) => setTimeout(resolve3, ms));
+    }
+    async function waitForApprovalResolution3(config) {
+      if (!config.approvalId) {
+        throw new EnforceError2("Cannot wait for approval: no approvalRequestId on the hold/escalate decision", "evaluate");
+      }
+      const apiUrl = (config.apiUrl ?? DEFAULT_API_URL).replace(/\/$/, "");
+      const url = `${apiUrl}/v1/approvals/${encodeURIComponent(config.approvalId)}`;
+      const deadline = Date.now() + config.maxWaitMs;
+      while (Date.now() < deadline) {
+        let status;
+        let body;
+        try {
+          ({ status, body } = await (0, transport_1.get)(url, { Authorization: `Bearer ${config.apiKey}` }));
+        } catch {
+          await sleep(APPROVAL_POLL_INTERVAL_MS);
+          continue;
+        }
+        if (status === 401 || status === 403) {
+          throw new EnforceError2(`Approval status poll: authentication failed (HTTP ${status})`, "evaluate");
+        }
+        if (status === 404) {
+          throw new EnforceError2("Approval status poll: approval request not found", "evaluate");
+        }
+        if (status === 200) {
+          let raw;
+          try {
+            raw = JSON.parse(body);
+          } catch {
+            await sleep(APPROVAL_POLL_INTERVAL_MS);
+            continue;
+          }
+          const rowStatus = raw["status"];
+          if (rowStatus && rowStatus !== "pending") {
+            return {
+              status: rowStatus,
+              reEvaluationDecision: raw["re_evaluation_decision"],
+              permitToken: raw["re_evaluation_permit_token"]
+            };
+          }
+        }
+        await sleep(APPROVAL_POLL_INTERVAL_MS);
+      }
+      throw new EnforceError2(`Approval wait timed out after ${config.maxWaitMs}ms with no human resolution \u2014 failing closed`, "evaluate");
+    }
     async function postVerify(config, permitToken, decision) {
       const apiUrl = (config.apiUrl ?? DEFAULT_API_URL).replace(/\/$/, "");
       const bodyObj = {
@@ -240,7 +314,7 @@ var require_dist = __commonJS({
         r.push("payload_hash");
       return r;
     }
-    async function verifyPermit3(config, decision) {
+    async function verifyPermit4(config, decision) {
       if (!decision.permitToken) {
         throw new EnforceError2("evaluate returned allow but no permit_token \u2014 refusing to execute without verifiable permit", "verify-permit", decision);
       }
@@ -263,7 +337,7 @@ var require_dist = __commonJS({
     async function enforce2(config, fn) {
       const decision = await evaluate2(config);
       verify(decision);
-      const vp = await verifyPermit3(config, decision);
+      const vp = await verifyPermit4(config, decision);
       const result = await fn();
       return { result, decision, verifyOutcome: vp.outcome };
     }
@@ -282,6 +356,7 @@ var require_dist = __commonJS({
         risk_class: raw["risk_class"],
         authority_basis: raw["authority_basis"],
         escalation_id: raw["escalation_id"],
+        approvalRequestId: raw["approval_request_id"],
         chainEntry: raw["chain_entry"] ?? null,
         snapshot: raw["snapshot"] ?? null,
         // Real wire field is `audit_entry_hash` (see v1-evaluate/handler.ts and
@@ -313,7 +388,7 @@ __export(src_exports, {
   run: () => run
 });
 module.exports = __toCommonJS(src_exports);
-var import_enforce3 = __toESM(require_dist());
+var import_enforce4 = __toESM(require_dist());
 
 // src/gate.ts
 var GateInfraError = class extends Error {
@@ -325,7 +400,7 @@ var GateInfraError = class extends Error {
 };
 
 // src/v21.ts
-var import_enforce2 = __toESM(require_dist());
+var import_enforce3 = __toESM(require_dist());
 
 // src/batch.ts
 var import_enforce = __toESM(require_dist());
@@ -551,82 +626,25 @@ function required(env, key) {
 }
 
 // src/stream.ts
-var POLL_INTERVAL_MS = 5e3;
-var SSE_LINE = /^data: (.+)$/;
+var import_enforce2 = __toESM(require_dist());
 async function waitForTerminalDecision(opts) {
-  if (opts.v2Streaming) {
-    return waitViaStream(opts);
-  }
-  return waitViaPolling(opts);
-}
-async function waitViaStream(opts) {
-  const r = await fetch(`${opts.apiUrl}/v1-evaluate/stream`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${opts.apiKey}`,
-      accept: "text/event-stream"
-    },
-    body: JSON.stringify({ evaluationId: opts.evaluationId }),
-    signal: opts.signal
+  const resolution = await (0, import_enforce2.waitForApprovalResolution)({
+    apiKey: opts.apiKey,
+    apiUrl: opts.apiUrl,
+    approvalId: opts.evaluationId,
+    maxWaitMs: opts.timeoutMs
   });
-  if (!r.ok || !r.body) {
-    throw new Error(`atlasent /v1-evaluate/stream ${r.status}`);
+  if (resolution.status === "approved" && resolution.permitToken) {
+    return {
+      decision: "allow",
+      permitToken: resolution.permitToken,
+      evaluatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
   }
-  const reader = r.body.getReader();
-  const decoder = new TextDecoder();
-  const deadline = Date.now() + opts.timeoutMs;
-  let buf = "";
-  while (Date.now() < deadline) {
-    const { value, done } = await reader.read();
-    if (done)
-      break;
-    buf += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf("\n\n")) !== -1) {
-      const block = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      for (const line of block.split("\n")) {
-        const m = SSE_LINE.exec(line);
-        if (!m)
-          continue;
-        const event = JSON.parse(m[1]);
-        if (event.decision === "allow" || event.decision === "deny") {
-          return event;
-        }
-      }
-    }
-  }
-  throw new Error(
-    `atlasent stream timeout after ${opts.timeoutMs}ms for ${opts.evaluationId}`
-  );
-}
-async function waitViaPolling(opts) {
-  const deadline = Date.now() + opts.timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const r = await fetch(
-        `${opts.apiUrl}/v1-evaluate/${encodeURIComponent(opts.evaluationId)}`,
-        {
-          headers: { authorization: `Bearer ${opts.apiKey}` },
-          signal: opts.signal
-        }
-      );
-      if (r.ok) {
-        const decision = await r.json();
-        if (decision.decision === "allow" || decision.decision === "deny") {
-          return decision;
-        }
-      }
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError")
-        throw err;
-    }
-    await new Promise((res) => setTimeout(res, POLL_INTERVAL_MS));
-  }
-  throw new Error(
-    `atlasent poll timeout after ${opts.timeoutMs}ms for ${opts.evaluationId}`
-  );
+  return {
+    decision: "deny",
+    evaluatedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
 }
 
 // src/evidenceClient.ts
@@ -732,7 +750,7 @@ async function runV21(env, flags) {
       decisions = [...decisions];
       if (terminal.decision === "allow") {
         const item = items[idx];
-        const vr = terminal.permitToken ? await (0, import_enforce2.verifyPermit)(
+        const vr = terminal.permitToken ? await (0, import_enforce3.verifyPermit)(
           {
             apiKey: inputs.apiKey,
             apiUrl: inputs.apiUrl,
@@ -744,7 +762,7 @@ async function runV21(env, flags) {
             environment: item.environment,
             targetId: item.target_id,
             executionPayloadHash: item.execution_payload_hash,
-            requiredBindings: (0, import_enforce2.requiredBindingsFor)({
+            requiredBindings: (0, import_enforce3.requiredBindingsFor)({
               environment: item.environment,
               targetId: item.target_id,
               executionPayloadHash: item.execution_payload_hash
@@ -2430,7 +2448,7 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
     executionPayloadHash: artifactDigest,
     // Boundary re-verify must re-present every binding it was given, or fail
     // closed (MISSING_BINDING) — never a silently-unbound boundary verify.
-    requiredBindings: (0, import_enforce3.requiredBindingsFor)({
+    requiredBindings: (0, import_enforce4.requiredBindingsFor)({
       environment,
       targetId,
       executionPayloadHash: artifactDigest
@@ -2440,7 +2458,7 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
     `AtlaSent boundary re-verification: "${actionType}" for "github:${actor}" in ${environment}` + (artifactDigest ? ` (artifact=${artifactDigest})` : "")
   );
   try {
-    const r = await (0, import_enforce3.reverifyPermit)(config, permitToken);
+    const r = await (0, import_enforce4.reverifyPermit)(config, permitToken);
     setOutput("decision", "allow");
     setOutput("verified", "true");
     setOutput("verify-outcome", r.outcome ?? "verified");
@@ -2452,7 +2470,7 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
   } catch (err) {
     setOutput("decision", "deny");
     setOutput("verified", "false");
-    if (err instanceof import_enforce3.EnforceError) {
+    if (err instanceof import_enforce4.EnforceError) {
       setOutput("verify-outcome", err.outcome ?? "invalid");
       setOutput("verify-error-code", err.verifyErrorCode ?? "");
       setFailed(
@@ -2950,7 +2968,7 @@ async function run() {
         { v2Batch, v2Streaming }
       );
     } catch (err) {
-      const msg = err instanceof import_enforce3.EnforceError || err instanceof GateInfraError ? err.message : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
+      const msg = err instanceof import_enforce4.EnforceError || err instanceof GateInfraError ? err.message : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
       setOutput("verified", "false");
       setOutput("decisions", "[]");
       setOutput("batch-id", "");
@@ -3058,6 +3076,10 @@ async function run() {
   }
   const artifactDigest = getInput("artifact-digest") || void 0;
   const evaluateOnly = (getInput("mode") || "enforce").trim().toLowerCase() === "evaluate-only";
+  const waitForApprovalInput = (getInput("wait-for-approval") || "false").trim().toLowerCase() === "true";
+  const maxWaitMinutesRaw = parseInt(getInput("max-wait-minutes") || "30", 10);
+  const maxWaitMinutes = Number.isFinite(maxWaitMinutesRaw) && maxWaitMinutesRaw > 0 ? maxWaitMinutesRaw : 30;
+  const maxWaitMs = maxWaitMinutes * 6e4;
   const config = {
     apiKey,
     apiUrl,
@@ -3070,7 +3092,7 @@ async function run() {
     executionPayloadHash: artifactDigest,
     // Re-present every binding provided here at verify, or fail closed
     // (MISSING_BINDING) rather than silently drop it.
-    requiredBindings: (0, import_enforce3.requiredBindingsFor)({
+    requiredBindings: (0, import_enforce4.requiredBindingsFor)({
       environment,
       targetId,
       executionPayloadHash: artifactDigest
@@ -3120,17 +3142,8 @@ async function run() {
       } : {}
     }
   };
-  let enforceResult;
-  try {
-    if (evaluateOnly) {
-      const decision = await (0, import_enforce3.evaluate)(config);
-      enforceResult = { result: void 0, decision, verifyOutcome: void 0 };
-    } else {
-      enforceResult = await (0, import_enforce3.enforce)(config, async () => {
-      });
-    }
-  } catch (err) {
-    if (err instanceof import_enforce3.EnforceError) {
+  async function reportEnforceFailure(err) {
+    {
       if (err.decision) {
         setDecisionOutputs(err.decision);
       } else {
@@ -3263,43 +3276,115 @@ async function run() {
         default:
           setFailed(`AtlaSent Gate: ${err.message}`);
       }
+    }
+  }
+  let enforceResult;
+  try {
+    if (evaluateOnly) {
+      const decision = await (0, import_enforce4.evaluate)(config);
+      enforceResult = { result: void 0, decision, verifyOutcome: void 0 };
+    } else {
+      enforceResult = await (0, import_enforce4.enforce)(config, async () => {
+      });
+    }
+  } catch (err) {
+    if (err instanceof import_enforce4.EnforceError) {
+      const canWaitForApproval = waitForApprovalInput && !evaluateOnly && err.phase === "verify" && (err.decision?.decision === "hold" || err.decision?.decision === "escalate") && !!err.decision?.approvalRequestId;
+      if (!canWaitForApproval) {
+        await reportEnforceFailure(err);
+        return;
+      }
+      const originalDecision = err.decision;
+      info(
+        `AtlaSent Gate: authorization ${originalDecision.decision.toUpperCase()} \u2014 waiting up to ${maxWaitMinutes}m for a human decision (approval_request_id=${originalDecision.approvalRequestId}).`
+      );
+      let resolution;
+      try {
+        resolution = await (0, import_enforce4.waitForApprovalResolution)({
+          apiKey,
+          apiUrl,
+          approvalId: originalDecision.approvalRequestId,
+          maxWaitMs
+        });
+      } catch (waitErr) {
+        await reportEnforceFailure(
+          waitErr instanceof import_enforce4.EnforceError ? new import_enforce4.EnforceError(waitErr.message, "evaluate", originalDecision) : new import_enforce4.EnforceError(
+            `Approval wait failed: ${waitErr instanceof Error ? waitErr.message : String(waitErr)}`,
+            "evaluate",
+            originalDecision
+          )
+        );
+        return;
+      }
+      if (resolution.status !== "approved" || !resolution.permitToken) {
+        const reason = `human approval resolved to '${resolution.status}'` + (resolution.reEvaluationDecision ? ` (fresh reevaluation: ${resolution.reEvaluationDecision})` : "") + " \u2014 deploy blocked (fail-closed).";
+        await reportEnforceFailure(
+          new import_enforce4.EnforceError(`Authorization DENIED: ${reason}`, "verify", {
+            ...originalDecision,
+            decision: "deny",
+            denyReason: reason
+          })
+        );
+        return;
+      }
+      const freshDecision = {
+        ...originalDecision,
+        decision: "allow",
+        permitToken: resolution.permitToken
+      };
+      const vr = await (0, import_enforce4.verifyPermit)(config, freshDecision);
+      if (!vr.verified) {
+        await reportEnforceFailure(
+          new import_enforce4.EnforceError(
+            `Human approval was granted, but the fresh permit failed verification (${vr.outcome ?? "unknown"}) \u2014 deploy blocked (fail-closed).`,
+            "verify-permit",
+            freshDecision,
+            { outcome: vr.outcome, verifyErrorCode: vr.verifyErrorCode, mismatchFields: vr.mismatchFields }
+          )
+        );
+        return;
+      }
+      info(
+        `AtlaSent Gate: human approval resolved ALLOW \u2014 fresh permit verified (${vr.outcome ?? "verified"}). Proceeding.`
+      );
+      enforceResult = { result: void 0, decision: freshDecision, verifyOutcome: vr.outcome };
+    } else {
+      setOutput("decision", "error");
+      setOutput("permit-token", "");
+      setOutput("evaluation-id", "");
+      setOutput("proof-hash", "");
+      setOutput("risk-score", "");
+      setOutput("chain-entry", JSON.stringify(null));
+      setOutput("snapshot", JSON.stringify(null));
+      setOutput("audit-hash", "");
+      setOutput("verified", "false");
+      setOutput("permit-issued", "false");
+      setOutput("evidence-receipt", JSON.stringify(null));
+      setOutput("evidence-bundle", JSON.stringify(null));
+      await postCommitStatus({
+        repository: gh.repository,
+        sha: gh.sha,
+        state: "error",
+        description: `AtlaSent: unexpected error \u2014 ${(err instanceof Error ? err.message : String(err)).slice(0, 100)}`,
+        targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`
+      });
+      emitFinancialGovernanceAdvisory(actionType, actor, orgId);
+      appendToStepSummary(
+        buildGateStepSummary({
+          outcome: "error",
+          action: actionType,
+          actor: `github:${actor}`,
+          environment,
+          targetId,
+          runUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+          reason: err instanceof Error ? err.message : String(err)
+        })
+      );
+      setFailed(
+        `AtlaSent Gate: Unexpected error: ${err instanceof Error ? err.message : String(err)}`
+      );
       return;
     }
-    setOutput("decision", "error");
-    setOutput("permit-token", "");
-    setOutput("evaluation-id", "");
-    setOutput("proof-hash", "");
-    setOutput("risk-score", "");
-    setOutput("chain-entry", JSON.stringify(null));
-    setOutput("snapshot", JSON.stringify(null));
-    setOutput("audit-hash", "");
-    setOutput("verified", "false");
-    setOutput("permit-issued", "false");
-    setOutput("evidence-receipt", JSON.stringify(null));
-    setOutput("evidence-bundle", JSON.stringify(null));
-    await postCommitStatus({
-      repository: gh.repository,
-      sha: gh.sha,
-      state: "error",
-      description: `AtlaSent: unexpected error \u2014 ${(err instanceof Error ? err.message : String(err)).slice(0, 100)}`,
-      targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`
-    });
-    emitFinancialGovernanceAdvisory(actionType, actor, orgId);
-    appendToStepSummary(
-      buildGateStepSummary({
-        outcome: "error",
-        action: actionType,
-        actor: `github:${actor}`,
-        environment,
-        targetId,
-        runUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
-        reason: err instanceof Error ? err.message : String(err)
-      })
-    );
-    setFailed(
-      `AtlaSent Gate: Unexpected error: ${err instanceof Error ? err.message : String(err)}`
-    );
-    return;
   }
   const { decision: d, verifyOutcome } = enforceResult;
   if (evaluateOnly) {

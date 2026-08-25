@@ -1,20 +1,38 @@
-// Wave B.AC3 — streaming-wait helper.
+// Pause-and-resume approval protocol — compatibility shim.
 //
-// Consumes /v1-evaluate/stream Server-Sent Events for the duration of
-// a change_window approval. Resolves with the first terminal decision
-// (allow / deny) for the watched evaluation id, or rejects on timeout.
+// PRIOR BEHAVIOR (removed): this file used to poll `GET {apiUrl}/v1-evaluate/:id`
+// and stream `POST {apiUrl}/v1-evaluate/stream`. Neither endpoint has ever
+// existed on the runtime API — `/v1-evaluate` only accepts POST and has no
+// GET or `/stream` route at all (see atlasent-api's
+// supabase/functions/v1-evaluate/{index,handler,_entry}.ts: the entry
+// dispatcher only distinguishes a `/close-ops` suffix from everything else,
+// and handler.ts has no `req.method === "GET"` branch anywhere). Both code
+// paths in this file always failed against a real deployment.
 //
-// When the per-tenant `v2_streaming` flag is off, falls back to
-// polling /v1-evaluate/:id every 5 seconds.
+// This file now delegates to @atlasent/enforce's waitForApprovalResolution(),
+// the canonical implementation, which polls the REAL status endpoint —
+// `GET /v1/approvals/:id` (atlasent-api's v1-approvals, single-item route
+// added alongside this change) — and is also what the primary single-eval
+// path (src/index.ts) uses directly.
+//
+// Kept as a thin wrapper, rather than deleted, so src/v21.ts's existing
+// `waitForId` (batch/v2.1 preview) call site keeps compiling and pointing at
+// a real endpoint without a wider rewrite of that undocumented surface. Note
+// the field is still named `evaluationId` here for source compat — it is
+// actually the approval_request_id (v1-evaluate's hold/escalate response
+// field), same as everywhere else in this protocol.
+//
+// v2Streaming has no effect: there is no SSE endpoint to stream from. It is
+// accepted (not rejected) so existing callers don't hard-fail, but the wait
+// always polls.
 
 import type { Decision } from "./types";
-
-const POLL_INTERVAL_MS = 5_000;
-const SSE_LINE = /^data: (.+)$/;
+import { waitForApprovalResolution } from "@atlasent/enforce";
 
 export interface WaitOptions {
   apiUrl: string;
   apiKey: string;
+  /** Actually the approval_request_id — see file header. */
   evaluationId: string;
   timeoutMs: number;
   v2Streaming: boolean;
@@ -24,78 +42,27 @@ export interface WaitOptions {
 export async function waitForTerminalDecision(
   opts: WaitOptions,
 ): Promise<Decision> {
-  if (opts.v2Streaming) {
-    return waitViaStream(opts);
-  }
-  return waitViaPolling(opts);
-}
-
-async function waitViaStream(opts: WaitOptions): Promise<Decision> {
-  const r = await fetch(`${opts.apiUrl}/v1-evaluate/stream`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${opts.apiKey}`,
-      accept: "text/event-stream",
-    },
-    body: JSON.stringify({ evaluationId: opts.evaluationId }),
-    signal: opts.signal,
+  const resolution = await waitForApprovalResolution({
+    apiKey: opts.apiKey,
+    apiUrl: opts.apiUrl,
+    approvalId: opts.evaluationId,
+    maxWaitMs: opts.timeoutMs,
   });
-  if (!r.ok || !r.body) {
-    throw new Error(`atlasent /v1-evaluate/stream ${r.status}`);
-  }
-  const reader = r.body.getReader();
-  const decoder = new TextDecoder();
-  const deadline = Date.now() + opts.timeoutMs;
-  let buf = "";
-  while (Date.now() < deadline) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buf.indexOf("\n\n")) !== -1) {
-      const block = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      for (const line of block.split("\n")) {
-        const m = SSE_LINE.exec(line);
-        if (!m) continue;
-        const event = JSON.parse(m[1]) as Decision;
-        if (event.decision === "allow" || event.decision === "deny") {
-          return event;
-        }
-      }
-    }
-  }
-  throw new Error(
-    `atlasent stream timeout after ${opts.timeoutMs}ms for ${opts.evaluationId}`,
-  );
-}
 
-async function waitViaPolling(opts: WaitOptions): Promise<Decision> {
-  const deadline = Date.now() + opts.timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const r = await fetch(
-        `${opts.apiUrl}/v1-evaluate/${encodeURIComponent(opts.evaluationId)}`,
-        {
-          headers: { authorization: `Bearer ${opts.apiKey}` },
-          signal: opts.signal,
-        },
-      );
-      if (r.ok) {
-        const decision = (await r.json()) as Decision;
-        if (decision.decision === "allow" || decision.decision === "deny") {
-          return decision;
-        }
-      }
-    } catch (err) {
-      // Re-throw AbortError (caller cancelled); swallow transient network /
-      // parse errors and let the next poll attempt handle them.
-      if (err instanceof Error && err.name === "AbortError") throw err;
-    }
-    await new Promise((res) => setTimeout(res, POLL_INTERVAL_MS));
+  // Bridge ApprovalResolution -> the Decision shape this module's existing
+  // callers (src/v21.ts) already branch on. Only "approved" AND a real
+  // minted permit token count as allow — every other terminal status
+  // (denied, denied_by_timeout, expired, an approval accepted with no
+  // fresh permit, or anything else the server reports) is deny, fail closed.
+  if (resolution.status === "approved" && resolution.permitToken) {
+    return {
+      decision: "allow",
+      permitToken: resolution.permitToken,
+      evaluatedAt: new Date().toISOString(),
+    };
   }
-  throw new Error(
-    `atlasent poll timeout after ${opts.timeoutMs}ms for ${opts.evaluationId}`,
-  );
+  return {
+    decision: "deny",
+    evaluatedAt: new Date().toISOString(),
+  };
 }

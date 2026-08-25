@@ -14,6 +14,8 @@ vi.mock("@atlasent/enforce", async (importOriginal) => {
     ...original,
     enforce: vi.fn(),
     evaluate: vi.fn(),
+    verifyPermit: vi.fn(),
+    waitForApprovalResolution: vi.fn(),
   };
 });
 
@@ -24,7 +26,7 @@ vi.mock("@atlasent/enforce", async (importOriginal) => {
 // unchanged unless it explicitly overrides the mock.
 vi.mock("../approvals", () => ({ resolveApprovals: vi.fn() }));
 
-import { enforce, evaluate, EnforceError } from "@atlasent/enforce";
+import { enforce, evaluate, verifyPermit, waitForApprovalResolution, EnforceError } from "@atlasent/enforce";
 import type { Decision } from "@atlasent/enforce";
 import { resolveApprovals } from "../approvals";
 
@@ -33,6 +35,8 @@ import { run } from "../index";
 
 const mockEnforce = enforce as unknown as ReturnType<typeof vi.fn>;
 const mockEvaluate = evaluate as unknown as ReturnType<typeof vi.fn>;
+const mockVerifyPermit = verifyPermit as unknown as ReturnType<typeof vi.fn>;
+const mockWaitForApproval = waitForApprovalResolution as unknown as ReturnType<typeof vi.fn>;
 const mockResolveApprovals = resolveApprovals as unknown as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
@@ -113,6 +117,8 @@ beforeEach(() => {
 
   mockEnforce.mockReset();
   mockEvaluate.mockReset();
+  mockVerifyPermit.mockReset();
+  mockWaitForApproval.mockReset();
 
   // Default: no PR-review evidence (mirrors the real resolveApprovals()
   // behavior with no GITHUB_TOKEN set, which every pre-existing test in this
@@ -301,6 +307,170 @@ describe("deny decision", () => {
 
     await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
     expect(getExitCalls()).toContain(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3b. Pause-and-resume approval protocol (wait-for-approval)
+// ---------------------------------------------------------------------------
+
+describe("pause-and-resume approval protocol (wait-for-approval)", () => {
+  it("wait-for-approval NOT set: hold with an approval_request_id still fails closed immediately, same as before (opt-in default preserved)", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+
+    const holdDecision = makeDecision({
+      decision: "hold",
+      holdReason: "awaiting approval",
+      approvalRequestId: "apr-1",
+    });
+    mockEnforce.mockRejectedValueOnce(
+      new EnforceError("On hold: awaiting approval", "verify", holdDecision),
+    );
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    expect(mockWaitForApproval).not.toHaveBeenCalled();
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("hold");
+  });
+
+  it("wait-for-approval=true, hold with no approval_request_id: cannot wait for something unidentifiable, fails closed immediately", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("wait-for-approval", "true");
+
+    const holdDecision = makeDecision({ decision: "hold", holdReason: "awaiting approval" });
+    mockEnforce.mockRejectedValueOnce(
+      new EnforceError("On hold: awaiting approval", "verify", holdDecision),
+    );
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    expect(mockWaitForApproval).not.toHaveBeenCalled();
+  });
+
+  it("wait-for-approval=true: approved with a fresh verified permit → allow, verified=true, no process.exit", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("wait-for-approval", "true");
+    setInput("max-wait-minutes", "15");
+
+    const escalateDecision = makeDecision({
+      decision: "escalate",
+      approvalRequestId: "apr-2",
+      permitToken: undefined,
+    });
+    mockEnforce.mockRejectedValueOnce(
+      new EnforceError("Escalated — manual review required", "verify", escalateDecision),
+    );
+    mockWaitForApproval.mockResolvedValueOnce({
+      status: "approved",
+      reEvaluationDecision: "allow",
+      permitToken: "pt.v4.fresh",
+    });
+    mockVerifyPermit.mockResolvedValueOnce({ verified: true, outcome: "verified" });
+
+    let threw = false;
+    try {
+      await run();
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(false);
+
+    expect(mockWaitForApproval).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalId: "apr-2", maxWaitMs: 15 * 60_000 }),
+    );
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("allow");
+    expect(outputs["verified"]).toBe("true");
+  });
+
+  it("wait-for-approval=true: approval resolved to denied → fails closed with the real reason, not the stale hold/escalate one", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("wait-for-approval", "true");
+
+    const holdDecision = makeDecision({
+      decision: "hold",
+      holdReason: "awaiting approval",
+      approvalRequestId: "apr-3",
+    });
+    mockEnforce.mockRejectedValueOnce(
+      new EnforceError("On hold: awaiting approval", "verify", holdDecision),
+    );
+    mockWaitForApproval.mockResolvedValueOnce({ status: "denied" });
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    expect(mockVerifyPermit).not.toHaveBeenCalled();
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("deny");
+    expect(getConsoleLogs().some((l) => l.includes("denied"))).toBe(true);
+  });
+
+  it("wait-for-approval=true: approved with NO permit token (e.g. re-evaluation held again) fails closed rather than treating approved as allow", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("wait-for-approval", "true");
+
+    const holdDecision = makeDecision({
+      decision: "hold",
+      approvalRequestId: "apr-4",
+    });
+    mockEnforce.mockRejectedValueOnce(new EnforceError("On hold", "verify", holdDecision));
+    mockWaitForApproval.mockResolvedValueOnce({ status: "approved", reEvaluationDecision: "hold" });
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    expect(mockVerifyPermit).not.toHaveBeenCalled();
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("deny");
+  });
+
+  it("wait-for-approval=true: approved with a fresh token that FAILS verification still fails closed", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("wait-for-approval", "true");
+
+    const holdDecision = makeDecision({ decision: "hold", approvalRequestId: "apr-5" });
+    mockEnforce.mockRejectedValueOnce(new EnforceError("On hold", "verify", holdDecision));
+    mockWaitForApproval.mockResolvedValueOnce({ status: "approved", permitToken: "pt.v4.stale" });
+    mockVerifyPermit.mockResolvedValueOnce({ verified: false, outcome: "payload_mismatch" });
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    const outputs = readOutputs(outputFile);
+    expect(outputs["verified"]).toBe("false");
+  });
+
+  it("wait-for-approval=true: the wait itself timing out fails closed with the timeout message", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("wait-for-approval", "true");
+
+    const holdDecision = makeDecision({ decision: "hold", approvalRequestId: "apr-6" });
+    mockEnforce.mockRejectedValueOnce(new EnforceError("On hold", "verify", holdDecision));
+    mockWaitForApproval.mockRejectedValueOnce(
+      new EnforceError("Approval wait timed out after 1800000ms with no human resolution — failing closed", "evaluate"),
+    );
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    expect(getConsoleLogs().some((l) => l.includes("timed out"))).toBe(true);
+  });
+
+  it("wait-for-approval=true has no effect in evaluate-only mode: enforce() is bypassed entirely, so a hold decision falls through evaluate()'s own path, never waitForApprovalResolution", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("mode", "evaluate-only");
+    setInput("wait-for-approval", "true");
+
+    // evaluate() (not enforce()) returns hold as a plain Decision — it does
+    // not throw for a decision-level hold, only for infra failures. This
+    // pins that wait-for-approval never fires outside the enforce() path.
+    mockEvaluate.mockResolvedValueOnce(
+      makeDecision({ decision: "hold", approvalRequestId: "apr-7", permitToken: undefined }),
+    );
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    expect(mockWaitForApproval).not.toHaveBeenCalled();
+    expect(mockEnforce).not.toHaveBeenCalled();
   });
 });
 

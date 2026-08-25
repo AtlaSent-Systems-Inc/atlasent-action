@@ -1,167 +1,78 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Tests for waitForTerminalDecision() — the compatibility shim over
+// @atlasent/enforce's waitForApprovalResolution(), the canonical
+// pause-and-resume approval poll (GET /v1/approvals/:id). Prior versions of
+// this suite tested a since-removed implementation that polled/streamed
+// /v1-evaluate — an endpoint that never existed server-side (see stream.ts's
+// header comment). This suite verifies the shim's bridging logic only; the
+// real poll mechanics are covered in packages/enforce's own test suite.
+
+vi.mock("@atlasent/enforce", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@atlasent/enforce")>();
+  return { ...actual, waitForApprovalResolution: vi.fn() };
+});
+
+import { waitForApprovalResolution } from "@atlasent/enforce";
 import { waitForTerminalDecision } from "../stream";
 
-// SIM tests for waitForTerminalDecision() — the wait-for-id helper that
-// blocks on hold/escalate decisions until an upstream approver resolves them.
-// Tests cover both the polling path (v2Streaming=false) and the SSE path
-// (v2Streaming=true).
+const mockResolve = waitForApprovalResolution as ReturnType<typeof vi.fn>;
 
-describe("waitForTerminalDecision", () => {
-  const fetchMock = vi.fn();
+const BASE_OPTS = {
+  apiUrl: "https://api.test",
+  apiKey: "ask_test_key",
+  evaluationId: "apr-123",
+  timeoutMs: 30_000,
+  v2Streaming: false,
+};
 
-  const BASE_OPTS = {
-    apiUrl: "https://api.test",
-    apiKey: "ask_test_key",
-    evaluationId: "ev-123",
-    timeoutMs: 30_000,
-    v2Streaming: false,
-  };
-
-  beforeEach(() => {
-    fetchMock.mockReset();
-    vi.stubGlobal("fetch", fetchMock);
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.useRealTimers();
-  });
-
-  function pollResp(decision: string) {
-    return new Response(
-      JSON.stringify({ decision, evaluatedAt: "2026-04-30T00:00:00Z" }),
-      { status: 200 },
-    );
-  }
-
-  function sseStream(...events: object[]): ReadableStream {
-    const encoder = new TextEncoder();
-    return new ReadableStream({
-      start(controller) {
-        for (const ev of events) {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
-        }
-        controller.close();
-      },
+describe("waitForTerminalDecision (pause-and-resume shim)", () => {
+  it("delegates to @atlasent/enforce's waitForApprovalResolution with the right args", async () => {
+    mockResolve.mockResolvedValueOnce({ status: "denied" });
+    await waitForTerminalDecision(BASE_OPTS);
+    expect(mockResolve).toHaveBeenCalledWith({
+      apiKey: "ask_test_key",
+      apiUrl: "https://api.test",
+      approvalId: "apr-123",
+      maxWaitMs: 30_000,
     });
-  }
+  });
 
-  // ── Polling path ─────────────────────────────────────────────────────────────
-
-  it("polling: returns allow immediately when first response is terminal", async () => {
-    fetchMock.mockResolvedValueOnce(pollResp("allow"));
+  it("maps status=approved with a permit token to decision=allow", async () => {
+    mockResolve.mockResolvedValueOnce({ status: "approved", permitToken: "pt.v4.fresh" });
     const result = await waitForTerminalDecision(BASE_OPTS);
     expect(result.decision).toBe("allow");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.test/v1-evaluate/ev-123",
-      expect.objectContaining({
-        headers: expect.objectContaining({ authorization: "Bearer ask_test_key" }),
-      }),
-    );
+    expect(result.permitToken).toBe("pt.v4.fresh");
   });
 
-  it("polling: returns deny immediately when first response is terminal", async () => {
-    fetchMock.mockResolvedValueOnce(pollResp("deny"));
+  it("maps status=approved with NO permit token to decision=deny (fail closed, never allow without a real token)", async () => {
+    mockResolve.mockResolvedValueOnce({ status: "approved" });
     const result = await waitForTerminalDecision(BASE_OPTS);
     expect(result.decision).toBe("deny");
   });
 
-  it("polling: waits through non-terminal hold, retries after interval, returns allow", async () => {
-    let callCount = 0;
-    fetchMock.mockImplementation(() => {
-      callCount++;
-      return Promise.resolve(pollResp(callCount === 1 ? "hold" : "allow"));
-    });
-
-    const p = waitForTerminalDecision(BASE_OPTS);
-    await vi.advanceTimersByTimeAsync(5_000);
-    const result = await p;
-
-    expect(result.decision).toBe("allow");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("polling: retries after transient network error instead of throwing immediately", async () => {
-    let callCount = 0;
-    fetchMock.mockImplementation(() => {
-      callCount++;
-      if (callCount === 1) return Promise.reject(new Error("ECONNREFUSED"));
-      return Promise.resolve(pollResp("allow"));
-    });
-
-    const p = waitForTerminalDecision(BASE_OPTS);
-    await vi.advanceTimersByTimeAsync(5_000);
-    const result = await p;
-
-    expect(result.decision).toBe("allow");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("polling: throws after timeout without a terminal decision", async () => {
-    fetchMock.mockImplementation(() => Promise.resolve(pollResp("hold")));
-
-    const p = waitForTerminalDecision({ ...BASE_OPTS, timeoutMs: 4_999 });
-    // Attach rejection handler before advancing time so the rejection is not
-    // briefly unhandled when the fake timer fires.
-    const check = expect(p).rejects.toThrow(/poll timeout/);
-    await vi.advanceTimersByTimeAsync(5_000);
-    await check;
-  });
-
-  // ── SSE streaming path ────────────────────────────────────────────────────────
-
-  it("stream: returns allow from first SSE event", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        sseStream({ decision: "allow", evaluatedAt: "2026-04-30T00:00:00Z" }),
-        { status: 200 },
-      ),
-    );
-
-    const result = await waitForTerminalDecision({ ...BASE_OPTS, v2Streaming: true });
-
-    expect(result.decision).toBe("allow");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.test/v1-evaluate/stream",
-      expect.objectContaining({ method: "POST" }),
-    );
-  });
-
-  it("stream: skips non-terminal event and returns the next terminal event", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        sseStream(
-          { decision: "hold", evaluatedAt: "2026-04-30T00:00:00Z" },
-          { decision: "deny", evaluatedAt: "2026-04-30T00:00:01Z" },
-        ),
-        { status: 200 },
-      ),
-    );
-
-    const result = await waitForTerminalDecision({ ...BASE_OPTS, v2Streaming: true });
-
+  it("maps status=denied to decision=deny", async () => {
+    mockResolve.mockResolvedValueOnce({ status: "denied" });
+    const result = await waitForTerminalDecision(BASE_OPTS);
     expect(result.decision).toBe("deny");
   });
 
-  it("stream: sends evaluationId in POST body", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        sseStream({ decision: "allow", evaluatedAt: "2026-04-30T00:00:00Z" }),
-        { status: 200 },
-      ),
-    );
+  it("maps status=denied_by_timeout to decision=deny", async () => {
+    mockResolve.mockResolvedValueOnce({ status: "denied_by_timeout" });
+    const result = await waitForTerminalDecision(BASE_OPTS);
+    expect(result.decision).toBe("deny");
+  });
+
+  it("propagates a thrown timeout/error from waitForApprovalResolution rather than swallowing it", async () => {
+    mockResolve.mockRejectedValueOnce(new Error("Approval wait timed out after 30000ms"));
+    await expect(waitForTerminalDecision(BASE_OPTS)).rejects.toThrow(/timed out/);
+  });
+
+  it("v2Streaming has no effect — still delegates to the same polling implementation", async () => {
+    mockResolve.mockResolvedValueOnce({ status: "denied" });
     await waitForTerminalDecision({ ...BASE_OPTS, v2Streaming: true });
-
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string) as Record<string, unknown>;
-    expect(body.evaluationId).toBe("ev-123");
-  });
-
-  it("stream: throws on non-2xx response", async () => {
-    fetchMock.mockResolvedValueOnce(new Response("error", { status: 500 }));
-
-    await expect(
-      waitForTerminalDecision({ ...BASE_OPTS, v2Streaming: true }),
-    ).rejects.toThrow(/500/);
+    expect(mockResolve).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalId: "apr-123" }),
+    );
   });
 });

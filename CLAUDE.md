@@ -107,15 +107,49 @@ Key action inputs (see `action.yml` for the full list of 69 inputs / 48 outputs)
 
 ### Standard deployment gate
 
+C3 (architecture-hardening-review 2026-08-25): this example issues a permit
+bound to `target-id` / `environment` / `artifact-digest` in one job, then
+re-verifies those exact same bindings immediately before execution in the
+job that actually runs `./scripts/deploy.sh` — not a single combined
+evaluate+verify step. A single-step gate answers "was this request
+authorized," which is not the same question as "is what's about to execute
+still the thing that was authorized." Re-presenting the bindings at the
+execution boundary is what makes a stale or substituted artifact fail
+closed with `PAYLOAD_MISMATCH` / `MISSING_BINDING` instead of silently
+running. See `requiredBindingsFor` in `packages/enforce/src/index.ts` for
+the exact re-presentation contract this depends on: every binding present
+at evaluate time must be present again at verify time, or verification
+fails closed.
+
+This is a documentation change only — `verify-permit` re-verification is
+NOT automatic or code-enforced by default; a caller that omits the
+`deploy` job below still gets the single-step evaluate+verify behavior
+this action has always had. Silently making cross-job re-verification
+mandatory would be a breaking behavior change for a widely-consumed public
+GitHub Action and needs its own deprecation-window announcement, not a
+docs edit — see the "Stronger execution-boundary pattern" section of
+README.md for the full mechanics this example is now built on.
+
 ```yaml
 jobs:
-  deploy:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/build.sh out/
+      - id: digest
+        run: echo "digest=sha256:$(tar -cf - out | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+  authorize:
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write   # for pr-comment-on-deny
+    outputs:
+      permit: ${{ steps.gate.outputs.permit-token }}
     steps:
-      - uses: actions/checkout@v4
-
       - name: AtlaSent gate
         id: gate
         uses: AtlaSent-Systems-Inc/atlasent-action@v1
@@ -127,12 +161,47 @@ jobs:
           action: production.deploy
           target-id: api-service
           environment: live
+          artifact-digest: ${{ needs.build.outputs.digest }}
+          mode: evaluate-only
+
+  deploy:
+    needs: [build, authorize]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AtlaSent verify
+        id: verify
+        uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+        with:
+          verify-permit: 'true'
+          permit-token: ${{ needs.authorize.outputs.permit }}
+          action: production.deploy
+          target-id: api-service
+          environment: live
+          artifact-digest: ${{ needs.build.outputs.digest }}
 
       - name: Deploy
         # Gate on verified, not decision
-        if: steps.gate.outputs.verified == 'true'
+        if: steps.verify.outputs.verified == 'true'
         run: ./scripts/deploy.sh
 ```
+
+`mode: evaluate-only` leaves the single-use permit unconsumed at issue time,
+so the `deploy` job's `verify-permit: 'true'` step is the one that actually
+consumes it — immediately before `./scripts/deploy.sh` runs, not minutes (or
+jobs) earlier. `target-id` / `environment` / `artifact-digest` must match
+between the `authorize` and `deploy` steps; a mismatch on any of them fails
+verification closed rather than executing against a request that was never
+actually authorized.
+
+For an action with no separable build artifact, a single combined
+evaluate+verify step (as in earlier versions of this example) is still
+correct — pass `target-id` and `environment` and omit `artifact-digest` and
+the `build`/`authorize` split entirely.
 
 ### Batch evaluation
 

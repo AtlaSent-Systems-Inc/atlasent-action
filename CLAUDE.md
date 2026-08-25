@@ -198,6 +198,21 @@ between the `authorize` and `deploy` steps; a mismatch on any of them fails
 verification closed rather than executing against a request that was never
 actually authorized.
 
+**The digest binds the *identity* of the artifact into the authorization —
+it does not by itself move the artifact's bytes between jobs.** GitHub
+Actions jobs run on separate, isolated runners with no shared filesystem, so
+`deploy.sh` in the `deploy` job needs its own way to obtain the exact thing
+`digest` describes: most commonly, `build` pushes to a registry/artifact
+store and `digest` is that reference (e.g. a container image digest),
+letting `deploy.sh` pull `image@sha256:<digest>` directly — no file transfer
+needed, and the pull is for the exact digest that was authorized. If instead
+`build` produces a raw file/directory, use `actions/upload-artifact` in
+`build` and `actions/download-artifact` in `deploy` before running
+`deploy.sh`, and verify `sha256sum` on the downloaded bytes matches `digest`
+before deploying. Skipping this — running `deploy.sh` against something not
+actually tied to the verified digest — silently defeats the binding this
+whole pattern exists to enforce.
+
 For an action with no separable build artifact, a single combined
 evaluate+verify step (as in earlier versions of this example) is still
 correct — pass `target-id` and `environment` and omit `artifact-digest` and

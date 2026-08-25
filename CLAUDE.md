@@ -107,15 +107,65 @@ Key action inputs (see `action.yml` for the full list of 69 inputs / 48 outputs)
 
 ### Standard deployment gate
 
+C3 (architecture-hardening-review 2026-08-25): this example issues a permit
+bound to `target-id` / `environment` / `artifact-digest` in one job, then
+re-verifies those exact same bindings immediately before execution in the
+job that actually runs `./scripts/deploy.sh` — not a single combined
+evaluate+verify step. A single-step gate answers "was this request
+authorized," which is not the same question as "is what's about to execute
+still the thing that was authorized." Re-presenting the bindings at the
+execution boundary is what makes a stale or substituted artifact fail
+closed with `PAYLOAD_MISMATCH` / `MISSING_BINDING` instead of silently
+running. See `requiredBindingsFor` in `packages/enforce/src/index.ts` for
+the exact re-presentation contract this depends on: every binding present
+at evaluate time must be present again at verify time, or verification
+fails closed.
+
+This is a documentation change only — `verify-permit` re-verification is
+NOT automatic or code-enforced by default; a caller that omits the
+`deploy` job below still gets the single-step evaluate+verify behavior
+this action has always had. Silently making cross-job re-verification
+mandatory would be a breaking behavior change for a widely-consumed public
+GitHub Action and needs its own deprecation-window announcement, not a
+docs edit — see the "Stronger execution-boundary pattern" section of
+README.md for the full mechanics this example is now built on.
+
+P1 fix (human review): an earlier revision of this example issued and
+re-verified a digest but never actually moved the artifact's bytes between
+jobs or re-checked them — `deploy` checked out only the repository and ran
+`./scripts/deploy.sh` with no `out/` present and no re-hash, so the example
+could verify one artifact and deploy something else (or nothing at all)
+entirely undetected. The example below is now executable end-to-end: `build`
+uploads `out/` as a real GitHub Actions artifact, and `deploy` downloads it
+and re-hashes the downloaded bytes against the authorized digest **before**
+calling AtlaSent verify — closing the exact gap the prose below was, until
+now, only describing rather than demonstrating.
+
 ```yaml
 jobs:
-  deploy:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/build.sh out/
+      - id: digest
+        run: echo "digest=sha256:$(tar -cf - out | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: out/
+
+  authorize:
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write   # for pr-comment-on-deny
+    outputs:
+      permit: ${{ steps.gate.outputs.permit-token }}
     steps:
-      - uses: actions/checkout@v4
-
       - name: AtlaSent gate
         id: gate
         uses: AtlaSent-Systems-Inc/atlasent-action@v1
@@ -127,12 +177,87 @@ jobs:
           action: production.deploy
           target-id: api-service
           environment: live
+          artifact-digest: ${{ needs.build.outputs.digest }}
+          mode: evaluate-only
+
+  deploy:
+    needs: [build, authorize]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: out/
+
+      - name: Verify the downloaded bytes match the authorized digest
+        run: |
+          set -euo pipefail
+          actual="sha256:$(tar -cf - out | sha256sum | cut -d' ' -f1)"
+          expected="${{ needs.build.outputs.digest }}"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::downloaded artifact ($actual) does not match the authorized digest ($expected)"
+            exit 1
+          fi
+
+      - name: AtlaSent verify
+        id: verify
+        uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+        with:
+          verify-permit: 'true'
+          permit-token: ${{ needs.authorize.outputs.permit }}
+          action: production.deploy
+          target-id: api-service
+          environment: live
+          artifact-digest: ${{ needs.build.outputs.digest }}
 
       - name: Deploy
         # Gate on verified, not decision
-        if: steps.gate.outputs.verified == 'true'
-        run: ./scripts/deploy.sh
+        if: steps.verify.outputs.verified == 'true'
+        run: ./scripts/deploy.sh out/
 ```
+
+`mode: evaluate-only` leaves the single-use permit unconsumed at issue time,
+so the `deploy` job's `verify-permit: 'true'` step is the one that actually
+consumes it — immediately before `./scripts/deploy.sh` runs, not minutes (or
+jobs) earlier. `target-id` / `environment` / `artifact-digest` must match
+between the `authorize` and `deploy` steps; a mismatch on any of them fails
+verification closed rather than executing against a request that was never
+actually authorized.
+
+**The digest binds the *identity* of the artifact into the authorization —
+it does not by itself move the artifact's bytes between jobs, and AtlaSent
+verify only checks that the DECLARED digest matches what was authorized; it
+never sees the artifact's actual bytes.** GitHub Actions jobs run on
+separate, isolated runners with no shared filesystem, so `deploy.sh` needs
+its own way to obtain the exact thing `digest` describes, and that transfer
+needs its own integrity check independent of AtlaSent's:
+
+- **Raw file/directory artifact** (the case shown above): `actions/upload-artifact`
+  in `build`, `actions/download-artifact` in `deploy`, then re-hash the
+  downloaded bytes and compare against `digest` **before** calling AtlaSent
+  verify — never after, and never skip it. This is what fails the run closed
+  on a substituted, corrupted, or missing artifact, independent of whatever
+  digest string the workflow claims.
+- **Container image**: `build` pushes to a registry and `digest` is that
+  image's real digest; `deploy` pulls `image@sha256:<digest>` directly — the
+  registry pull itself is the integrity check, no separate re-hash step
+  needed, and no file transfer between runners is required at all.
+
+Skipping either of these — running `deploy.sh` against something not
+independently confirmed to match the verified digest — silently defeats the
+binding this whole pattern exists to enforce, exactly as it did in the
+version of this example before the download/re-hash step above was added.
+
+For an action with no separable build artifact, a single combined
+evaluate+verify step (as in earlier versions of this example) is still
+correct — pass `target-id` and `environment` and omit `artifact-digest` and
+the `build`/`authorize` split entirely.
 
 ### Batch evaluation
 

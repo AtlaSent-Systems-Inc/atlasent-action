@@ -19,6 +19,7 @@ import {
   evaluate,
   reverifyPermit,
   requiredBindingsFor,
+  verify,
   verifyPermit,
   waitForApprovalResolution,
   EnforceError,
@@ -1696,6 +1697,7 @@ export async function run(): Promise<void> {
       // throws EnforceError (phase "evaluate") on any non-allow, so the
       // fail-closed handler below is shared with the enforce path.
       const decision = await evaluate(config);
+      verify(decision);
       enforceResult = { result: undefined, decision, verifyOutcome: undefined };
     } else {
       enforceResult = await enforce(config, async () => {});

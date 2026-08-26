@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
+    <description>Reversible AtlaSent sandbox acceptance marker. Grants no permissions and is assigned to no users.</description>
+    <hasActivationRequired>false</hasActivationRequired>
+    <label>AtlaSent Pilot Marker</label>
+</PermissionSet>

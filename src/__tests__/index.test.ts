@@ -570,7 +570,7 @@ describe("evaluate-only (issue-permit) mode", () => {
     await run();
 
     expect(getExitCalls()).toHaveLength(0);
-    // The gate must NOT verify/consume the permit in evaluate-only mode.
+    // For an allow decision, the gate must NOT verify/consume the permit in evaluate-only mode.
     expect(mockEnforce).not.toHaveBeenCalled();
     expect(mockEvaluate).toHaveBeenCalledTimes(1);
 
@@ -612,14 +612,13 @@ describe("evaluate-only (issue-permit) mode", () => {
     expect(outputs["permit-issued"]).toBe("false");
   });
 
-  it("fails closed on deny (evaluate throws EnforceError phase=evaluate)", async () => {
+  it("fails closed on deny with the real deny message, not the misleading 'allow without permit' one", async () => {
     setApiKey();
     setInput("action", "production.deploy");
     setInput("mode", "evaluate-only");
 
-    const denyDecision = makeDecision({ decision: "deny", denyReason: "policy violation" });
-    mockEvaluate.mockRejectedValueOnce(
-      new EnforceError("Denied: policy violation", "evaluate", denyDecision),
+    mockEvaluate.mockResolvedValueOnce(
+      makeDecision({ decision: "deny", denyReason: "policy violation" }),
     );
 
     await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
@@ -628,6 +627,48 @@ describe("evaluate-only (issue-permit) mode", () => {
     const outputs = readOutputs(outputFile);
     expect(outputs["decision"]).toBe("deny");
     expect(outputs["verified"]).toBe("false");
+    const logs = getConsoleLogs();
+    expect(logs.some((l) => l.includes("policy violation"))).toBe(true);
+    expect(logs.some((l) => l.includes("allow without permit"))).toBe(false);
+    expect(logs.some((l) => l.includes("allow but no permit_token"))).toBe(false);
+  });
+
+  it("fails closed on hold with the real hold message, not the misleading 'allow without permit' one", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("mode", "evaluate-only");
+
+    mockEvaluate.mockResolvedValueOnce(
+      makeDecision({ decision: "hold", holdReason: "awaiting change window" }),
+    );
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    expect(getExitCalls()).toContain(1);
+
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("hold");
+    expect(outputs["verified"]).toBe("false");
+    const logs = getConsoleLogs();
+    expect(logs.some((l) => l.includes("awaiting change window"))).toBe(true);
+    expect(logs.some((l) => l.includes("allow without permit"))).toBe(false);
+  });
+
+  it("fails closed on escalate with the real escalate message, not the misleading 'allow without permit' one", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("mode", "evaluate-only");
+
+    mockEvaluate.mockResolvedValueOnce(makeDecision({ decision: "escalate" }));
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    expect(getExitCalls()).toContain(1);
+
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("escalate");
+    expect(outputs["verified"]).toBe("false");
+    const logs = getConsoleLogs();
+    expect(logs.some((l) => l.includes("manual review required"))).toBe(true);
+    expect(logs.some((l) => l.includes("allow without permit"))).toBe(false);
   });
 
   it("default mode (enforce) still verifies via enforce() and outputs verified=true", async () => {

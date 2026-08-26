@@ -28,4 +28,4 @@ jobs:
           node --check examples/salesforce-change-gate/.atlasent/salesforce/lib.mjs
           node --check examples/salesforce-change-gate/.atlasent/salesforce/preflight.mjs
           node --check examples/salesforce-change-gate/.atlasent/salesforce/deploy.mjs
-          node --test examples/salesforce-change-gate/tests/starter.test.mjs
+          node --test examples/salesforce-change-gate/tests/*.test.mjs

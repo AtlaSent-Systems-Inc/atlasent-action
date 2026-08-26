@@ -214,7 +214,7 @@ var require_dist = __commonJS({
     function sleep(ms) {
       return new Promise((resolve3) => setTimeout(resolve3, ms));
     }
-    async function claimApprovalPermit3(config, apiUrl) {
+    async function claimApprovalPermit(config, apiUrl) {
       const url = `${apiUrl}/v1/approvals/${encodeURIComponent(config.approvalId)}/claim-permit`;
       let status;
       let body;
@@ -269,7 +269,7 @@ var require_dist = __commonJS({
           const rowStatus = raw["status"];
           if (rowStatus && rowStatus !== "pending") {
             const reEvaluationDecision = raw["re_evaluation_decision"];
-            const permitToken = rowStatus === "approved" ? await claimApprovalPermit3(config, apiUrl) : void 0;
+            const permitToken = rowStatus === "approved" ? await claimApprovalPermit(config, apiUrl) : void 0;
             return {
               status: rowStatus,
               reEvaluationDecision,

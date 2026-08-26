@@ -570,7 +570,7 @@ describe("evaluate-only (issue-permit) mode", () => {
     await run();
 
     expect(getExitCalls()).toHaveLength(0);
-    // The gate must NOT verify/consume the permit in evaluate-only mode.
+    // For an allow decision, the gate must NOT verify/consume the permit in evaluate-only mode.
     expect(mockEnforce).not.toHaveBeenCalled();
     expect(mockEvaluate).toHaveBeenCalledTimes(1);
 

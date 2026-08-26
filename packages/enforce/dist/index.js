@@ -150,6 +150,30 @@ const APPROVAL_POLL_INTERVAL_MS = 5_000;
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
+async function claimApprovalPermit(config, apiUrl) {
+    const url = `${apiUrl}/v1/approvals/${encodeURIComponent(config.approvalId)}/claim-permit`;
+    let status;
+    let body;
+    try {
+        ({ status, body } = await (0, transport_1.post)(url, "{}", { Authorization: `Bearer ${config.apiKey}` }));
+    }
+    catch {
+        return undefined;
+    }
+    if (status !== 200)
+        return undefined;
+    let raw;
+    try {
+        raw = JSON.parse(body);
+    }
+    catch {
+        return undefined;
+    }
+    if (raw["claimed"] !== true)
+        return undefined;
+    const permitToken = raw["permit_token"];
+    return typeof permitToken === "string" && permitToken.length > 0 ? permitToken : undefined;
+}
 async function waitForApprovalResolution(config) {
     if (!config.approvalId) {
         throw new EnforceError("Cannot wait for approval: no approvalRequestId on the hold/escalate decision", "evaluate");
@@ -164,11 +188,6 @@ async function waitForApprovalResolution(config) {
             ({ status, body } = await (0, transport_1.get)(url, { Authorization: `Bearer ${config.apiKey}` }));
         }
         catch {
-            // Transient network failure — swallow and retry on the next tick,
-            // same posture as the evaluate()/verifyPermit() infra-error path
-            // (those fail closed immediately because they're one-shot; this is
-            // a bounded poll loop, so a single transient failure doesn't need
-            // to burn the whole wait window).
             await sleep(APPROVAL_POLL_INTERVAL_MS);
             continue;
         }
@@ -184,26 +203,27 @@ async function waitForApprovalResolution(config) {
                 raw = JSON.parse(body);
             }
             catch {
-                // Malformed response — treat like any other transient failure, retry.
                 await sleep(APPROVAL_POLL_INTERVAL_MS);
                 continue;
             }
             const rowStatus = raw["status"];
             if (rowStatus && rowStatus !== "pending") {
+                const reEvaluationDecision = raw["re_evaluation_decision"];
+                const permitToken = rowStatus === "approved"
+                    ? await claimApprovalPermit(config, apiUrl)
+                    : undefined;
                 return {
                     status: rowStatus,
-                    reEvaluationDecision: raw["re_evaluation_decision"],
-                    permitToken: raw["re_evaluation_permit_token"],
+                    reEvaluationDecision,
+                    permitToken,
                 };
             }
-            // status === "pending" (or absent) — keep polling.
         }
-        // Any other HTTP status: treat as transient (5xx, rate limit, etc.) and retry
-        // within the bounded window; the deadline check above is the real backstop.
         await sleep(APPROVAL_POLL_INTERVAL_MS);
     }
     throw new EnforceError(`Approval wait timed out after ${config.maxWaitMs}ms with no human resolution — failing closed`, "evaluate");
 }
+
 /**
  * Shared HTTP core for permit verification. Sends the permit token AND re-binds
  * the execution context (environment, target, artifact digest) so verification

@@ -214,6 +214,28 @@ var require_dist = __commonJS({
     function sleep(ms) {
       return new Promise((resolve3) => setTimeout(resolve3, ms));
     }
+    async function claimApprovalPermit3(config, apiUrl) {
+      const url = `${apiUrl}/v1/approvals/${encodeURIComponent(config.approvalId)}/claim-permit`;
+      let status;
+      let body;
+      try {
+        ({ status, body } = await (0, transport_1.post)(url, "{}", { Authorization: `Bearer ${config.apiKey}` }));
+      } catch {
+        return void 0;
+      }
+      if (status !== 200)
+        return void 0;
+      let raw;
+      try {
+        raw = JSON.parse(body);
+      } catch {
+        return void 0;
+      }
+      if (raw["claimed"] !== true)
+        return void 0;
+      const permitToken = raw["permit_token"];
+      return typeof permitToken === "string" && permitToken.length > 0 ? permitToken : void 0;
+    }
     async function waitForApprovalResolution3(config) {
       if (!config.approvalId) {
         throw new EnforceError2("Cannot wait for approval: no approvalRequestId on the hold/escalate decision", "evaluate");
@@ -246,10 +268,12 @@ var require_dist = __commonJS({
           }
           const rowStatus = raw["status"];
           if (rowStatus && rowStatus !== "pending") {
+            const reEvaluationDecision = raw["re_evaluation_decision"];
+            const permitToken = rowStatus === "approved" ? await claimApprovalPermit3(config, apiUrl) : void 0;
             return {
               status: rowStatus,
-              reEvaluationDecision: raw["re_evaluation_decision"],
-              permitToken: raw["re_evaluation_permit_token"]
+              reEvaluationDecision,
+              permitToken
             };
           }
         }

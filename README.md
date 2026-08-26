@@ -55,6 +55,10 @@ form is `AtlaSent-Systems-Inc/atlasent-action@v1`.
 **Gate on `verified`, not on `decision`.** `verified=true` means the action was
 allowed and the server successfully verified the single-use permit.
 
+## Customer integration starters
+
+- [Salesforce change gate](./examples/salesforce-change-gate/) — a customer-owned, sandbox-first workflow that combines GitHub approvals, Gearset validation evidence, an artifact-bound AtlaSent permit, Salesforce CLI execution, independent observation, and AtlaSent execution closeout. It does not require access to any private AtlaSent source repository.
+
 ## Supported protected actions
 
 The GitHub Action intentionally has a conservative client-side allowlist for its

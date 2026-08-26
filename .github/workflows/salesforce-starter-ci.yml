@@ -1,0 +1,31 @@
+name: Salesforce starter CI
+
+on:
+  pull_request:
+    paths:
+      - 'examples/salesforce-change-gate/**'
+      - '.github/workflows/salesforce-starter-ci.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'examples/salesforce-change-gate/**'
+      - '.github/workflows/salesforce-starter-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Syntax and unit tests
+        run: |
+          node --check examples/salesforce-change-gate/.atlasent/salesforce/lib.mjs
+          node --check examples/salesforce-change-gate/.atlasent/salesforce/preflight.mjs
+          node --check examples/salesforce-change-gate/.atlasent/salesforce/deploy.mjs
+          node --test examples/salesforce-change-gate/tests/*.node.mjs

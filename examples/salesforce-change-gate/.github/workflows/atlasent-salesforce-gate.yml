@@ -1,0 +1,171 @@
+name: AtlaSent Salesforce change gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Open same-repository PR containing the Salesforce change
+        required: true
+        type: string
+      mode:
+        description: Preflight only, deploy the marker, or remove the marker
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+          - acceptance
+          - cleanup
+      confirm_sandbox:
+        description: I confirm the configured Salesforce org is a sandbox
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+  statuses: read
+
+concurrency:
+  group: atlasent-salesforce-${{ github.repository }}-${{ inputs.pull_request_number }}-${{ inputs.mode }}
+  cancel-in-progress: false
+
+jobs:
+  gate-and-deploy:
+    name: ${{ inputs.mode }} · Salesforce sandbox
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: floqast-sandbox
+    steps:
+      - name: Checkout trusted integration code from the default branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Checkout the selected PR branch revision as data only
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Install pinned Salesforce CLI
+        shell: bash
+        run: npm install --global @salesforce/cli@2.149.9
+
+      - name: Authenticate the dedicated Salesforce sandbox user
+        shell: bash
+        env:
+          SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL }}
+          SF_TARGET_ORG: ${{ vars.SF_TARGET_ORG_ALIAS || 'floqast-sandbox' }}
+        run: |
+          set -euo pipefail
+          test -n "$SFDX_AUTH_URL"
+          printf '%s' "$SFDX_AUTH_URL" | sf org login sfdx-url --sfdx-url-stdin --alias "$SF_TARGET_ORG"
+
+      - name: Zero-write connection preflight
+        id: preflight
+        env:
+          MODE: ${{ inputs.mode }}
+          PR_NUMBER: ${{ inputs.pull_request_number }}
+          CONFIRM_SANDBOX: ${{ inputs.confirm_sandbox }}
+          MIN_APPROVALS: ${{ vars.MIN_APPROVALS || '2' }}
+          GEARSET_CHECK_NAME: ${{ vars.GEARSET_CHECK_NAME }}
+          SF_TARGET_ORG: ${{ vars.SF_TARGET_ORG_ALIAS || 'floqast-sandbox' }}
+          SF_EXPECTED_INSTANCE_HOST: ${{ vars.SF_EXPECTED_INSTANCE_HOST }}
+          ATLASENT_BASE_URL: ${{ vars.ATLASENT_BASE_URL }}
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          EVIDENCE_DIR: ${{ runner.temp }}/atlasent-evidence
+        run: node trusted/.atlasent/salesforce/preflight.mjs
+
+      - name: Issue an artifact-bound permit
+        if: inputs.mode != 'preflight'
+        id: issue
+        uses: AtlaSent-Systems-Inc/atlasent-action@19e8ce627532ff32864b1d47297e9b9e4e091e20
+        env:
+          ATLASENT_BASE_URL: ${{ vars.ATLASENT_BASE_URL }}
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          action: production.deploy
+          actor: github:${{ github.actor }}
+          target-id: salesforce:${{ steps.preflight.outputs.sf_org_id }}
+          environment: test
+          artifact-digest: ${{ steps.preflight.outputs.plan_digest }}
+          mode: evaluate-only
+          approvals-from: none
+          context: ${{ steps.preflight.outputs.context_json }}
+          pr-comment-on-deny: 'false'
+
+      - name: Consume and verify the permit at the execution boundary
+        if: inputs.mode != 'preflight'
+        id: verify
+        uses: AtlaSent-Systems-Inc/atlasent-action@19e8ce627532ff32864b1d47297e9b9e4e091e20
+        env:
+          ATLASENT_BASE_URL: ${{ vars.ATLASENT_BASE_URL }}
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+        with:
+          verify-permit: 'true'
+          permit-token: ${{ steps.issue.outputs.permit-token }}
+          action: production.deploy
+          actor: github:${{ github.actor }}
+          target-id: salesforce:${{ steps.preflight.outputs.sf_org_id }}
+          environment: test
+          artifact-digest: ${{ steps.preflight.outputs.plan_digest }}
+
+      - name: Execute, observe, and record the Salesforce change
+        if: inputs.mode != 'preflight' && steps.verify.outputs.verified == 'true'
+        id: deploy
+        env:
+          MODE: ${{ inputs.mode }}
+          PR_NUMBER: ${{ inputs.pull_request_number }}
+          CANDIDATE_DIR: candidate
+          BASE_SHA: ${{ steps.preflight.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.preflight.outputs.head_sha }}
+          HEAD_REF: ${{ steps.preflight.outputs.head_ref }}
+          PLAN_DIGEST: ${{ steps.preflight.outputs.plan_digest }}
+          SF_TARGET_ORG: ${{ vars.SF_TARGET_ORG_ALIAS || 'floqast-sandbox' }}
+          SF_ORG_ID: ${{ steps.preflight.outputs.sf_org_id }}
+          SF_DEPLOY_WAIT_MINUTES: ${{ vars.SF_DEPLOY_WAIT_MINUTES || '30' }}
+          ATLASENT_BASE_URL: ${{ vars.ATLASENT_BASE_URL }}
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_PERMIT_TOKEN: ${{ steps.issue.outputs.permit-token }}
+          ATLASENT_DECISION_ID: ${{ steps.issue.outputs.evaluation-id }}
+          ATLASENT_VERIFIED: ${{ steps.verify.outputs.verified }}
+          ATLASENT_CONSOLE_URL: ${{ vars.ATLASENT_CONSOLE_URL || 'https://console.atlasent.io' }}
+          EVIDENCE_DIR: ${{ runner.temp }}/atlasent-evidence
+        run: node trusted/.atlasent/salesforce/deploy.mjs
+
+      - name: Publish operator links
+        if: inputs.mode != 'preflight' && always()
+        shell: bash
+        env:
+          DECISION_ID: ${{ steps.deploy.outputs.decision_id }}
+          LINEAGE_URL: ${{ steps.deploy.outputs.authorization_lineage_url }}
+          CLOSEOUT_URL: ${{ steps.deploy.outputs.closeout_url }}
+          DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
+          OUTCOME: ${{ steps.deploy.outputs.outcome }}
+        run: |
+          {
+            echo '## AtlaSent Salesforce result'
+            echo
+            echo "- Decision: \`${DECISION_ID:-not recorded}\`"
+            echo "- Salesforce deployment: \`${DEPLOYMENT_ID:-not reported}\`"
+            echo "- Observed outcome: \`${OUTCOME:-unknown}\`"
+            if [ -n "${LINEAGE_URL:-}" ]; then echo "- [Authorization lineage](${LINEAGE_URL})"; fi
+            if [ -n "${CLOSEOUT_URL:-}" ]; then echo "- [Production change closeout](${CLOSEOUT_URL})"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: atlasent-salesforce-${{ inputs.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/atlasent-evidence/
+          if-no-files-found: error
+          retention-days: 30

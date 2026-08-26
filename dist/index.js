@@ -107,7 +107,7 @@ var require_dist = __commonJS({
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.EnforceError = void 0;
     exports2.evaluate = evaluate2;
-    exports2.verify = verify;
+    exports2.verify = verify2;
     exports2.waitForApprovalResolution = waitForApprovalResolution3;
     exports2.requiredBindingsFor = requiredBindingsFor4;
     exports2.verifyPermit = verifyPermit4;
@@ -196,7 +196,7 @@ var require_dist = __commonJS({
       }
       return mapDecision(raw);
     }
-    function verify(decision) {
+    function verify2(decision) {
       switch (decision.decision) {
         case "allow":
           return;
@@ -360,7 +360,7 @@ var require_dist = __commonJS({
     }
     async function enforce2(config, fn) {
       const decision = await evaluate2(config);
-      verify(decision);
+      verify2(decision);
       const vp = await verifyPermit4(config, decision);
       const result = await fn();
       return { result, decision, verifyOutcome: vp.outcome };

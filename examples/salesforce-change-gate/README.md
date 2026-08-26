@@ -29,6 +29,19 @@ Copy the contents of this directory into the root of the Salesforce repository. 
 
 No AtlaSent source-repository access is required.
 
+## Your connection job — and ours
+
+You do not need to learn AtlaSent internals or request access to any private AtlaSent repository.
+
+| Owner | Complete before the first preflight |
+|---|---|
+| AtlaSent | Provision your test organization; activate the `production.deploy` policy and constraint bundle; provide the deployed runtime URL and org-scoped API key; make Authorization Lineage and Production Change Closeout available in the Console. |
+| Your GitHub admin | Create the protected `floqast-sandbox` Environment; add the values below; require an environment reviewer; install the AtlaSent GitHub App; allow it on the Salesforce repository; protect the trusted integration paths. |
+| Your Salesforce admin | Create or select the dedicated sandbox integration user, grant the bounded pilot permissions below, authenticate it locally, and save only its SFDX auth URL in the protected GitHub Environment. |
+| Your Gearset admin | Confirm the exact successful GitHub check name written on the current PR head SHA. |
+
+Once those four rows are complete, your operator only selects the PR branch, enters its PR number, and runs `preflight`, `acceptance`, then `cleanup`. The workflow produces the evidence and links; the operator does not copy IDs between systems.
+
 ## One-time connection checklist
 
 Create a protected GitHub Environment named `floqast-sandbox`. Require an environment reviewer and prevent self-review. Add these environment values.
@@ -64,6 +77,15 @@ sf org auth show-sfdx-auth-url --target-org floqast-sandbox --json
 ```
 
 Copy only the returned `sfdxAuthUrl` value into the GitHub Environment secret `SFDX_AUTH_URL`. Treat it as a credential. The dedicated user should have only the sandbox and metadata permissions needed for the bounded proof.
+
+For this marker proof, give that dedicated sandbox user a permission set containing:
+
+- `API Enabled`;
+- `Modify Metadata Through Metadata API Functions`;
+- `Manage Profiles and Permission Sets`, because the proof creates and deletes one unassigned Permission Set; and
+- `View Setup and Configuration`, so the independent observation can read setup records.
+
+Do not grant production access. `Modify All Data` is not required for this bounded metadata-only proof. If your Salesforce security policy requires a different permission model, keep the workflow in `preflight` until the sandbox administrator approves the final integration-user permission set.
 
 ## Run order
 

@@ -3316,6 +3316,7 @@ async function run() {
   try {
     if (evaluateOnly) {
       const decision = await (0, import_enforce4.evaluate)(config);
+      (0, import_enforce4.verify)(decision);
       enforceResult = { result: void 0, decision, verifyOutcome: void 0 };
     } else {
       enforceResult = await (0, import_enforce4.enforce)(config, async () => {

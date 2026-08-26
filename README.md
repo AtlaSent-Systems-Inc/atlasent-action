@@ -122,64 +122,6 @@ Set `approvals-from: none` only when the selected policy does not depend on
 GitHub-review-derived approval evidence or when a different, explicitly trusted
 authority source is being used.
 
-## Human approval wait and safe resume
-
-For an elevated change, set `wait-for-approval: "true"`. If the runtime returns
-`hold` or `escalate`, the action waits on the **exact evaluation ID it just
-created**. A human resolves the request in the AtlaSent console. The action only
-continues on a terminal `allow` that returns a fresh permit; it rejects a
-terminal response for another evaluation or another artifact digest.
-
-Use `evaluate-only` plus a separate `verify-permit` step for the strongest
-execution boundary. The human-approved permit stays unconsumed until the step
-immediately before the protected command:
-
-```yaml
-- name: Request authorization; wait if human approval is required
-  id: authorize
-  uses: AtlaSent-Systems-Inc/atlasent-action@v1
-  env:
-    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
-    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
-  with:
-    action: production.deploy
-    environment: production
-    target-id: payments-api
-    artifact-digest: ${{ needs.build.outputs.digest }}
-    wait-for-approval: "true"
-    wait-timeout-ms: "600000"
-    mode: evaluate-only
-
-- name: Re-verify the approved permit at the execution boundary
-  id: boundary
-  if: steps.authorize.outputs.decision == 'allow'
-  uses: AtlaSent-Systems-Inc/atlasent-action@v1
-  env:
-    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
-    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
-  with:
-    verify-permit: "true"
-    permit-token: ${{ steps.authorize.outputs.permit-token }}
-    action: production.deploy
-    environment: production
-    target-id: payments-api
-    artifact-digest: ${{ needs.build.outputs.digest }}
-
-- name: Deploy
-  if: steps.boundary.outputs.verified == 'true'
-  run: ./deploy.sh
-```
-
-`wait-for-approval` is opt-in; existing workflows continue to fail immediately
-on `hold` or `escalate`. The default wait limit is ten minutes and the maximum
-is one hour. Timeout, denial, a missing terminal permit, a binding mismatch, or
-a failed re-verification blocks the deploy. The `waited-for-approval` output
-makes the waiting path visible in workflow evidence.
-
-The action does not approve a request itself: the organization's policy and an
-authorized human determine the terminal decision; the action waits, re-binds,
-and enforces it at the execution boundary.
-
 ## Stronger execution-boundary pattern
 
 The default one-step mode performs evaluate → permit → verify in the gate step.
@@ -322,7 +264,7 @@ snapshot merely to force a policy match.
 | `artifact-digest` | SHA-256 artifact/execution binding. |
 | `mode` | `enforce` (default) or `evaluate-only`. |
 | `wait-for-approval` | Wait for an authorized human decision after this single evaluation returns `hold` or `escalate`; default `false`. |
-| `wait-timeout-ms` | Approval-wait limit; default 600000 (10 min), maximum 3600000 (60 min). |
+| `max-wait-minutes` | Approval-wait limit for `wait-for-approval`; default 30. |
 | `verify-permit` | Run verify-only at the execution boundary. |
 | `permit-token` | Permit to verify in boundary mode. |
 | `api-url` | Runtime base URL override. |
@@ -345,6 +287,67 @@ For the complete machine-readable input/output surface, see [`action.yml`](./act
 | `proof-hash` | Cryptographic proof reference when returned by the runtime. |
 | `verify-outcome` | Coarse permit-verification result. |
 | `verify-error-code` | Precise runtime verification error code on failure. |
+
+## Pause-and-resume: wait for a human decision
+
+A `production.deploy` policy can require a human to review and approve
+before a deploy proceeds — the runtime returns `hold` or `escalate` rather
+than an immediate `allow`/`deny`. By default that fails the step
+immediately (fail-closed, no waiting). Set `wait-for-approval: "true"` to
+pause instead, and resume automatically once someone resolves it in
+AtlaSent Console:
+
+```yaml
+      - name: AtlaSent gate
+        id: gate
+        uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+        with:
+          action: production.deploy
+          target-id: api-service
+          environment: live
+          artifact-digest: ${{ steps.digest.outputs.digest }}
+          wait-for-approval: "true"
+          max-wait-minutes: "30"
+
+      - name: Deploy
+        if: steps.gate.outputs.verified == 'true'
+        run: ./scripts/deploy.sh
+```
+
+What actually happens, end to end:
+
+1. `/v1-evaluate` returns `hold`/`escalate` with an `approval_request_id`.
+   This step does **not** deploy yet — it polls
+   `GET /v1/approvals/{approval_request_id}` on a 5-second interval, bounded
+   by `max-wait-minutes` (default 30).
+2. A human approves or rejects in AtlaSent Console, acting under their own
+   identity. Their action causes the **runtime** to re-evaluate and, on
+   approval, mint a **fresh, short-lived permit** — this is not a status
+   flag flip on the console side.
+3. The moment that resolution lands, the next poll observes it. The status
+   poll itself never carries the fresh permit token — a broadly-readable
+   status row must not hand out a live bearer off a plain GET. On
+   `approved`, this step makes one further call,
+   `POST /v1/approvals/{approval_request_id}/claim-permit`, an atomic
+   one-time claim: the first caller to claim receives the token; any later
+   claim (a retry, a second poller) gets nothing back. It then re-verifies
+   that claimed permit against the **same** `action` / `target-id` /
+   `environment` / `artifact-digest` this step originally evaluated with —
+   exactly the same fail-closed re-verification every other allow goes
+   through. `approved` alone is never sufficient; only a verified permit
+   sets `verified: "true"`.
+4. Denial, expiry, a timeout with no resolution, or a fresh permit that
+   fails verification all fail the step closed — no deploy runs. The job
+   summary and `decision` output reflect the real, final reason.
+
+Requires `approvals:read` on the `ATLASENT_API_KEY` scopes (in addition to
+`evaluate:write` + `verify:execute`), and only applies to the default
+`mode: enforce` — `mode: evaluate-only` is its own two-step pattern and
+combining it with `wait-for-approval` has no effect (the wait step is never
+reached; evaluate-only already leaves verification to a later step).
 
 ## Fail-closed behavior
 

@@ -20,7 +20,7 @@ The action supports several mutually exclusive modes, checked in this priority o
 
 | Mode | Trigger input | What happens |
 |------|--------------|--------------|
-| **Single-eval** (default) | `action:` set | Calls `/v1-evaluate` for one action, verifies the permit, outputs `decision` / `verified` / `permit-token` / `proof-hash` / `risk-score` / `evaluation-id` |
+| **Single-eval** (default) | `action:` set | Calls `/v1-evaluate` for one action, verifies the permit, outputs `decision` / `verified` / `permit-token` / `proof-hash` / `risk-score` / `evaluation-id`. On hold/escalate, `wait-for-approval: "true"` pauses and resumes on a human resolution instead of failing immediately — see README's "Pause-and-resume" section |
 | **Batch-eval** | `evaluations:` set (JSON array) | Fan-out over multiple `{action, actor, context}` items; outputs `decisions` (JSON array) and `batch-id` |
 | **Policy sync** | `policy-sync: "true"` | Reads a JSON bundle file and posts it to `v1-policy-sync`; outputs `sync-status` / `sync-diff` / `sync-summary` |
 | **Release-mode** | `release-mode: "register-and-verify"` | Registers a release candidate and drives two verification probes against the control-plane |
@@ -66,7 +66,7 @@ Required secrets (set in repository or org secrets):
 | `ATLASENT_API_KEY` | API key scoped to at least `evaluate:write` + `verify:execute` |
 | `ATLASENT_BASE_URL` | Supabase project URL, e.g. `https://<ref>.supabase.co/functions/v1` |
 
-Key action inputs (see `action.yml` for the full list of 69 inputs / 48 outputs):
+Key action inputs (see `action.yml` for the full list of 71 inputs / 48 outputs):
 
 | Input | Default | Description |
 |---|---|---|
@@ -76,6 +76,8 @@ Key action inputs (see `action.yml` for the full list of 69 inputs / 48 outputs)
 | `environment` | auto | Deployment environment (`live` on main, `test` otherwise) |
 | `context` | `{}` | JSON context passed to the evaluator |
 | `approvals-from` | `pr-reviews` | Source for `context.approvals`: `"pr-reviews"` (auto-derive from GitHub API) or `"none"` |
+| `wait-for-approval` | `"false"` | Set `"true"` to pause on hold/escalate and resume once a human resolves it in Console, instead of failing immediately (`mode: enforce` only) |
+| `max-wait-minutes` | `30` | Bound on `wait-for-approval`'s poll window; exceeding it fails closed |
 | `evaluations` | — | JSON array for batch mode (overrides single-eval inputs) |
 | `policy-sync` | `"false"` | Set `"true"` to run policy-sync mode |
 | `policy-bundle` | — | Path to JSON bundle file (required when `policy-sync: "true"`) |

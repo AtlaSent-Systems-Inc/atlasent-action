@@ -31,6 +31,15 @@ inputs:
         - "evaluate-only": ISSUE a permit but do NOT verify or consume it. For the two-step EXECUTION-BOUNDARY pattern: this step issues the permit (outputs decision + permit-token UNCONSUMED + permit-issued=true, verified=false); a later `verify-permit: true` step re-verifies and consumes it at the deploy step (the real cryptographic boundary). You MUST gate the protected step on that later step's `verified == 'true'` — never on this step's decision.
     required: false
     default: 'enforce'
+  wait-for-approval:
+    description: |
+      Set "true" to pause-and-resume on a HOLD/ESCALATE decision instead of failing the step immediately (mode: enforce only — ignored/rejected with evaluate-only, which is its own two-step pattern). When the runtime returns hold/escalate with an approval_request_id, this step polls GET /v1/approvals/{id} on atlasent-api (bounded by max-wait-minutes) for a human resolution in AtlaSent Console. On "approved", the step re-verifies the FRESH permit the resolution minted against the SAME action/target/environment/artifact-digest this step evaluated with — never trusting "approved" alone — before treating it as allow. Denied, expired, timed-out, or an approved-with-no-fresh-permit resolution all fail closed, same as any other deny.
+    required: false
+    default: 'false'
+  max-wait-minutes:
+    description: 'Maximum minutes to wait for a human decision when wait-for-approval is "true" (default: 30). Exceeding this fails the step closed — no deploy without a resolution inside the window.'
+    required: false
+    default: '30'
   environment:
     description: 'Environment (defaults to live for main branch, test otherwise)'
     required: false
@@ -62,14 +71,10 @@ inputs:
     description: 'JSON array of evaluation requests for batch mode, e.g. [{"action":"production.deploy","actor":"alice"}]. When set, single-eval inputs (action, actor, context) are ignored.'
     required: false
   wait-for-id:
-    description: 'Batch mode only: evaluation ID to block on until it reaches a terminal state (allow/deny). For the normal single-action path, set wait-for-approval: "true"; it waits on the exact evaluation ID returned by that evaluation.'
+    description: 'Batch mode (evaluations input) only — NOT the single-eval path, see wait-for-approval for that. Approval request ID to block on until it reaches a terminal state (approved/denied/...). Polls the same GET /v1/approvals/{id} endpoint wait-for-approval uses.'
     required: false
-  wait-for-approval:
-    description: 'Single-action mode only. When "true", a hold or escalation waits for a human decision on the exact evaluation that produced it. A terminal allow must return a fresh permit bound to the original action, actor, target, environment, and artifact digest; that permit is then verified before this step can succeed. Default "false" preserves immediate fail-closed behavior.'
-    required: false
-    default: 'false'
   wait-timeout-ms:
-    description: 'Maximum milliseconds to wait for a terminal decision when wait-for-approval or wait-for-id is set (default: 600000 = 10 min; maximum: 3600000 = 60 min).'
+    description: 'Maximum milliseconds to wait for a terminal decision when wait-for-id is set (default: 600000 = 10 min; maximum: 3600000 = 60 min).'
     required: false
     default: '600000'
   v2-batch:
@@ -77,7 +82,7 @@ inputs:
     required: false
     default: 'false'
   v2-streaming:
-    description: 'Enable Server-Sent Events while waiting for human approval (default: false, falls back to HTTP polling).'
+    description: 'No effect — there is no Server-Sent Events endpoint on the runtime API to stream from. Kept only so existing workflow YAML setting this input does not hard-fail; wait-for-id always polls.'
     required: false
     default: 'false'
   financial-governance:

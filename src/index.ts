@@ -19,8 +19,8 @@ import {
   evaluate,
   reverifyPermit,
   requiredBindingsFor,
-  verify,
   verifyPermit,
+  waitForApprovalResolution,
   EnforceError,
 } from "@atlasent/enforce";
 import type { Decision, EnforceConfig } from "@atlasent/enforce";
@@ -58,8 +58,6 @@ import {
   renderChangeBriefStepSummary,
   runChangeBrief,
 } from "./changeBrief";
-import { waitForTerminalDecision } from "./stream";
-import type { Decision as WaitingDecision } from "./types";
 
 function getApiKey(): string {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -439,78 +437,6 @@ function setDecisionOutputs(d: Decision): void {
   setOutput("chain-entry", JSON.stringify(d.chainEntry ?? null));
   setOutput("snapshot", JSON.stringify(d.snapshot ?? null));
   setOutput("audit-hash", d.auditHash ?? "");
-}
-
-const MAX_APPROVAL_WAIT_TIMEOUT_MS = 3_600_000;
-
-function approvalWaitTimeoutMs(): number {
-  const raw = getInput("wait-timeout-ms") || "600000";
-  const timeoutMs = Number(raw);
-  if (
-    !Number.isSafeInteger(timeoutMs) ||
-    timeoutMs <= 0 ||
-    timeoutMs > MAX_APPROVAL_WAIT_TIMEOUT_MS
-  ) {
-    setFailed(
-      `wait-timeout-ms must be a whole number from 1 to ${MAX_APPROVAL_WAIT_TIMEOUT_MS} (got "${raw}")`,
-    );
-  }
-  return timeoutMs;
-}
-
-/**
- * Convert a terminal approval response back to the canonical enforcement
- * decision shape. The originally evaluated ID and artifact binding remain the
- * source of truth; a response that refers to a different evaluation or a
- * different artifact is rejected before its permit can be verified.
- */
-function resumeDecision(
-  initial: Decision,
-  terminal: WaitingDecision,
-  config: EnforceConfig,
-): Decision {
-  if (!initial.evaluationId) {
-    throw new EnforceError(
-      "approval wait refused: hold/escalation response did not include an evaluation_id",
-      "evaluate",
-      initial,
-    );
-  }
-  if (terminal.id !== initial.evaluationId) {
-    throw new EnforceError(
-      `approval wait refused: terminal decision ID ${terminal.id ?? "missing"} does not match initial evaluation ${initial.evaluationId}`,
-      "evaluate",
-      initial,
-    );
-  }
-
-  const expectedHash = initial.executionHashExpected ?? config.executionPayloadHash;
-  if (
-    expectedHash &&
-    terminal.executionHashExpected &&
-    terminal.executionHashExpected !== expectedHash
-  ) {
-    throw new EnforceError(
-      "approval wait refused: terminal permit is bound to a different artifact digest",
-      "verify-permit",
-      initial,
-    );
-  }
-
-  return {
-    decision: terminal.decision,
-    evaluationId: initial.evaluationId,
-    permitToken: terminal.permitToken,
-    proofHash: terminal.proofHash,
-    // A freshly issued permit must retain the original artifact binding. If
-    // the runtime does not echo it on the terminal response, use the original
-    // evaluated binding when verifyPermit re-presents the context.
-    executionHashExpected: expectedHash,
-    riskScore: terminal.riskScore,
-    denyReason: terminal.denyReason,
-    holdReason: terminal.holdReason,
-    auditHash: terminal.auditHash,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1501,6 +1427,20 @@ export async function run(): Promise<void> {
   const evaluateOnly =
     (getInput("mode") || "enforce").trim().toLowerCase() === "evaluate-only";
 
+  // Pause-and-resume approval protocol. Off by default — a hold/escalate
+  // still fails the step immediately unless a caller opts in. Only applies
+  // to the enforce (evaluate+verify) path: evaluate-only mode issues an
+  // unconsumed permit for a LATER step to verify, so waiting synchronously
+  // in THIS step would fight that split-across-jobs pattern rather than
+  // serve it — see the evaluateOnly branch below, which rejects the
+  // combination explicitly instead of silently ignoring the wait input.
+  const waitForApprovalInput =
+    (getInput("wait-for-approval") || "false").trim().toLowerCase() === "true";
+  const maxWaitMinutesRaw = parseInt(getInput("max-wait-minutes") || "30", 10);
+  const maxWaitMinutes =
+    Number.isFinite(maxWaitMinutesRaw) && maxWaitMinutesRaw > 0 ? maxWaitMinutesRaw : 30;
+  const maxWaitMs = maxWaitMinutes * 60_000;
+
   const config: EnforceConfig = {
     apiKey,
     apiUrl,
@@ -1566,85 +1506,15 @@ export async function run(): Promise<void> {
     },
   };
 
-  // A workflow opts in to waiting; the default remains immediate fail-closed
-  // behavior so an existing gate cannot unexpectedly occupy a runner. When
-  // enabled, the action waits only on the evaluation it just created — never
-  // on a caller-supplied ID — and still verifies the newly-issued permit under
-  // the original action, actor, target, environment, and artifact bindings.
-  const waitForApproval = getInput("wait-for-approval").toLowerCase() === "true";
-  const useStreamingForApproval = getInput("v2-streaming").toLowerCase() === "true";
-  setOutput("waited-for-approval", "false");
-
-  let enforceResult: Awaited<ReturnType<typeof enforce>>;
-  try {
-    if (waitForApproval) {
-      let decision = await evaluate(config);
-
-      if (decision.decision === "hold" || decision.decision === "escalate") {
-        if (!decision.evaluationId) {
-          throw new EnforceError(
-            "approval wait refused: hold/escalation response did not include an evaluation_id",
-            "evaluate",
-            decision,
-          );
-        }
-
-        const timeoutMs = approvalWaitTimeoutMs();
-        setOutput("waited-for-approval", "true");
-        info(
-          `AtlaSent Gate: ${decision.decision} for evaluation ${decision.evaluationId}; ` +
-            `waiting up to ${timeoutMs}ms for an authorized human decision`,
-        );
-
-        let terminal: WaitingDecision;
-        try {
-          terminal = await waitForTerminalDecision({
-            apiUrl,
-            apiKey,
-            evaluationId: decision.evaluationId,
-            timeoutMs,
-            v2Streaming: useStreamingForApproval,
-          });
-        } catch (waitError) {
-          throw new EnforceError(
-            `approval wait failed: ${waitError instanceof Error ? waitError.message : String(waitError)}`,
-            "evaluate",
-            decision,
-          );
-        }
-
-        decision = resumeDecision(decision, terminal, config);
-        info(
-          `AtlaSent Gate: approval wait resolved ${decision.decision} for evaluation ${decision.evaluationId}`,
-        );
-      }
-
-      if (evaluateOnly) {
-        // Evaluate-only still refuses terminal deny/hold/escalate. A terminal
-        // allow leaves its fresh permit unconsumed for a separate
-        // verify-permit step immediately at the execution boundary.
-        verify(decision);
-        enforceResult = { result: undefined, decision, verifyOutcome: undefined };
-      } else {
-        verify(decision);
-        const verifiedPermit = await verifyPermit(config, decision);
-        enforceResult = {
-          result: undefined,
-          decision,
-          verifyOutcome: verifiedPermit.outcome,
-        };
-      }
-    } else if (evaluateOnly) {
-      // Issue the permit only — do NOT verify/consume it here. A non-allow
-      // result reaches the fail-closed permit check below, preserving the
-      // existing evaluate-only behavior.
-      const decision = await evaluate(config);
-      enforceResult = { result: undefined, decision, verifyOutcome: undefined };
-    } else {
-      enforceResult = await enforce(config, async () => {});
-    }
-  } catch (err) {
-    if (err instanceof EnforceError) {
+  // Fail-closed reporting shared by every EnforceError outcome: sets all the
+  // "not authorized" outputs, posts the fallback commit status, fires the
+  // advisory Slack/PR notifications, writes the job summary, then setFailed()
+  // with a message keyed off err.phase/err.decision. Extracted so the
+  // pause-and-resume wait step below (which can itself end in an EnforceError
+  // — denied, still-not-verified, or a wait timeout) reuses EXACTLY this
+  // reporting instead of a second, divergent copy.
+  async function reportEnforceFailure(err: EnforceError): Promise<void> {
+    {
       if (err.decision) {
         setDecisionOutputs(err.decision);
       } else {
@@ -1811,51 +1681,183 @@ export async function run(): Promise<void> {
         default:
           setFailed(`AtlaSent Gate: ${err.message}`);
       }
+    }
+  }
+
+  // Default false; flipped to true only if the pause-and-resume branch below
+  // is actually entered, regardless of how that wait ultimately resolves —
+  // this output reports whether the action waited, not whether it allowed.
+  setOutput("waited-for-approval", "false");
+
+  let enforceResult: Awaited<ReturnType<typeof enforce>>;
+  try {
+    if (evaluateOnly) {
+      // Issue the permit only — do NOT verify/consume it here. evaluate()
+      // throws EnforceError (phase "evaluate") on any non-allow, so the
+      // fail-closed handler below is shared with the enforce path.
+      const decision = await evaluate(config);
+      enforceResult = { result: undefined, decision, verifyOutcome: undefined };
+    } else {
+      enforceResult = await enforce(config, async () => {});
+    }
+  } catch (err) {
+    if (err instanceof EnforceError) {
+      const canWaitForApproval =
+        waitForApprovalInput &&
+        !evaluateOnly &&
+        err.phase === "verify" &&
+        (err.decision?.decision === "hold" || err.decision?.decision === "escalate") &&
+        !!err.decision?.approvalRequestId;
+
+      if (!canWaitForApproval) {
+        await reportEnforceFailure(err);
+        return;
+      }
+
+      setOutput("waited-for-approval", "true");
+
+      // Non-null by canWaitForApproval above (decision hold/escalate + a
+      // real approvalRequestId were both just confirmed present) — named so
+      // the rest of this branch doesn't need repeated `!`/`?.` on a value
+      // already known non-null.
+      const originalDecision = err.decision as Decision;
+
+      // ── Pause-and-resume approval protocol ──────────────────────────────
+      // The decision came back hold/escalate AND carries the
+      // approval_request_id v1-evaluate links it to. Poll the runtime for a
+      // human resolution, bounded by max-wait-minutes. Every branch below
+      // either sets enforceResult to a FRESH, VERIFIED allow (and falls
+      // through to the normal success path after this try/catch) or reports
+      // through reportEnforceFailure and returns — there is no third
+      // outcome, and nothing here ever treats "approved" alone as
+      // sufficient to deploy without a verified permit.
+      info(
+        `AtlaSent Gate: authorization ${originalDecision.decision.toUpperCase()} — waiting up to ` +
+          `${maxWaitMinutes}m for a human decision (approval_request_id=${originalDecision.approvalRequestId}).`,
+      );
+
+      let resolution: Awaited<ReturnType<typeof waitForApprovalResolution>>;
+      try {
+        resolution = await waitForApprovalResolution({
+          apiKey,
+          apiUrl,
+          approvalId: originalDecision.approvalRequestId as string,
+          maxWaitMs,
+        });
+      } catch (waitErr) {
+        // Timeout, poll auth failure, or any other error from the wait
+        // itself. phase "evaluate" (rather than "verify") so
+        // reportEnforceFailure's switch surfaces THIS message via err.message
+        // instead of the generic hold/escalate one — the original decision
+        // is preserved so evaluation-id/risk-score/etc. stay in the outputs.
+        await reportEnforceFailure(
+          waitErr instanceof EnforceError
+            ? new EnforceError(waitErr.message, "evaluate", originalDecision)
+            : new EnforceError(
+                `Approval wait failed: ${waitErr instanceof Error ? waitErr.message : String(waitErr)}`,
+                "evaluate",
+                originalDecision,
+              ),
+        );
+        return;
+      }
+
+      if (resolution.status !== "approved" || !resolution.permitToken) {
+        // Denied, expired, denied_by_timeout, an approval accepted with no
+        // fresh permit minted (a legitimate "accepted the human input but a
+        // different constraint still blocks" outcome — see IMPL-026A in
+        // atlasent-api), or any other terminal non-allow — fail closed.
+        // Reported as a synthetic "deny" so the shared deny-shaped reporting
+        // (commit status, Slack, PR comment, denyReason) carries the REAL
+        // post-wait reason, not the stale original hold/escalate one.
+        const reason =
+          `human approval resolved to '${resolution.status}'` +
+          (resolution.reEvaluationDecision
+            ? ` (fresh reevaluation: ${resolution.reEvaluationDecision})`
+            : "") +
+          " — deploy blocked (fail-closed).";
+        await reportEnforceFailure(
+          new EnforceError(`Authorization DENIED: ${reason}`, "verify", {
+            ...originalDecision,
+            decision: "deny",
+            denyReason: reason,
+          }),
+        );
+        return;
+      }
+
+      // Approved with a fresh permit token — re-verify it (same bindings as
+      // the original evaluate, fail-closed) before treating this as allow.
+      // "approved" alone never authorizes the deploy; only a verified permit
+      // does — the exact contract the direct-allow path already has.
+      const freshDecision: Decision = {
+        ...originalDecision,
+        decision: "allow",
+        permitToken: resolution.permitToken,
+      };
+      const vr = await verifyPermit(config, freshDecision);
+      if (!vr.verified) {
+        await reportEnforceFailure(
+          new EnforceError(
+            `Human approval was granted, but the fresh permit failed verification ` +
+              `(${vr.outcome ?? "unknown"}) — deploy blocked (fail-closed).`,
+            "verify-permit",
+            freshDecision,
+            { outcome: vr.outcome, verifyErrorCode: vr.verifyErrorCode, mismatchFields: vr.mismatchFields },
+          ),
+        );
+        return;
+      }
+
+      info(
+        "AtlaSent Gate: human approval resolved ALLOW — fresh permit verified " +
+          `(${vr.outcome ?? "verified"}). Proceeding.`,
+      );
+      enforceResult = { result: undefined, decision: freshDecision, verifyOutcome: vr.outcome };
+    } else {
+      setOutput("decision", "error");
+      setOutput("permit-token", "");
+      setOutput("evaluation-id", "");
+      setOutput("proof-hash", "");
+      setOutput("risk-score", "");
+      setOutput("chain-entry", JSON.stringify(null));
+      setOutput("snapshot", JSON.stringify(null));
+      setOutput("audit-hash", "");
+      setOutput("verified", "false");
+      setOutput("permit-issued", "false");
+      setOutput("evidence-receipt", JSON.stringify(null));
+      setOutput("evidence-bundle", JSON.stringify(null));
+
+      // Fallback commit status — unexpected error path.
+      await postCommitStatus({
+        repository: gh.repository,
+        sha: gh.sha,
+        state: "error",
+        description: `AtlaSent: unexpected error — ${
+          (err instanceof Error ? err.message : String(err)).slice(0, 100)
+        }`,
+        targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+      });
+
+      emitFinancialGovernanceAdvisory(actionType, actor, orgId);
+
+      appendToStepSummary(
+        buildGateStepSummary({
+          outcome: "error",
+          action: actionType,
+          actor: `github:${actor}`,
+          environment,
+          targetId,
+          runUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
+          reason: err instanceof Error ? err.message : String(err),
+        }),
+      );
+
+      setFailed(
+        `AtlaSent Gate: Unexpected error: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return;
     }
-
-    setOutput("decision", "error");
-    setOutput("permit-token", "");
-    setOutput("evaluation-id", "");
-    setOutput("proof-hash", "");
-    setOutput("risk-score", "");
-    setOutput("chain-entry", JSON.stringify(null));
-    setOutput("snapshot", JSON.stringify(null));
-    setOutput("audit-hash", "");
-    setOutput("verified", "false");
-    setOutput("permit-issued", "false");
-    setOutput("evidence-receipt", JSON.stringify(null));
-    setOutput("evidence-bundle", JSON.stringify(null));
-
-    // Fallback commit status — unexpected error path.
-    await postCommitStatus({
-      repository: gh.repository,
-      sha: gh.sha,
-      state: "error",
-      description: `AtlaSent: unexpected error — ${
-        (err instanceof Error ? err.message : String(err)).slice(0, 100)
-      }`,
-      targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
-    });
-
-    emitFinancialGovernanceAdvisory(actionType, actor, orgId);
-
-    appendToStepSummary(
-      buildGateStepSummary({
-        outcome: "error",
-        action: actionType,
-        actor: `github:${actor}`,
-        environment,
-        targetId,
-        runUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
-        reason: err instanceof Error ? err.message : String(err),
-      }),
-    );
-
-    setFailed(
-      `AtlaSent Gate: Unexpected error: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return;
   }
 
   const { decision: d, verifyOutcome } = enforceResult;

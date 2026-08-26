@@ -94,6 +94,13 @@ export interface Decision {
      * the control plane. Poll GET /v1/hitl/{id} for resolution.
      */
     escalation_id?: string;
+    /**
+     * Present on hold/escalate decisions that create a linked approval_requests
+     * row (see v1-evaluate/handler.ts). Poll GET /v1/approvals/{id} — via
+     * waitForApprovalResolution() below — for the human resolution and, on
+     * approve, the fresh re-evaluation permit token.
+     */
+    approvalRequestId?: string;
     /** v1.1 audit chain fields — present when the API returns them. */
     chainEntry?: Record<string, unknown> | null;
     snapshot?: Record<string, unknown> | null;
@@ -124,6 +131,22 @@ export declare class EnforceError extends Error {
 }
 export declare function evaluate(config: EnforceConfig): Promise<Decision>;
 export declare function verify(decision: Decision): void;
+export interface WaitForApprovalConfig {
+    apiKey: string;
+    apiUrl?: string;
+    /** decision.approvalRequestId from the original hold/escalate evaluate() response. */
+    approvalId: string;
+    /** Bounded wait — required, no default. Exceeding it throws (fail closed). */
+    maxWaitMs: number;
+}
+export interface ApprovalResolution {
+    /** Raw server status: "approved" | "denied" | "denied_by_timeout" | "expired" | ... */
+    status: string;
+    reEvaluationDecision?: string;
+    /** Only present when status === "approved" AND the reevaluation actually minted one. */
+    permitToken?: string;
+}
+export declare function waitForApprovalResolution(config: WaitForApprovalConfig): Promise<ApprovalResolution>;
 /**
  * Derive the `requiredBindings` set from the bindings actually provided for a
  * decision/item — "re-present at verify exactly what was bound at evaluate."

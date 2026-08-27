@@ -68,7 +68,7 @@ inputs:
     required: false
     default: 'pr-reviews'
   evaluations:
-    description: 'JSON array of evaluation requests for batch mode, e.g. [{"action":"production.deploy","actor":"alice"}]. When set, single-eval inputs (action, actor, context) are ignored.'
+    description: 'JSON array of evaluation requests for batch mode, e.g. [{"action":"production.deploy","actor":"ignored","environment":"production"}]. Each production.deploy item requires environment and uses its own runtime-minted GitHub OIDC workload actor; caller actor and actor_identity values cannot authorize it. When set, single-eval inputs (action, actor, context) are ignored.'
     required: false
   wait-for-id:
     description: 'Batch mode (evaluations input) only — NOT the single-eval path, see wait-for-approval for that. Approval request ID to block on until it reaches a terminal state (approved/denied/...). Polls the same GET /v1/approvals/{id} endpoint wait-for-approval uses.'

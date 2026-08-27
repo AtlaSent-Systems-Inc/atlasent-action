@@ -208,6 +208,7 @@ jobs:
       id-token: write
     outputs:
       permit: ${{ steps.gate.outputs.permit-token }}
+      execution_hash: ${{ steps.gate.outputs.execution-hash }}
     steps:
       - id: gate
         uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
@@ -251,18 +252,19 @@ jobs:
         with:
           verify-permit: 'true'
           permit-token: ${{ needs.authorize.outputs.permit }}
+          execution-hash: ${{ needs.authorize.outputs.execution_hash }}
           action: production.deploy
           environment: production
-          artifact-digest: ${{ needs.build.outputs.digest }}
 
       - if: steps.verify.outputs.verified == 'true'
         run: ./deploy.sh out/
 ```
 
-`artifact-digest` is bound into the authorization as the execution payload hash.
-A permit issued for one digest and verified against another fails with
-`PAYLOAD_MISMATCH`. `mode: evaluate-only` deliberately leaves the single-use
-permit unconsumed so the later boundary step can verify and consume it.
+For `production.deploy`, `artifact-digest` becomes `change_plan.artifact_ref`
+alongside the broker-verified GitHub revision. The runtime derives an opaque
+execution hash from that complete plan. `mode: evaluate-only` exposes that
+binding as `execution-hash`; pass it unchanged to the later verify step while
+independently re-hashing the downloaded bytes against `artifact-digest`.
 
 ## Clinical example
 
@@ -309,7 +311,8 @@ snapshot merely to force a policy match.
 | `environment` | Execution environment. |
 | `context` | Additional application context; verified/derived GitHub facts win on collision. |
 | `approvals-from` | `pr-reviews` (default) or `none`. |
-| `artifact-digest` | SHA-256 artifact/execution binding. |
+| `artifact-digest` | SHA-256 artifact identity; for production.deploy it becomes `change_plan.artifact_ref`. |
+| `execution-hash` | Opaque runtime-derived binding passed from an evaluate-only production deploy to its verify boundary. |
 | `mode` | `enforce` (default) or `evaluate-only`. |
 | `wait-for-approval` | Wait for an authorized human decision after this single evaluation returns `hold` or `escalate`; default `false`. |
 | `max-wait-minutes` | Approval-wait limit for `wait-for-approval`; default 30. |
@@ -332,6 +335,7 @@ For the complete machine-readable input/output surface, see [`action.yml`](./act
 | `permit-token` | Permit token; consumed in normal mode, unconsumed in `evaluate-only`. |
 | `permit-issued` | Whether a permit was minted. Do not use this to gate execution. |
 | `evaluation-id` | Audit-lineage identifier. |
+| `execution-hash` | Runtime-derived change-plan binding for boundary verification. |
 | `proof-hash` | Cryptographic proof reference when returned by the runtime. |
 | `verify-outcome` | Coarse permit-verification result. |
 | `verify-error-code` | Precise runtime verification error code on failure. |

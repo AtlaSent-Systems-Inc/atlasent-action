@@ -15,6 +15,7 @@ vi.mock("@atlasent/enforce", async (importOriginal) => {
     enforce: vi.fn(),
     evaluate: vi.fn(),
     verifyPermit: vi.fn(),
+    reverifyPermit: vi.fn(),
     waitForApprovalResolution: vi.fn(),
   };
 });
@@ -34,7 +35,14 @@ vi.mock("../workloadIdentity", async (importOriginal) => {
   };
 });
 
-import { enforce, evaluate, verifyPermit, waitForApprovalResolution, EnforceError } from "@atlasent/enforce";
+import {
+  enforce,
+  evaluate,
+  reverifyPermit,
+  verifyPermit,
+  waitForApprovalResolution,
+  EnforceError,
+} from "@atlasent/enforce";
 import type { Decision } from "@atlasent/enforce";
 import { resolveApprovals } from "../approvals";
 import { mintGithubActionsActorIdentity } from "../workloadIdentity";
@@ -45,6 +53,7 @@ import { run } from "../index";
 const mockEnforce = enforce as unknown as ReturnType<typeof vi.fn>;
 const mockEvaluate = evaluate as unknown as ReturnType<typeof vi.fn>;
 const mockVerifyPermit = verifyPermit as unknown as ReturnType<typeof vi.fn>;
+const mockReverifyPermit = reverifyPermit as unknown as ReturnType<typeof vi.fn>;
 const mockWaitForApproval = waitForApprovalResolution as unknown as ReturnType<typeof vi.fn>;
 const mockResolveApprovals = resolveApprovals as unknown as ReturnType<typeof vi.fn>;
 const mockMintWorkloadIdentity = mintGithubActionsActorIdentity as unknown as ReturnType<
@@ -130,6 +139,7 @@ beforeEach(() => {
   mockEnforce.mockReset();
   mockEvaluate.mockReset();
   mockVerifyPermit.mockReset();
+  mockReverifyPermit.mockReset();
   mockWaitForApproval.mockReset();
   mockMintWorkloadIdentity.mockReset();
   mockMintWorkloadIdentity.mockResolvedValue({
@@ -282,6 +292,7 @@ describe("allow response", () => {
     setInput("action", "production.deploy");
     setInput("actor", "human-dispatcher");
     setInput("environment", "production");
+    setInput("artifact-digest", "sha256:artifact-a");
     mockEnforce.mockResolvedValueOnce(makeAllowResult());
 
     await run();
@@ -296,10 +307,18 @@ describe("allow response", () => {
     const config = mockEnforce.mock.calls[0][0] as {
       actor: string;
       actorIdentity: Record<string, unknown>;
+      changePlan: Record<string, unknown>;
+      executionPayloadHash?: string;
       context: Record<string, unknown>;
     };
     expect(config.actor).toBe("github-actions:repo:123:workflow:deploy");
     expect(config.actorIdentity).toMatchObject({ version: "actor_identity.v1" });
+    expect(config.changePlan).toEqual({
+      operation: "deploy",
+      revision: "abc123",
+      artifact_ref: "sha256:artifact-a",
+    });
+    expect(config.executionPayloadHash).toBeUndefined();
     expect(config.context["triggering_actor"]).toBe("github:tester");
   });
 
@@ -657,7 +676,11 @@ describe("evaluate-only (issue-permit) mode", () => {
     setInput("mode", "evaluate-only");
 
     mockEvaluate.mockResolvedValueOnce(
-      makeDecision({ permitToken: "pt-unconsumed", evaluationId: "ev-eo" }),
+      makeDecision({
+        permitToken: "pt-unconsumed",
+        evaluationId: "ev-eo",
+        executionHashExpected: "derived-execution-hash",
+      }),
     );
 
     await run();
@@ -673,6 +696,7 @@ describe("evaluate-only (issue-permit) mode", () => {
     expect(outputs["permit-issued"]).toBe("true");
     expect(outputs["permit-token"]).toBe("pt-unconsumed");
     expect(outputs["evaluation-id"]).toBe("ev-eo");
+    expect(outputs["execution-hash"]).toBe("derived-execution-hash");
   });
 
   it("warns the caller to re-verify at the execution boundary", async () => {
@@ -778,6 +802,51 @@ describe("evaluate-only (issue-permit) mode", () => {
     const outputs = readOutputs(outputFile);
     expect(outputs["verified"]).toBe("true");
     expect(outputs["permit-issued"]).toBe("true");
+  });
+});
+
+describe("verify-only execution boundary", () => {
+  it("fails closed when production.deploy omits the runtime-derived execution hash", async () => {
+    setApiKey();
+    setInput("verify-permit", "true");
+    setInput("permit-token", "pt-unconsumed");
+    setInput("action", "production.deploy");
+    setInput("environment", "production");
+    setInput("artifact-digest", "sha256:raw-artifact");
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    expect(mockReverifyPermit).not.toHaveBeenCalled();
+    expect(readOutputs(outputFile)).toMatchObject({
+      decision: "deny",
+      verified: "false",
+      "verify-error-code": "MISSING_BINDING",
+    });
+  });
+
+  it("re-verifies production.deploy with the opaque execution-hash output", async () => {
+    setApiKey();
+    setInput("verify-permit", "true");
+    setInput("permit-token", "pt-unconsumed");
+    setInput("action", "production.deploy");
+    setInput("environment", "production");
+    setInput("artifact-digest", "sha256:raw-artifact");
+    setInput("execution-hash", "runtime-derived-hash");
+    mockReverifyPermit.mockResolvedValueOnce({ verified: true, outcome: "verified" });
+
+    await run();
+
+    const config = mockReverifyPermit.mock.calls[0][0] as {
+      executionPayloadHash?: string;
+      requiredBindings?: string[];
+    };
+    expect(config.executionPayloadHash).toBe("runtime-derived-hash");
+    expect(config.requiredBindings).toContain("payload_hash");
+    expect(readOutputs(outputFile)).toMatchObject({
+      decision: "allow",
+      verified: "true",
+      "verify-outcome": "verified",
+    });
   });
 });
 

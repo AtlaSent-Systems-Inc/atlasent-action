@@ -66,7 +66,7 @@ Required secrets (set in repository or org secrets):
 | `ATLASENT_API_KEY` | API key scoped to at least `evaluate:write` + `verify:execute` |
 | `ATLASENT_BASE_URL` | Supabase project URL, e.g. `https://<ref>.supabase.co/functions/v1` |
 
-Key action inputs (see `action.yml` for the full list of 71 inputs / 53 outputs):
+Key action inputs (see `action.yml` for the full machine-readable input/output surface):
 
 | Input | Default | Description |
 |---|---|---|
@@ -99,6 +99,7 @@ Key action inputs (see `action.yml` for the full list of 71 inputs / 53 outputs)
 | `decision` | `allow` / `deny` / `hold` / `escalate` |
 | `permit-token` | Single-use permit token (already consumed; audit reference only) |
 | `evaluation-id` | Unique evaluation ID for the audit trail |
+| `execution-hash` | Runtime-derived change-plan binding for boundary verification |
 | `proof-hash` | Cryptographic proof hash |
 | `risk-score` | Numeric risk score 0–100; empty string when not assessed |
 | `chain-entry` | v1.1 immutable audit chain entry (JSON) |
@@ -164,9 +165,12 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
+      contents: read
+      id-token: write        # GitHub workload identity
       pull-requests: write   # for pr-comment-on-deny
     outputs:
       permit: ${{ steps.gate.outputs.permit-token }}
+      execution_hash: ${{ steps.gate.outputs.execution-hash }}
     steps:
       - name: AtlaSent gate
         id: gate
@@ -213,10 +217,10 @@ jobs:
         with:
           verify-permit: 'true'
           permit-token: ${{ needs.authorize.outputs.permit }}
+          execution-hash: ${{ needs.authorize.outputs.execution_hash }}
           action: production.deploy
           target-id: api-service
           environment: live
-          artifact-digest: ${{ needs.build.outputs.digest }}
 
       - name: Deploy
         # Gate on verified, not decision
@@ -227,10 +231,10 @@ jobs:
 `mode: evaluate-only` leaves the single-use permit unconsumed at issue time,
 so the `deploy` job's `verify-permit: 'true'` step is the one that actually
 consumes it — immediately before `./scripts/deploy.sh` runs, not minutes (or
-jobs) earlier. `target-id` / `environment` / `artifact-digest` must match
-between the `authorize` and `deploy` steps; a mismatch on any of them fails
-verification closed rather than executing against a request that was never
-actually authorized.
+jobs) earlier. `target-id` / `environment` must match, and the opaque
+`execution-hash` output must be passed unchanged from `authorize` to `deploy`.
+The separate byte re-hash against `artifact-digest` proves the downloaded
+artifact is the artifact named inside the authorized change plan.
 
 **The digest binds the *identity* of the artifact into the authorization —
 it does not by itself move the artifact's bytes between jobs, and AtlaSent

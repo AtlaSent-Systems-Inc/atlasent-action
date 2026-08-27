@@ -90,6 +90,8 @@ export async function evaluateMany(
         return { ...d, verified: d.decision === "allow" ? false : undefined };
       }
       const item = items[i];
+      const runtimeExecutionHash =
+        d.executionHashExpected ?? d.execution_hash_expected;
       // Re-bind the SAME environment / target / artifact digest this item was
       // evaluated with, and REQUIRE each at verify (fail-closed). Previously the
       // batch verify sent only {action,actor} — an unbound verify that a cross-item,
@@ -101,14 +103,18 @@ export async function evaluateMany(
         actor: item.actor,
         environment: item.environment,
         targetId: item.target_id,
-        executionPayloadHash: item.execution_payload_hash,
+        executionPayloadHash: runtimeExecutionHash ?? item.execution_payload_hash,
         requiredBindings: requiredBindingsFor({
           environment: item.environment,
           targetId: item.target_id,
-          executionPayloadHash: item.execution_payload_hash,
+          executionPayloadHash: runtimeExecutionHash ?? item.execution_payload_hash,
         }),
       };
-      const enforceDecision = { decision: "allow" as const, permitToken: d.permitToken };
+      const enforceDecision = {
+        decision: "allow" as const,
+        permitToken: d.permitToken,
+        executionHashExpected: runtimeExecutionHash,
+      };
       const result = await verifyPermit(enforceConfig, enforceDecision);
       return { ...d, verified: result.verified, verifyOutcome: result.outcome };
     }),

@@ -166,6 +166,8 @@ var require_dist = __commonJS({
       const snap = config.state_snapshot ?? contextSnapshot;
       if (snap != null)
         payload["state_snapshot"] = snap;
+      if (config.changePlan != null)
+        payload["change_plan"] = config.changePlan;
       if (config.executionPayloadHash != null) {
         payload["execution_payload_hash"] = config.executionPayloadHash;
       }
@@ -474,6 +476,7 @@ async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
         return { ...d, verified: d.decision === "allow" ? false : void 0 };
       }
       const item = items[i];
+      const runtimeExecutionHash = d.executionHashExpected ?? d.execution_hash_expected;
       const enforceConfig = {
         apiKey,
         apiUrl,
@@ -481,14 +484,18 @@ async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
         actor: item.actor,
         environment: item.environment,
         targetId: item.target_id,
-        executionPayloadHash: item.execution_payload_hash,
+        executionPayloadHash: runtimeExecutionHash ?? item.execution_payload_hash,
         requiredBindings: (0, import_enforce.requiredBindingsFor)({
           environment: item.environment,
           targetId: item.target_id,
-          executionPayloadHash: item.execution_payload_hash
+          executionPayloadHash: runtimeExecutionHash ?? item.execution_payload_hash
         })
       };
-      const enforceDecision = { decision: "allow", permitToken: d.permitToken };
+      const enforceDecision = {
+        decision: "allow",
+        permitToken: d.permitToken,
+        executionHashExpected: runtimeExecutionHash
+      };
       const result = await (0, import_enforce.verifyPermit)(enforceConfig, enforceDecision);
       return { ...d, verified: result.verified, verifyOutcome: result.outcome };
     })
@@ -869,11 +876,18 @@ async function bindBatchWorkloadIdentities(items, cfg, deps) {
       },
       { mask: deps.mask }
     );
+    const artifactRef = sanitized.execution_payload_hash;
+    delete sanitized.execution_payload_hash;
     bound.push({
       ...sanitized,
       actor: identity.actorId,
       environment,
       actor_identity: identity.assertion,
+      change_plan: {
+        operation: "deploy",
+        revision: identity.source.sha,
+        ...artifactRef ? { artifact_ref: artifactRef } : {}
+      },
       context: {
         ...item.context ?? {},
         triggering_actor: `github:${identity.source.actor}`
@@ -950,6 +964,7 @@ async function runV21(env, flags, deps = {}) {
       decisions = [...decisions];
       if (terminal.decision === "allow") {
         const item = items[idx];
+        const runtimeExecutionHash = terminal.executionHashExpected ?? terminal.execution_hash_expected;
         const vr = terminal.permitToken ? await (0, import_enforce3.verifyPermit)(
           {
             apiKey: inputs.apiKey,
@@ -961,14 +976,18 @@ async function runV21(env, flags, deps = {}) {
             // SAME bindings as the direct-allow path — not an unbound verify.
             environment: item.environment,
             targetId: item.target_id,
-            executionPayloadHash: item.execution_payload_hash,
+            executionPayloadHash: runtimeExecutionHash ?? item.execution_payload_hash,
             requiredBindings: (0, import_enforce3.requiredBindingsFor)({
               environment: item.environment,
               targetId: item.target_id,
-              executionPayloadHash: item.execution_payload_hash
+              executionPayloadHash: runtimeExecutionHash ?? item.execution_payload_hash
             })
           },
-          { decision: "allow", permitToken: terminal.permitToken }
+          {
+            decision: "allow",
+            permitToken: terminal.permitToken,
+            executionHashExpected: runtimeExecutionHash
+          }
         ) : { verified: false, outcome: void 0 };
         decisions[idx] = { ...terminal, verified: vr.verified, verifyOutcome: vr.outcome };
       } else {
@@ -2721,6 +2740,7 @@ function setDecisionOutputs(d) {
   setOutput("decision", d.decision);
   setOutput("permit-token", d.permitToken ?? "");
   setOutput("evaluation-id", d.evaluationId ?? "");
+  setOutput("execution-hash", d.executionHashExpected ?? "");
   setOutput("proof-hash", d.proofHash ?? "");
   setOutput("risk-score", d.riskScore !== void 0 ? String(d.riskScore) : "");
   setOutput("chain-entry", JSON.stringify(d.chainEntry ?? null));
@@ -2810,6 +2830,7 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
   const actor = getInput("actor") || "unknown";
   const targetId = getInput("target-id") || void 0;
   const artifactDigest = getInput("artifact-digest") || void 0;
+  const runtimeExecutionHash = getInput("execution-hash") || void 0;
   const gh = getGitHubContext();
   const environment = resolveEnvironment(getInput("environment"), gh.ref, apiKey);
   let actorResolution;
@@ -2832,6 +2853,17 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
     return;
   }
   const actorId = actorResolution.actorId;
+  if (actionType === PRODUCTION_DEPLOY_ACTION && !runtimeExecutionHash) {
+    setOutput("decision", "deny");
+    setOutput("verified", "false");
+    setOutput("verify-outcome", "invalid");
+    setOutput("verify-error-code", "MISSING_BINDING");
+    setFailed(
+      "Deploy blocked at execution boundary: production.deploy requires the opaque execution-hash output from its evaluate-only gate. The raw artifact-digest is not the runtime-derived change-plan binding."
+    );
+    return;
+  }
+  const verificationPayloadHash = actionType === PRODUCTION_DEPLOY_ACTION ? runtimeExecutionHash : artifactDigest;
   maskValue(permitToken);
   const config = {
     apiKey,
@@ -2840,13 +2872,13 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
     actor: actorId,
     environment,
     targetId,
-    executionPayloadHash: artifactDigest,
+    executionPayloadHash: verificationPayloadHash,
     // Boundary re-verify must re-present every binding it was given, or fail
     // closed (MISSING_BINDING) — never a silently-unbound boundary verify.
     requiredBindings: (0, import_enforce4.requiredBindingsFor)({
       environment,
       targetId,
-      executionPayloadHash: artifactDigest
+      executionPayloadHash: verificationPayloadHash
     })
   };
   info(
@@ -3507,6 +3539,23 @@ async function run() {
     });
   }
   const artifactDigest = getInput("artifact-digest") || void 0;
+  const productionChangePlan = actionType === PRODUCTION_DEPLOY_ACTION ? {
+    operation: "deploy",
+    revision: actorResolution.workloadIdentity?.source.sha ?? "",
+    ...artifactDigest ? { artifact_ref: artifactDigest } : {}
+  } : void 0;
+  if (productionChangePlan && !productionChangePlan.revision) {
+    setOutput("decision", "deny");
+    setOutput("verified", "false");
+    setOutput("permit-issued", "false");
+    setOutput("verify-outcome", "invalid");
+    setOutput("verify-error-code", "MISSING_BINDING");
+    setFailed(
+      "AtlaSent Gate: the verified GitHub workload identity did not carry a commit SHA, so a complete production.deploy change_plan cannot be derived. Deploy blocked (fail-closed)."
+    );
+    return;
+  }
+  const directExecutionPayloadHash = actionType === PRODUCTION_DEPLOY_ACTION ? void 0 : artifactDigest;
   const evaluateOnly = (getInput("mode") || "enforce").trim().toLowerCase() === "evaluate-only";
   const waitForApprovalInput = (getInput("wait-for-approval") || "false").trim().toLowerCase() === "true";
   const maxWaitMinutesRaw = parseInt(getInput("max-wait-minutes") || "30", 10);
@@ -3520,15 +3569,16 @@ async function run() {
     actorIdentity: actorResolution.workloadIdentity?.assertion,
     environment,
     targetId,
+    changePlan: productionChangePlan,
     // Canonical artifact binding — the runtime binds this into the permit and
     // re-checks it at verify time (artifact-substitution defense).
-    executionPayloadHash: artifactDigest,
+    executionPayloadHash: directExecutionPayloadHash,
     // Re-present every binding provided here at verify, or fail closed
     // (MISSING_BINDING) rather than silently drop it.
     requiredBindings: (0, import_enforce4.requiredBindingsFor)({
       environment,
       targetId,
-      executionPayloadHash: artifactDigest
+      executionPayloadHash: directExecutionPayloadHash
     }),
     // state_snapshot is required for all action classes (requires_state_snapshot=true).
     // Auto-populate from GitHub Actions context; callers can override via the context input.
@@ -3846,8 +3896,9 @@ async function run() {
       );
       return;
     }
+    const boundaryBindingGuidance = actionType === PRODUCTION_DEPLOY_ACTION ? "this step's `execution-hash` output" : "the SAME `artifact-digest` (when one was evaluated)";
     warning(
-      "AtlaSent Gate: evaluate-only mode \u2014 a permit was ISSUED but NOT verified or consumed. The single-use permit is consumed at the EXECUTION BOUNDARY. Add a second AtlaSent step with `verify-permit: true`, this step's `permit-token` output, and the SAME `artifact-digest`, then gate the protected step on THAT step's `verified == 'true'`. Do NOT gate the deploy on this step's `decision` or `permit-issued` \u2014 neither proves the artifact/environment were re-bound at the boundary."
+      "AtlaSent Gate: evaluate-only mode \u2014 a permit was ISSUED but NOT verified or consumed. The single-use permit is consumed at the EXECUTION BOUNDARY. Add a second AtlaSent step with `verify-permit: true`, this step's `permit-token` output, and " + boundaryBindingGuidance + ", then gate the protected step on THAT step's `verified == 'true'`. Do NOT gate the deploy on this step's `decision` or `permit-issued` \u2014 neither proves the artifact/environment were re-bound at the boundary."
     );
     await postCommitStatus({
       repository: gh.repository,
@@ -3875,7 +3926,7 @@ async function run() {
         ...targetId ? [`| Target | \`${targetId}\` |`] : [],
         ...d.evaluationId ? [`| Evaluation ID | \`${d.evaluationId}\` |`] : [],
         "",
-        "> **Next step:** add an AtlaSent step with `verify-permit: true`, `permit-token: ${{ steps.<this-step>.outputs.permit-token }}`, and the same `artifact-digest`, then gate the deploy on that step's `verified == 'true'`.",
+        "> **Next step:** add an AtlaSent step with `verify-permit: true`, `permit-token: ${{ steps.<this-step>.outputs.permit-token }}`, and " + boundaryBindingGuidance + ", then gate the deploy on that step's `verified == 'true'`.",
         `[View workflow run](${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id})`,
         ""
       ].join("\n")

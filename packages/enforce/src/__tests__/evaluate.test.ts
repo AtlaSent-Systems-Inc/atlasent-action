@@ -103,6 +103,19 @@ describe("evaluate", () => {
     expect(body["actor_identity"]).toEqual(actorIdentity);
   });
 
+  it("forwards change_plan as a top-level field", async () => {
+    mockResponse(200, { decision: "allow" });
+    const changePlan = {
+      operation: "deploy",
+      revision: "775689f3648121b21ccc1641ebfdd5938bcbd827",
+      artifact_ref: "sha256:artifact",
+    };
+    await evaluate({ ...BASE_CONFIG, changePlan });
+    const body = JSON.parse(mockPost.mock.calls[0][1] as string) as Record<string, unknown>;
+    expect(body["change_plan"]).toEqual(changePlan);
+    expect((body["context"] as Record<string, unknown>)["change_plan"]).toBeUndefined();
+  });
+
   it("throws EnforceError(evaluate) on network error", async () => {
     mockPost.mockRejectedValueOnce(new Error("ECONNREFUSED"));
     await expect(evaluate(BASE_CONFIG)).rejects.toSatisfy(

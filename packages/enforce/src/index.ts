@@ -52,6 +52,16 @@ export interface EnforceConfig {
     payload?: unknown;
   };
   /**
+   * Structured facts from which the runtime independently derives the
+   * execution binding for mandatory change-control actions. This is a
+   * canonical top-level evaluate field; it must never be buried in context.
+   */
+  changePlan?: {
+    operation: string;
+    revision?: string;
+    artifact_ref?: string;
+  };
+  /**
    * SHA-256 digest of the artifact being authorized (canonical input, NOT
    * presentation metadata). Sent to evaluate as the top-level
    * `execution_payload_hash`, which the runtime binds into the permit
@@ -185,6 +195,7 @@ export async function evaluate(config: EnforceConfig): Promise<Decision> {
   // state_snapshot is a top-level body field (EvaluateBody.state_snapshot), not inside context.
   const snap = config.state_snapshot ?? contextSnapshot;
   if (snap != null) payload["state_snapshot"] = snap;
+  if (config.changePlan != null) payload["change_plan"] = config.changePlan;
   // Artifact digest is a canonical top-level input — the runtime binds it into
   // the permit (execution_hash_expected). Never buried in context/presentation.
   if (config.executionPayloadHash != null) {

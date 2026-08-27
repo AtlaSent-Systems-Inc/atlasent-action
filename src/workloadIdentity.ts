@@ -7,6 +7,8 @@
  * the broker's verified + signed actor identity in the evaluate request.
  */
 
+import { createHash } from "node:crypto";
+
 export const GITHUB_ACTIONS_OIDC_AUDIENCE = "atlasent:actor_identity.v1";
 
 export interface GithubActionsIdentitySource {
@@ -51,6 +53,28 @@ function responseDetail(body: string): string {
     // Use the bounded plain-text body below.
   }
   return body.trim().slice(0, 300) || "empty response";
+}
+
+function isMissingBrokerMintScope(status: number, body: string): boolean {
+  if (status !== 403) return false;
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    return (
+      parsed["error"] === "insufficient_scope" &&
+      typeof parsed["message"] === "string" &&
+      parsed["message"].includes("idp_broker:mint")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Return a bounded, one-way identifier operators can match against
+ * `api_keys.key_hash`. The raw key and its reusable prefix never enter logs.
+ */
+export function apiKeyCredentialReference(apiKey: string): string {
+  return `sha256:${createHash("sha256").update(apiKey).digest("hex").slice(0, 16)}`;
 }
 
 async function requestGithubOidcToken(
@@ -172,8 +196,12 @@ export async function mintGithubActionsActorIdentity(
 
   const body = await response.text();
   if (!response.ok) {
+    const remediation = isMissingBrokerMintScope(response.status, body)
+      ? ` Credential reference ${apiKeyCredentialReference(args.apiKey)}; ` +
+        "an operator can match it to the first 16 characters of api_keys.key_hash and grant only idp_broker:mint."
+      : "";
     throw new WorkloadIdentityError(
-      `AtlaSent workload identity broker rejected this job (HTTP ${response.status}): ${responseDetail(body)}`,
+      `AtlaSent workload identity broker rejected this job (HTTP ${response.status}): ${responseDetail(body)}.${remediation}`,
     );
   }
 

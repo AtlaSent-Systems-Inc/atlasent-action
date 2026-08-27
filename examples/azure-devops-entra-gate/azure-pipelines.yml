@@ -8,9 +8,9 @@ steps:
   - checkout: self
 
   - task: NodeTool@0
-    displayName: Use Node 20
+    displayName: Use Node 22
     inputs:
-      versionSpec: 20.x
+      versionSpec: 22.x
 
   - script: npm ci --prefix examples/azure-devops-entra-gate
     displayName: Install pinned gate dependency

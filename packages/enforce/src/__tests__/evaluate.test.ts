@@ -91,6 +91,18 @@ describe("evaluate", () => {
     expect((body["context"] as Record<string, unknown>)["target_id"]).toBe("svc-prod");
   });
 
+  it("forwards a runtime-minted actor_identity.v1 as a top-level field", async () => {
+    mockResponse(200, { decision: "allow" });
+    const actorIdentity = {
+      version: "actor_identity.v1",
+      subject: { principal_id: "github-actions:123:deploy", principal_kind: "workload" },
+      signature: "signed-by-runtime-broker",
+    };
+    await evaluate({ ...BASE_CONFIG, actorIdentity });
+    const body = JSON.parse(mockPost.mock.calls[0][1] as string) as Record<string, unknown>;
+    expect(body["actor_identity"]).toEqual(actorIdentity);
+  });
+
   it("throws EnforceError(evaluate) on network error", async () => {
     mockPost.mockRejectedValueOnce(new Error("ECONNREFUSED"));
     await expect(evaluate(BASE_CONFIG)).rejects.toSatisfy(

@@ -29,13 +29,22 @@ vi.mock("@atlasent/enforce", async (importOriginal) => {
 // Mock runV21 so batch-path tests don't hit real HTTP
 vi.mock("../v21", () => ({ runV21: vi.fn() }));
 
+vi.mock("../workloadIdentity", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../workloadIdentity")>();
+  return { ...original, mintGithubActionsActorIdentity: vi.fn() };
+});
+
 import { enforce, EnforceError } from "@atlasent/enforce";
 import type { Decision } from "@atlasent/enforce";
 import { runV21 } from "../v21";
+import { mintGithubActionsActorIdentity } from "../workloadIdentity";
 import { run } from "../index";
 
 const mockEnforce = enforce as unknown as ReturnType<typeof vi.fn>;
 const mockRunV21 = runV21 as unknown as ReturnType<typeof vi.fn>;
+const mockMintWorkloadIdentity = mintGithubActionsActorIdentity as unknown as ReturnType<
+  typeof vi.fn
+>;
 
 // ── ProcessExit sentinel ────────────────────────────────────────────────────
 
@@ -89,6 +98,24 @@ beforeEach(() => {
 
   mockEnforce.mockReset();
   mockRunV21.mockReset();
+  mockMintWorkloadIdentity.mockReset();
+  mockMintWorkloadIdentity.mockResolvedValue({
+    actorId: "github-actions:repo:123:workflow:deploy",
+    assertion: { version: "actor_identity.v1", signature: "runtime-signed" },
+    source: {
+      issuer: "https://token.actions.githubusercontent.com",
+      repository: "myorg/myrepo",
+      repository_id: "123",
+      ref: "refs/heads/main",
+      sha: "abc123",
+      workflow_ref: "myorg/myrepo/.github/workflows/deploy.yml@refs/heads/main",
+      actor: "tester",
+      actor_id: "42",
+      run_id: "100",
+      run_attempt: "1",
+      environment: "production",
+    },
+  });
 });
 
 afterEach(() => {

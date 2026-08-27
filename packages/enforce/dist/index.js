@@ -55,6 +55,8 @@ async function evaluate(config) {
             ...rawContext,
         },
     };
+    if (config.actorIdentity != null)
+        payload["actor_identity"] = config.actorIdentity;
     // Top-level fields forwarded to the control plane's EvaluateRequest.
     if (config.environment != null)
         payload["environment"] = config.environment;

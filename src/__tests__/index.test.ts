@@ -26,9 +26,18 @@ vi.mock("@atlasent/enforce", async (importOriginal) => {
 // unchanged unless it explicitly overrides the mock.
 vi.mock("../approvals", () => ({ resolveApprovals: vi.fn() }));
 
+vi.mock("../workloadIdentity", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../workloadIdentity")>();
+  return {
+    ...original,
+    mintGithubActionsActorIdentity: vi.fn(),
+  };
+});
+
 import { enforce, evaluate, verifyPermit, waitForApprovalResolution, EnforceError } from "@atlasent/enforce";
 import type { Decision } from "@atlasent/enforce";
 import { resolveApprovals } from "../approvals";
+import { mintGithubActionsActorIdentity } from "../workloadIdentity";
 
 // Import run() after mocking to ensure the mock is in place.
 import { run } from "../index";
@@ -38,6 +47,9 @@ const mockEvaluate = evaluate as unknown as ReturnType<typeof vi.fn>;
 const mockVerifyPermit = verifyPermit as unknown as ReturnType<typeof vi.fn>;
 const mockWaitForApproval = waitForApprovalResolution as unknown as ReturnType<typeof vi.fn>;
 const mockResolveApprovals = resolveApprovals as unknown as ReturnType<typeof vi.fn>;
+const mockMintWorkloadIdentity = mintGithubActionsActorIdentity as unknown as ReturnType<
+  typeof vi.fn
+>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -119,6 +131,31 @@ beforeEach(() => {
   mockEvaluate.mockReset();
   mockVerifyPermit.mockReset();
   mockWaitForApproval.mockReset();
+  mockMintWorkloadIdentity.mockReset();
+  mockMintWorkloadIdentity.mockResolvedValue({
+    actorId: "github-actions:repo:123:workflow:deploy",
+    assertion: {
+      version: "actor_identity.v1",
+      subject: {
+        principal_id: "github-actions:repo:123:workflow:deploy",
+        principal_kind: "workload",
+      },
+      signature: "runtime-signed",
+    },
+    source: {
+      issuer: "https://token.actions.githubusercontent.com",
+      repository: "AtlaSent-Systems-Inc/app",
+      repository_id: "123",
+      ref: "refs/heads/main",
+      sha: "abc123",
+      workflow_ref: "AtlaSent-Systems-Inc/app/.github/workflows/deploy.yml@refs/heads/main",
+      actor: "tester",
+      actor_id: "42",
+      run_id: "100",
+      run_attempt: "1",
+      environment: "production",
+    },
+  });
 
   // Default: no PR-review evidence (mirrors the real resolveApprovals()
   // behavior with no GITHUB_TOKEN set, which every pre-existing test in this
@@ -238,6 +275,62 @@ describe("allow response", () => {
     const outputs = readOutputs(outputFile);
     expect(outputs["decision"]).toBe("allow");
     expect(outputs["verified"]).toBe("true");
+  });
+
+  it("uses only the broker-minted workload actor and assertion for production.deploy", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("actor", "human-dispatcher");
+    setInput("environment", "production");
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    expect(mockMintWorkloadIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionType: "production.deploy",
+        environment: "production",
+      }),
+      expect.objectContaining({ mask: expect.any(Function) }),
+    );
+    const config = mockEnforce.mock.calls[0][0] as {
+      actor: string;
+      actorIdentity: Record<string, unknown>;
+      context: Record<string, unknown>;
+    };
+    expect(config.actor).toBe("github-actions:repo:123:workflow:deploy");
+    expect(config.actorIdentity).toMatchObject({ version: "actor_identity.v1" });
+    expect(config.context["triggering_actor"]).toBe("github:tester");
+  });
+
+  it("fails closed before evaluate when workload identity cannot be established", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    mockMintWorkloadIdentity.mockRejectedValueOnce(new Error("wrong repository binding"));
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    expect(mockEnforce).not.toHaveBeenCalled();
+    expect(readOutputs(outputFile)).toMatchObject({
+      decision: "deny",
+      verified: "false",
+      "verify-error-code": "ACTOR_UNVERIFIED",
+    });
+    expect(getConsoleLogs().some((line) => line.includes("wrong repository binding"))).toBe(true);
+  });
+
+  it("keeps the existing human actor path for actions that do not require workload OIDC", async () => {
+    setApiKey();
+    setInput("action", "package.release");
+    setInput("actor", "release-manager");
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    expect(mockMintWorkloadIdentity).not.toHaveBeenCalled();
+    const config = mockEnforce.mock.calls[0][0] as { actor: string; actorIdentity?: unknown };
+    expect(config.actor).toBe("github:release-manager");
+    expect(config.actorIdentity).toBeUndefined();
   });
 
   it("sets permit-token, evaluation-id, proof-hash, risk-score outputs on allow", async () => {

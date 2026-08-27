@@ -19,6 +19,13 @@ export interface EnforceConfig {
   apiUrl?: string;
   action: string;
   actor: string;
+  /**
+   * Runtime-minted actor_identity.v1 assertion for the calling workload.
+   * Sent as a canonical top-level evaluate field. The library never builds or
+   * mutates this envelope; its signature and request binding are verified by
+   * the runtime before policy evaluation.
+   */
+  actorIdentity?: Record<string, unknown>;
   environment?: string;
   targetId?: string;
   resource?: {
@@ -167,6 +174,7 @@ export async function evaluate(config: EnforceConfig): Promise<Decision> {
       ...rawContext,
     },
   };
+  if (config.actorIdentity != null) payload["actor_identity"] = config.actorIdentity;
   // Top-level fields forwarded to the control plane's EvaluateRequest.
   if (config.environment != null) payload["environment"] = config.environment;
   if (config.resource != null) payload["resource"] = config.resource;

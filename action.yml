@@ -8,7 +8,7 @@ inputs:
     description: 'Protected action type (e.g., production.deploy, database.migration.apply, hr.employee.offboard). See the AtlaSent catalog for all 19 built-in types. Used for single-eval path; ignored when evaluations or policy-sync is set.'
     required: false
   actor:
-    description: 'Actor identity (defaults to github.actor). Used for single-eval path.'
+    description: 'Triggering human identity (defaults to github.actor). For production.deploy, authorization uses a GitHub OIDC workload actor minted by the AtlaSent runtime instead; this value is retained separately as triggering_actor provenance and cannot substitute for workload identity.'
     required: false
     default: '${{ github.actor }}'
   target-id:

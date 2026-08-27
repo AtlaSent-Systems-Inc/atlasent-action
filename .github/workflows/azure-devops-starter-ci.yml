@@ -1,0 +1,30 @@
+name: Azure DevOps Entra starter CI
+
+on:
+  pull_request:
+    paths:
+      - 'examples/azure-devops-entra-gate/**'
+      - '.github/workflows/azure-devops-starter-ci.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'examples/azure-devops-entra-gate/**'
+      - '.github/workflows/azure-devops-starter-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Syntax and unit tests
+        run: |
+          node --check examples/azure-devops-entra-gate/lib.mjs
+          node --check examples/azure-devops-entra-gate/validate.mjs
+          node --test examples/azure-devops-entra-gate/tests/*.node.mjs

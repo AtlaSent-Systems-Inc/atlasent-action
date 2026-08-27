@@ -42,6 +42,16 @@ export interface EnforceConfig {
         payload?: unknown;
     };
     /**
+     * Structured facts from which the runtime independently derives the
+     * execution binding for mandatory change-control actions. This is a
+     * canonical top-level evaluate field; it must never be buried in context.
+     */
+    changePlan?: {
+        operation: string;
+        revision?: string;
+        artifact_ref?: string;
+    };
+    /**
      * SHA-256 digest of the artifact being authorized (canonical input, NOT
      * presentation metadata). Sent to evaluate as the top-level
      * `execution_payload_hash`, which the runtime binds into the permit

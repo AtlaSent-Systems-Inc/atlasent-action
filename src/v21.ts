@@ -80,11 +80,22 @@ async function bindBatchWorkloadIdentities(
       { mask: deps.mask },
     );
 
+    // Mandatory production-change controls reject a caller-supplied raw
+    // execution_payload_hash. Treat it as the artifact identity inside the
+    // structured plan and bind the plan to the broker-verified GitHub SHA.
+    const artifactRef = sanitized.execution_payload_hash;
+    delete sanitized.execution_payload_hash;
+
     bound.push({
       ...sanitized,
       actor: identity.actorId,
       environment,
       actor_identity: identity.assertion,
+      change_plan: {
+        operation: "deploy",
+        revision: identity.source.sha,
+        ...(artifactRef ? { artifact_ref: artifactRef } : {}),
+      },
       context: {
         ...(item.context ?? {}),
         triggering_actor: `github:${identity.source.actor}`,
@@ -193,6 +204,8 @@ export async function runV21(
         // Terminal allow must be verified — same fail-closed contract as evaluateMany.
         // Uses @atlasent/enforce's canonical verifyPermit() implementation.
         const item = items[idx];
+        const runtimeExecutionHash =
+          terminal.executionHashExpected ?? terminal.execution_hash_expected;
         const vr = terminal.permitToken
           ? await verifyPermit(
               {
@@ -205,14 +218,18 @@ export async function runV21(
                 // SAME bindings as the direct-allow path — not an unbound verify.
                 environment: item.environment,
                 targetId: item.target_id,
-                executionPayloadHash: item.execution_payload_hash,
+                executionPayloadHash: runtimeExecutionHash ?? item.execution_payload_hash,
                 requiredBindings: requiredBindingsFor({
                   environment: item.environment,
                   targetId: item.target_id,
-                  executionPayloadHash: item.execution_payload_hash,
+                  executionPayloadHash: runtimeExecutionHash ?? item.execution_payload_hash,
                 }),
               },
-              { decision: "allow" as const, permitToken: terminal.permitToken },
+              {
+                decision: "allow" as const,
+                permitToken: terminal.permitToken,
+                executionHashExpected: runtimeExecutionHash,
+              },
             )
           : { verified: false as const, outcome: undefined };
         decisions[idx] = { ...terminal, verified: vr.verified, verifyOutcome: vr.outcome };

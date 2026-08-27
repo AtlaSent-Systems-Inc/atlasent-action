@@ -87,6 +87,7 @@ it("passes items and flags through to evaluateMany", async () => {
         actor: "workload:github:repo-1:workflow-1",
         environment: "production",
         actor_identity: { version: "actor_identity.v1", token: "signed-1" },
+        change_plan: { operation: "deploy", revision: "abc123" },
         context: { triggering_actor: "github:octocat" },
       }),
     ],

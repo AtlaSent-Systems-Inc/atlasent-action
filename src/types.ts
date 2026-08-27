@@ -8,6 +8,12 @@ export interface EvaluateRequest {
   environment?: string;
   /** Runtime-minted workload assertion (wire: `actor_identity`). Caller values are discarded. */
   actor_identity?: Record<string, unknown>;
+  /** Server-hashed mandatory change-control facts (wire: `change_plan`). */
+  change_plan?: {
+    operation: string;
+    revision?: string;
+    artifact_ref?: string;
+  };
   /** Target resource id — bound at evaluate and re-presented at verify (wire: `target_id`). */
   target_id?: string;
   /**
@@ -27,6 +33,8 @@ export interface Decision {
   proofHash?: string;
   /** Runtime-bound artifact digest, if the terminal response echoes it. */
   executionHashExpected?: string;
+  /** Raw runtime wire spelling retained by batch endpoints. */
+  execution_hash_expected?: string;
   /** Optional terminal-decision details, retained for the action summary. */
   denyReason?: string;
   holdReason?: string;

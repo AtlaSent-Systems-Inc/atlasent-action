@@ -216,6 +216,35 @@ describe("evaluateMany", () => {
     );
   });
 
+  it("re-presents the runtime-derived hash for a structured production change plan", async () => {
+    const item = {
+      action: "production.deploy",
+      actor: "workload:github:deploy",
+      environment: "staging",
+      change_plan: { operation: "deploy", revision: "abc123" },
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      decision: "allow",
+      evaluatedAt: "2026-08-27T00:00:00Z",
+      permitToken: "tok-plan",
+      execution_hash_expected: "server-derived-plan-hash",
+    })));
+    mockVerifyPermit.mockResolvedValueOnce({ verified: true, outcome: "verified" });
+
+    await evaluateMany("https://api.test", "k", [item], false);
+
+    expect(mockVerifyPermit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionPayloadHash: "server-derived-plan-hash",
+        requiredBindings: ["environment", "payload_hash"],
+      }),
+      expect.objectContaining({
+        permitToken: "tok-plan",
+        executionHashExpected: "server-derived-plan-hash",
+      }),
+    );
+  });
+
   it("fails closed when an item's permit fails verification (substitution / mismatch)", async () => {
     const items = [
       { action: "production.deploy", actor: "alice", environment: "production", target_id: "svc:api", execution_payload_hash: "sha256:A" },

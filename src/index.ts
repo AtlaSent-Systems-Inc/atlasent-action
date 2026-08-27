@@ -480,6 +480,7 @@ function setDecisionOutputs(d: Decision): void {
   setOutput("decision", d.decision);
   setOutput("permit-token", d.permitToken ?? "");
   setOutput("evaluation-id", d.evaluationId ?? "");
+  setOutput("execution-hash", d.executionHashExpected ?? "");
   setOutput("proof-hash", d.proofHash ?? "");
   setOutput("risk-score", d.riskScore !== undefined ? String(d.riskScore) : "");
   setOutput("chain-entry", JSON.stringify(d.chainEntry ?? null));
@@ -623,6 +624,7 @@ async function runVerifyPermitStep(apiKey: string, apiUrl: string): Promise<void
   const actor = getInput("actor") || "unknown";
   const targetId = getInput("target-id") || undefined;
   const artifactDigest = getInput("artifact-digest") || undefined;
+  const runtimeExecutionHash = getInput("execution-hash") || undefined;
   const gh = getGitHubContext();
   const environment = resolveEnvironment(getInput("environment"), gh.ref, apiKey);
 
@@ -651,6 +653,22 @@ async function runVerifyPermitStep(apiKey: string, apiUrl: string): Promise<void
   }
   const actorId = actorResolution.actorId;
 
+  if (actionType === PRODUCTION_DEPLOY_ACTION && !runtimeExecutionHash) {
+    setOutput("decision", "deny");
+    setOutput("verified", "false");
+    setOutput("verify-outcome", "invalid");
+    setOutput("verify-error-code", "MISSING_BINDING");
+    setFailed(
+      "Deploy blocked at execution boundary: production.deploy requires the opaque " +
+        "execution-hash output from its evaluate-only gate. The raw artifact-digest is " +
+        "not the runtime-derived change-plan binding.",
+    );
+    return;
+  }
+
+  const verificationPayloadHash =
+    actionType === PRODUCTION_DEPLOY_ACTION ? runtimeExecutionHash : artifactDigest;
+
   maskValue(permitToken);
 
   const config: EnforceConfig = {
@@ -660,13 +678,13 @@ async function runVerifyPermitStep(apiKey: string, apiUrl: string): Promise<void
     actor: actorId,
     environment,
     targetId,
-    executionPayloadHash: artifactDigest,
+    executionPayloadHash: verificationPayloadHash,
     // Boundary re-verify must re-present every binding it was given, or fail
     // closed (MISSING_BINDING) — never a silently-unbound boundary verify.
     requiredBindings: requiredBindingsFor({
       environment,
       targetId,
-      executionPayloadHash: artifactDigest,
+      executionPayloadHash: verificationPayloadHash,
     }),
   };
 
@@ -1533,6 +1551,33 @@ export async function run(): Promise<void> {
   }
 
   const artifactDigest = getInput("artifact-digest") || undefined;
+  const productionChangePlan = actionType === PRODUCTION_DEPLOY_ACTION
+    ? {
+        operation: "deploy",
+        revision: actorResolution.workloadIdentity?.source.sha ?? "",
+        ...(artifactDigest ? { artifact_ref: artifactDigest } : {}),
+      }
+    : undefined;
+
+  if (productionChangePlan && !productionChangePlan.revision) {
+    setOutput("decision", "deny");
+    setOutput("verified", "false");
+    setOutput("permit-issued", "false");
+    setOutput("verify-outcome", "invalid");
+    setOutput("verify-error-code", "MISSING_BINDING");
+    setFailed(
+      "AtlaSent Gate: the verified GitHub workload identity did not carry a commit SHA, " +
+        "so a complete production.deploy change_plan cannot be derived. Deploy blocked " +
+        "(fail-closed).",
+    );
+    return;
+  }
+
+  // Mandatory production-change controls reject caller-supplied raw hashes.
+  // The runtime derives the execution hash from this verified revision plus
+  // the optional artifact identity and echoes that opaque binding for verify.
+  const directExecutionPayloadHash =
+    actionType === PRODUCTION_DEPLOY_ACTION ? undefined : artifactDigest;
 
   // evaluate-only (issue-permit) mode: ISSUE a permit without verifying or
   // consuming it, so a workflow can express the two-step EXECUTION-BOUNDARY
@@ -1566,15 +1611,16 @@ export async function run(): Promise<void> {
     actorIdentity: actorResolution.workloadIdentity?.assertion,
     environment,
     targetId,
+    changePlan: productionChangePlan,
     // Canonical artifact binding — the runtime binds this into the permit and
     // re-checks it at verify time (artifact-substitution defense).
-    executionPayloadHash: artifactDigest,
+    executionPayloadHash: directExecutionPayloadHash,
     // Re-present every binding provided here at verify, or fail closed
     // (MISSING_BINDING) rather than silently drop it.
     requiredBindings: requiredBindingsFor({
       environment,
       targetId,
-      executionPayloadHash: artifactDigest,
+      executionPayloadHash: directExecutionPayloadHash,
     }),
     // state_snapshot is required for all action classes (requires_state_snapshot=true).
     // Auto-populate from GitHub Actions context; callers can override via the context input.
@@ -2013,10 +2059,14 @@ export async function run(): Promise<void> {
       return;
     }
 
+    const boundaryBindingGuidance = actionType === PRODUCTION_DEPLOY_ACTION
+      ? "this step's `execution-hash` output"
+      : "the SAME `artifact-digest` (when one was evaluated)";
+
     warning(
       "AtlaSent Gate: evaluate-only mode — a permit was ISSUED but NOT verified or consumed. " +
         "The single-use permit is consumed at the EXECUTION BOUNDARY. Add a second AtlaSent step with " +
-        "`verify-permit: true`, this step's `permit-token` output, and the SAME `artifact-digest`, then " +
+        "`verify-permit: true`, this step's `permit-token` output, and " + boundaryBindingGuidance + ", then " +
         "gate the protected step on THAT step's `verified == 'true'`. Do NOT gate the deploy on this " +
         "step's `decision` or `permit-issued` — neither proves the artifact/environment were re-bound at the boundary.",
     );
@@ -2051,7 +2101,8 @@ export async function run(): Promise<void> {
         ...(d.evaluationId ? [`| Evaluation ID | \`${d.evaluationId}\` |`] : []),
         "",
         "> **Next step:** add an AtlaSent step with `verify-permit: true`, " +
-          "`permit-token: ${{ steps.<this-step>.outputs.permit-token }}`, and the same `artifact-digest`, " +
+          "`permit-token: ${{ steps.<this-step>.outputs.permit-token }}`, and " +
+          boundaryBindingGuidance + ", " +
           "then gate the deploy on that step's `verified == 'true'`.",
         `[View workflow run](${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id})`,
         "",

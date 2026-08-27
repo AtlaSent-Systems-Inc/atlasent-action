@@ -74,6 +74,8 @@ async function evaluate(config) {
     const snap = config.state_snapshot ?? contextSnapshot;
     if (snap != null)
         payload["state_snapshot"] = snap;
+    if (config.changePlan != null)
+        payload["change_plan"] = config.changePlan;
     // Artifact digest is a canonical top-level input — the runtime binds it into
     // the permit (execution_hash_expected). Never buried in context/presentation.
     if (config.executionPayloadHash != null) {

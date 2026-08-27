@@ -15,10 +15,13 @@ inputs:
     description: 'Target resource being acted on (service name, artifact id, etc). Threaded into both top-level target_id and context.target_id so policies can gate on what is being deployed, not just who is deploying.'
     required: false
   artifact-digest:
-    description: 'SHA-256 digest of the artifact being deployed (e.g. sha256:<image-or-plan-hash>). Sent to evaluate as the canonical top-level execution_payload_hash, which the runtime binds into the permit. Re-presented at verify time as payload_hash — a permit issued for one artifact and presented for another fails with PAYLOAD_MISMATCH. Supply the SAME digest to the gate step and to the verify-permit step at the execution boundary so a workflow cannot evaluate one artifact and execute another.'
+    description: 'SHA-256 digest of the artifact being deployed (e.g. sha256:<image-or-plan-hash>). For production.deploy this becomes change_plan.artifact_ref and the runtime derives the permit execution hash from the complete plan; for other actions it remains the direct execution_payload_hash. At a separate verify-permit boundary, pass the gate output execution-hash rather than this raw artifact digest.'
+    required: false
+  execution-hash:
+    description: 'Opaque runtime-derived execution binding from a prior evaluate-only gate. Required for a separate production.deploy verify-permit step; pass steps.<gate>.outputs.execution-hash unchanged. Do not compute or substitute this value in the workflow.'
     required: false
   verify-permit:
-    description: 'Set "true" to run VERIFY-ONLY mode: re-verify an existing permit at the execution boundary (immediately before the protected step), independent of the gate that issued it. Requires permit-token; also pass action, actor, environment, and artifact-digest so the runtime re-binds the execution context. Fails closed on any missing / modified / expired / replayed / denied / context-mismatched permit. Outputs verified / verify-outcome / verify-error-code.'
+    description: 'Set "true" to run VERIFY-ONLY mode at the execution boundary. Requires permit-token plus the original action/environment/target bindings. For production.deploy, also pass the prior gate output execution-hash; for other actions, pass artifact-digest when one was bound. Fails closed on missing, modified, expired, replayed, denied, or context-mismatched permits.'
     required: false
     default: 'false'
   permit-token:
@@ -33,7 +36,7 @@ inputs:
     default: 'enforce'
   wait-for-approval:
     description: |
-      Set "true" to pause-and-resume on a HOLD/ESCALATE decision instead of failing the step immediately (mode: enforce only — ignored/rejected with evaluate-only, which is its own two-step pattern). When the runtime returns hold/escalate with an approval_request_id, this step polls GET /v1/approvals/{id} on atlasent-api (bounded by max-wait-minutes) for a human resolution in AtlaSent Console. On "approved", the step re-verifies the FRESH permit the resolution minted against the SAME action/target/environment/artifact-digest this step evaluated with — never trusting "approved" alone — before treating it as allow. Denied, expired, timed-out, or an approved-with-no-fresh-permit resolution all fail closed, same as any other deny.
+      Set "true" to pause-and-resume on a HOLD/ESCALATE decision instead of failing the step immediately (mode: enforce only — ignored/rejected with evaluate-only, which is its own two-step pattern). When the runtime returns hold/escalate with an approval_request_id, this step polls GET /v1/approvals/{id} on atlasent-api (bounded by max-wait-minutes) for a human resolution in AtlaSent Console. On "approved", the step re-verifies the FRESH permit against the SAME action/target/environment and runtime-derived execution binding — never trusting "approved" alone — before treating it as allow. Denied, expired, timed-out, or an approved-with-no-fresh-permit resolution all fail closed, same as any other deny.
     required: false
     default: 'false'
   max-wait-minutes:
@@ -369,6 +372,8 @@ outputs:
     description: 'The permit token. On the default (enforce) path it is already consumed by v1-verify-permit (audit reference only). In evaluate-only mode it is UNCONSUMED — pass it to a later verify-permit step to re-verify and consume it at the execution boundary. Single-eval path only.'
   evaluation-id:
     description: 'The evaluation ID for audit trail. Single-eval path only.'
+  execution-hash:
+    description: 'Runtime-derived execution binding. In evaluate-only mode, pass this unchanged to the later verify-permit step as the execution-hash input.'
   proof-hash:
     description: 'The cryptographic proof hash. Single-eval path only.'
   risk-score:

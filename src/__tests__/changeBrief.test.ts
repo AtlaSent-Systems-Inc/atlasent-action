@@ -524,6 +524,27 @@ describe("buildManagementDecisionBrief", () => {
       advisory_only: true,
       separate_evaluate_and_permit_required: true,
     });
+
+    const partialManagement = buildManagementDecisionBrief({
+      ...result,
+      collection: {
+        status: "partial",
+        sources: {
+          comparison: {
+            ...result.collection.sources.comparison,
+            state: "partial",
+            reason: "Additional changed files may exist.",
+          },
+          checks: {
+            ...result.collection.sources.checks,
+            state: "partial",
+            reason: "Additional check runs may exist.",
+          },
+        },
+      },
+    });
+    expect(partialManagement.management_summary.automated_analysis.changed_files_observed).toBe(1);
+    expect(partialManagement.management_summary.automated_analysis.check_runs_observed).toBe(1);
   });
 
   it("refuses to present a management-ready brief when source collection is incomplete", async () => {
@@ -550,7 +571,48 @@ describe("buildManagementDecisionBrief", () => {
 
     const management = buildManagementDecisionBrief(result);
     expect(management.readiness).toBe("evidence_incomplete");
+    expect(management.management_summary.automated_analysis.changed_files_observed).toBeNull();
+    expect(management.management_summary.automated_analysis.check_runs_observed).toBe(0);
     expect(management.next_actions.some((item) => item.includes("github_compare"))).toBe(true);
+
+    const summary = renderChangeBriefStepSummary(result);
+    expect(summary).toContain("| Changed files compared | Unknown — source unavailable |");
+    expect(summary).toContain("| GitHub check runs inspected | 0 |");
+    expect(summary).toContain("| Files changed | Unknown — GitHub comparison unavailable |");
+    expect(summary).not.toContain("| Changed files compared | 0 |");
+  });
+
+  it("reports an unavailable check-run read as unknown without erasing an observed diff", async () => {
+    const routes = [
+      githubRoutes()[0],
+      { match: "/check-runs", status: 503, body: { error: "temporarily unavailable" } },
+      { match: "/v1-change-brief", body: SAMPLE_BRIEF },
+    ];
+    const { fn } = makeFetch(routes);
+    const result = await runChangeBrief({
+      apiKey: "k",
+      apiUrl: "https://api.example.com/functions/v1",
+      actionType: "production.deploy",
+      targetSystem: "github",
+      targetId: "acme/api",
+      environment: "production",
+      actorId: "github:octocat",
+      githubToken: "gh-token",
+      repository: "acme/api",
+      eventName: "push",
+      eventPath: "/tmp/event.json",
+      fallbackSha: "b".repeat(40),
+      fallbackRef: "refs/heads/main",
+      readFile: () => JSON.stringify({ before: "a".repeat(40), after: "b".repeat(40) }),
+      fetchImpl: fn,
+    });
+
+    const management = buildManagementDecisionBrief(result);
+    expect(management.management_summary.automated_analysis.changed_files_observed).toBe(1);
+    expect(management.management_summary.automated_analysis.check_runs_observed).toBeNull();
+    expect(renderChangeBriefStepSummary(result)).toContain(
+      "| GitHub check runs inspected | Unknown — source unavailable |",
+    );
   });
 });
 

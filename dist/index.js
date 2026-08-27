@@ -2168,8 +2168,8 @@ function buildManagementDecisionBrief(result) {
       business_rationale: brief.recommendation.rationale,
       impact: brief.impact.blast_radius_note ?? "No business-impact narrative was reported; impact remains unknown.",
       automated_analysis: {
-        changed_files_observed: facts.changed_files.length,
-        check_runs_observed: facts.checks.length,
+        changed_files_observed: collection.sources.comparison.state === "unavailable" ? null : facts.changed_files.length,
+        check_runs_observed: collection.sources.checks.state === "unavailable" ? null : facts.checks.length,
         material_differences: brief.material_differences.length,
         blocking_evidence_gaps: blocking.length,
         review_items: reviewItems.length,
@@ -2204,9 +2204,14 @@ var SIGNIFICANCE_EMOJI = {
   notable: "\u{1F7E1}",
   informational: "\u26AA"
 };
+function renderObservedCount(value) {
+  return value === null ? "Unknown \u2014 source unavailable" : String(value);
+}
 function renderChangeBriefStepSummary(result) {
   const { brief, facts, canonicalPlanDigest, collection } = result;
   const management = buildManagementDecisionBrief(result);
+  const changedFilesObserved = management.management_summary.automated_analysis.changed_files_observed;
+  const changedFilesSummary = changedFilesObserved === null ? "Unknown \u2014 GitHub comparison unavailable" : `${changedFilesObserved} (+${facts.additions_total}/-${facts.deletions_total})`;
   const lines = [
     "",
     "## \u{1F4CB} AtlaSent Management Decision Brief",
@@ -2227,8 +2232,8 @@ function renderChangeBriefStepSummary(result) {
     "| Analysis | Observed result |",
     "|---|---|",
     `| Source collection | \`${management.management_summary.automated_analysis.source_collection}\` |`,
-    `| Changed files compared | ${management.management_summary.automated_analysis.changed_files_observed} |`,
-    `| GitHub check runs inspected | ${management.management_summary.automated_analysis.check_runs_observed} |`,
+    `| Changed files compared | ${renderObservedCount(management.management_summary.automated_analysis.changed_files_observed)} |`,
+    `| GitHub check runs inspected | ${renderObservedCount(management.management_summary.automated_analysis.check_runs_observed)} |`,
     `| Material differences identified | ${management.management_summary.automated_analysis.material_differences} |`,
     `| Blocking evidence gaps routed | ${management.management_summary.automated_analysis.blocking_evidence_gaps} |`,
     `| Additional review items | ${management.management_summary.automated_analysis.review_items} |`,
@@ -2241,7 +2246,7 @@ function renderChangeBriefStepSummary(result) {
     `| Classification | \`${brief.classification.value}\` |`,
     `| Repository | \`${facts.repository}\` |`,
     `| Base \u2192 Head | \`${facts.base_sha.slice(0, 8)}\` \u2192 \`${facts.head_sha.slice(0, 8)}\` |`,
-    `| Files changed | ${facts.changed_files.length} (+${facts.additions_total}/-${facts.deletions_total}) |`,
+    `| Files changed | ${changedFilesSummary} |`,
     `| Canonical plan digest | \`${canonicalPlanDigest}\` |`,
     `| Baseline comparison | ${brief.baseline.comparison_possible ? "\u2705 possible" : "\u26AA not possible"} |`
   ];

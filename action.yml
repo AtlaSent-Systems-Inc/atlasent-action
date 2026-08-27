@@ -238,8 +238,9 @@ inputs:
     description: |
       When "true", run in change-brief mode instead of evaluate: gather this
       run's real GitHub/CI facts (base/head SHA, changed files, check-run
-      conclusions) and call v1-change-brief so a human reviewer sees what is
-      changing, what AtlaSent can establish, and what remains unknown —
+      conclusions), call v1-change-brief, and render an evidence-bound
+      management decision brief: what is changing, the translated impact,
+      what AtlaSent established automatically, and what remains unknown —
       BEFORE a deploy is authorized. Mints no permit and authorizes nothing;
       a separate evaluate/verify step (the default `action:` mode) remains
       the actual authorization gate. Mutually exclusive with evaluate,
@@ -398,6 +399,14 @@ outputs:
     description: 'The sha256:<hex> canonical_plan_digest computed for this base/head SHA pair — pass the SAME value as evaluate''s context.canonical_plan_digest so the brief and the eventual permit describe the same change. Change-brief mode only.'
   change-brief-console-url:
     description: 'Deep link into the AtlaSent console review screen. NOTE: does not yet carry this run''s GitHub-sourced facts (a documented gap — see README) — the job summary is the complete record. Change-brief mode only.'
+  change-brief-decision-readiness:
+    description: 'Queue-ready advisory state: ready_for_review or evidence_incomplete. Never an authorization decision and never safe to use as a deployment gate. Change-brief mode only.'
+  change-brief-source-collection:
+    description: 'Whether the GitHub comparison and check-run reads were complete or partial. An empty fact set from a failed read is always partial, never presented as an observed zero. Change-brief mode only.'
+  change-brief-blocking-evidence-count:
+    description: 'Count of blocking evidence gaps identified by v1-change-brief. Advisory routing signal only; execution still requires evaluate/permit. Change-brief mode only.'
+  change-brief-decision-brief:
+    description: 'JSON management_decision_brief.v1 projection with business rationale, translated impact, automatic-analysis counts, next actions, exact evidence binding, and an explicit advisory-only authority boundary. Change-brief mode only.'
   financial-governance-advice:
     description: 'JSON advisory output from financial governance assessment'
   chain-entry:

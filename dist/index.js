@@ -149,6 +149,8 @@ var require_dist = __commonJS({
           ...rawContext
         }
       };
+      if (config.actorIdentity != null)
+        payload["actor_identity"] = config.actorIdentity;
       if (config.environment != null)
         payload["environment"] = config.environment;
       if (config.resource != null)
@@ -2147,6 +2149,128 @@ function renderChangeBriefStepSummary(result) {
   return lines.join("\n");
 }
 
+// src/workloadIdentity.ts
+var GITHUB_ACTIONS_OIDC_AUDIENCE = "atlasent:actor_identity.v1";
+var WorkloadIdentityError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "WorkloadIdentityError";
+  }
+};
+function responseDetail(body) {
+  try {
+    const parsed = JSON.parse(body);
+    const message = parsed["message"] ?? parsed["error_description"] ?? parsed["error"];
+    if (typeof message === "string" && message.trim())
+      return message.trim().slice(0, 300);
+  } catch {
+  }
+  return body.trim().slice(0, 300) || "empty response";
+}
+async function requestGithubOidcToken(deps) {
+  const requestUrl = (deps.env["ACTIONS_ID_TOKEN_REQUEST_URL"] ?? "").trim();
+  const requestToken = (deps.env["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] ?? "").trim();
+  if (!requestUrl || !requestToken) {
+    throw new WorkloadIdentityError(
+      "GitHub OIDC is unavailable. Grant this job `permissions: id-token: write`; the production.deploy gate will not fall back to a caller-supplied actor."
+    );
+  }
+  deps.mask?.(requestToken);
+  const url = new URL(requestUrl);
+  url.searchParams.set("audience", GITHUB_ACTIONS_OIDC_AUDIENCE);
+  let response;
+  try {
+    response = await deps.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${requestToken}`,
+        Accept: "application/json"
+      }
+    });
+  } catch (error) {
+    throw new WorkloadIdentityError(
+      `Could not obtain the GitHub OIDC token: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  const body = await response.text();
+  if (!response.ok) {
+    throw new WorkloadIdentityError(
+      `GitHub OIDC token request failed (HTTP ${response.status}): ${responseDetail(body)}`
+    );
+  }
+  let token = "";
+  try {
+    const parsed = JSON.parse(body);
+    token = typeof parsed["value"] === "string" ? parsed["value"] : "";
+  } catch {
+  }
+  if (!token) {
+    throw new WorkloadIdentityError("GitHub OIDC token response did not contain `value`");
+  }
+  deps.mask?.(token);
+  return token;
+}
+function isIdentitySource(value) {
+  if (!value || typeof value !== "object")
+    return false;
+  const source = value;
+  return source["issuer"] === "https://token.actions.githubusercontent.com" && typeof source["repository"] === "string" && typeof source["repository_id"] === "string" && typeof source["ref"] === "string" && typeof source["sha"] === "string" && typeof source["workflow_ref"] === "string" && typeof source["actor"] === "string" && typeof source["actor_id"] === "string" && typeof source["run_id"] === "string" && typeof source["run_attempt"] === "string" && typeof source["environment"] === "string";
+}
+async function mintGithubActionsActorIdentity(args, deps = {}) {
+  const resolved = {
+    fetchImpl: deps.fetchImpl ?? fetch,
+    env: deps.env ?? process.env,
+    mask: deps.mask
+  };
+  const idToken = await requestGithubOidcToken(resolved);
+  const apiUrl = args.apiUrl.replace(/\/+$/, "");
+  let response;
+  try {
+    response = await resolved.fetchImpl(`${apiUrl}/v1-idp-broker/mint/actor-identity`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${args.apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({
+        provider: "github_actions",
+        id_token: idToken,
+        action_type: args.actionType,
+        environment: args.environment
+      })
+    });
+  } catch (error) {
+    throw new WorkloadIdentityError(
+      `AtlaSent workload identity broker is unreachable: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  const body = await response.text();
+  if (!response.ok) {
+    throw new WorkloadIdentityError(
+      `AtlaSent workload identity broker rejected this job (HTTP ${response.status}): ${responseDetail(body)}`
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new WorkloadIdentityError("AtlaSent workload identity broker returned non-JSON");
+  }
+  const actorId = typeof parsed["actor_id"] === "string" ? parsed["actor_id"] : "";
+  const assertion = parsed["assertion"];
+  if (!actorId || !assertion || typeof assertion !== "object" || assertion["version"] !== "actor_identity.v1" || !isIdentitySource(parsed["source"])) {
+    throw new WorkloadIdentityError(
+      "AtlaSent workload identity broker returned an invalid actor_identity.v1 response"
+    );
+  }
+  return {
+    actorId,
+    assertion,
+    source: parsed["source"]
+  };
+}
+
 // src/index.ts
 function getApiKey() {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -2371,6 +2495,26 @@ function resolveEnvironment(explicit, ref, apiKey) {
   const branch = ref.replace("refs/heads/", "");
   return branch === "main" || branch === "master" ? "live" : "test";
 }
+async function resolveProtectedActor(args) {
+  const triggeringActorId = `github:${args.triggeringActor}`;
+  if (args.actionType !== PRODUCTION_DEPLOY_ACTION) {
+    return { actorId: triggeringActorId, triggeringActorId };
+  }
+  const workloadIdentity = await mintGithubActionsActorIdentity(
+    {
+      apiUrl: args.apiUrl,
+      apiKey: args.apiKey,
+      actionType: args.actionType,
+      environment: args.environment
+    },
+    { mask: maskValue }
+  );
+  return {
+    actorId: workloadIdentity.actorId,
+    triggeringActorId: `github:${workloadIdentity.source.actor}`,
+    workloadIdentity
+  };
+}
 function setDecisionOutputs(d) {
   if (d.permitToken)
     maskValue(d.permitToken);
@@ -2470,12 +2614,32 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
   const artifactDigest = getInput("artifact-digest") || void 0;
   const gh = getGitHubContext();
   const environment = resolveEnvironment(getInput("environment"), gh.ref, apiKey);
+  let actorResolution;
+  try {
+    actorResolution = await resolveProtectedActor({
+      apiKey,
+      apiUrl,
+      actionType,
+      environment,
+      triggeringActor: actor
+    });
+  } catch (error) {
+    setOutput("decision", "deny");
+    setOutput("verified", "false");
+    setOutput("verify-outcome", "actor_unverified");
+    setOutput("verify-error-code", "ACTOR_UNVERIFIED");
+    setFailed(
+      `Deploy blocked at execution boundary: ${error instanceof WorkloadIdentityError || error instanceof Error ? error.message : String(error)}`
+    );
+    return;
+  }
+  const actorId = actorResolution.actorId;
   maskValue(permitToken);
   const config = {
     apiKey,
     apiUrl,
     action: actionType,
-    actor: `github:${actor}`,
+    actor: actorId,
     environment,
     targetId,
     executionPayloadHash: artifactDigest,
@@ -2488,7 +2652,7 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
     })
   };
   info(
-    `AtlaSent boundary re-verification: "${actionType}" for "github:${actor}" in ${environment}` + (artifactDigest ? ` (artifact=${artifactDigest})` : "")
+    `AtlaSent boundary re-verification: "${actionType}" for "${actorId}" in ${environment}` + (artifactDigest ? ` (artifact=${artifactDigest})` : "")
   );
   try {
     const r = await (0, import_enforce4.reverifyPermit)(config, permitToken);
@@ -3091,8 +3255,30 @@ async function run() {
   const gh = getGitHubContext();
   const environment = resolveEnvironment(explicitEnv, gh.ref, apiKey);
   const orgId = gh.repository.split("/")[0] ?? "unknown";
+  let actorResolution;
+  try {
+    actorResolution = await resolveProtectedActor({
+      apiKey,
+      apiUrl,
+      actionType,
+      environment,
+      triggeringActor: actor
+    });
+  } catch (error) {
+    setOutput("decision", "deny");
+    setOutput("verified", "false");
+    setOutput("permit-issued", "false");
+    setOutput("verify-outcome", "actor_unverified");
+    setOutput("verify-error-code", "ACTOR_UNVERIFIED");
+    setFailed(
+      `AtlaSent Gate: ${error instanceof WorkloadIdentityError || error instanceof Error ? error.message : String(error)} Deploy blocked (fail-closed).`
+    );
+    return;
+  }
+  const actorId = actorResolution.actorId;
+  const triggeringActorId = actorResolution.triggeringActorId;
   info(
-    `AtlaSent Gate: evaluating "${actionType}" for actor "github:${actor}" in ${environment} environment` + (targetId ? ` (target=${targetId})` : "")
+    `AtlaSent Gate: evaluating "${actionType}" for actor "${actorId}" in ${environment} environment` + (targetId ? ` (target=${targetId})` : "")
   );
   const approvalsFrom = (getInput("approvals-from") || "pr-reviews").toLowerCase();
   let approvalEvidence = null;
@@ -3117,7 +3303,8 @@ async function run() {
     apiKey,
     apiUrl,
     action: actionType,
-    actor: `github:${actor}`,
+    actor: actorId,
+    actorIdentity: actorResolution.workloadIdentity?.assertion,
     environment,
     targetId,
     // Canonical artifact binding — the runtime binds this into the permit and
@@ -3161,6 +3348,10 @@ async function run() {
       run_id: gh.run_id,
       run_number: gh.run_number,
       event_name: gh.event_name,
+      // Human provenance is deliberately separate from the authorizing
+      // workload principal. For production.deploy this value comes from the
+      // broker's signature-verified GitHub OIDC `actor` claim when present.
+      triggering_actor: triggeringActorId,
       pr_number: approvalEvidence?.pr_number ?? gh.pr_number ?? null,
       run_url: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
       // Verified approval evidence from PR reviews. Only present (and only
@@ -3217,7 +3408,7 @@ async function run() {
           targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`
         });
       }
-      emitFinancialGovernanceAdvisory(actionType, actor, orgId);
+      emitFinancialGovernanceAdvisory(actionType, actorId, orgId);
       {
         const slackWebhook = getInput("slack-webhook");
         const runUrl = `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`;
@@ -3228,7 +3419,7 @@ async function run() {
           await notifySlack(slackWebhook, {
             decision: decisionStr,
             action: actionType,
-            actor,
+            actor: actorId,
             environment,
             reason,
             runUrl,
@@ -3245,7 +3436,7 @@ async function run() {
               decision: decisionStr,
               reason,
               action: actionType,
-              actor,
+              actor: actorId,
               environment,
               runUrl,
               evaluationId: err.decision?.evaluationId,
@@ -3262,7 +3453,7 @@ async function run() {
           buildGateStepSummary({
             outcome: summaryOutcome,
             action: actionType,
-            actor: `github:${actor}`,
+            actor: actorId,
             environment,
             targetId,
             runUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
@@ -3404,12 +3595,12 @@ async function run() {
         description: `AtlaSent: unexpected error \u2014 ${(err instanceof Error ? err.message : String(err)).slice(0, 100)}`,
         targetUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`
       });
-      emitFinancialGovernanceAdvisory(actionType, actor, orgId);
+      emitFinancialGovernanceAdvisory(actionType, actorId, orgId);
       appendToStepSummary(
         buildGateStepSummary({
           outcome: "error",
           action: actionType,
-          actor: `github:${actor}`,
+          actor: actorId,
           environment,
           targetId,
           runUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
@@ -3458,7 +3649,7 @@ async function run() {
         "---",
         "## \u{1F7E6} AtlaSent Deploy Gate \u2014 PERMIT ISSUED (evaluate-only)",
         "",
-        `A permit was **issued** for \`${actionType}\` by **github:${actor}** in **${environment}**, but has **not** been verified or consumed. It must be re-verified at the execution boundary before the protected step runs.`,
+        `A permit was **issued** for \`${actionType}\` by **${actorId}** in **${environment}**, but has **not** been verified or consumed. It must be re-verified at the execution boundary before the protected step runs.`,
         "",
         `| Field | Value |`,
         `|---|---|`,
@@ -3466,7 +3657,7 @@ async function run() {
         "| Verified | `false` \u2014 re-verify at the boundary |",
         "| Permit | issued (single-use, unconsumed) |",
         `| Action | \`${actionType}\` |`,
-        `| Actor | \`github:${actor}\` |`,
+        `| Actor | \`${actorId}\` |`,
         `| Environment | \`${environment}\` |`,
         ...targetId ? [`| Target | \`${targetId}\` |`] : [],
         ...d.evaluationId ? [`| Evaluation ID | \`${d.evaluationId}\` |`] : [],
@@ -3479,7 +3670,7 @@ async function run() {
     info(
       `Authorization EVALUATED (permit issued, NOT yet verified). Re-verify at the execution boundary (verify-permit: true). Evaluation: ${d.evaluationId ?? ""}`
     );
-    emitFinancialGovernanceAdvisory(actionType, actor, orgId);
+    emitFinancialGovernanceAdvisory(actionType, actorId, orgId);
     return;
   }
   setDecisionOutputs(d);
@@ -3511,7 +3702,7 @@ async function run() {
       permitToken: d.permitToken ?? "",
       auditHash: d.auditHash,
       action: actionType,
-      actor: `github:${actor}`,
+      actor: actorId,
       environment,
       repository: gh.repository,
       sha: gh.sha,
@@ -3537,7 +3728,7 @@ async function run() {
     buildGateStepSummary({
       outcome: "allow",
       action: actionType,
-      actor: `github:${actor}`,
+      actor: actorId,
       environment,
       targetId,
       runUrl: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
@@ -3569,16 +3760,16 @@ async function run() {
           run_id: gh.run_id,
           run_url: `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`,
           action: actionType,
-          actor: `github:${actor}`
+          actor: actorId
         }
       },
       { info, warning }
     );
   }
-  emitFinancialGovernanceAdvisory(actionType, actor, orgId);
-  await runPostDeployEvidenceBundleStep(apiKey, apiUrl, orgId, actor);
+  emitFinancialGovernanceAdvisory(actionType, actorId, orgId);
+  await runPostDeployEvidenceBundleStep(apiKey, apiUrl, orgId, actorId);
 }
-async function runPostDeployEvidenceBundleStep(apiKey, apiUrl, orgId, actor) {
+async function runPostDeployEvidenceBundleStep(apiKey, apiUrl, orgId, actorId) {
   const bundleInput = getInput("evidence-bundle").toLowerCase();
   const setEmptyBundleOutputs = () => {
     setOutput("evidence-bundle-sha256", "");
@@ -3609,7 +3800,7 @@ async function runPostDeployEvidenceBundleStep(apiKey, apiUrl, orgId, actor) {
     `AtlaSent evidence-bundle: generating ${regime} bundle (${days}-day window) for org ${orgId}`
   );
   const result = await callPostDeployEvidenceBundle(
-    { apiUrl, apiKey, orgId, regime, days, actor: `github:${actor}` },
+    { apiUrl, apiKey, orgId, regime, days, actor: actorId },
     { info, warning }
   );
   setOutput("evidence-bundle-sha256", result.sha256);

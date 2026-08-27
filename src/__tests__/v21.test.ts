@@ -318,6 +318,32 @@ it("verifies terminal allow from wait-for-id with correct permit params", async 
   );
 });
 
+it("preserves the original runtime-derived execution hash after approval", async () => {
+  const hold = {
+    ...decision("hold", "ev-hold"),
+    executionHashExpected: "original-plan-hash",
+  };
+  // Approval status returns a fresh permit but intentionally does not repeat
+  // the plan hash established by the original evaluation.
+  const terminal = { ...decision("allow", "ev-hold", "pt-fresh"), verified: undefined };
+  mockEvaluateMany.mockResolvedValueOnce({ decisions: [hold], batchId: "b1" });
+  mockWait.mockResolvedValueOnce(terminal);
+  mockVerifyPermit.mockResolvedValueOnce({ verified: true, outcome: "verified" });
+
+  await runV21({ ...BASE_ENV, "INPUT_WAIT-FOR-ID": "ev-hold" }, FLAGS);
+
+  expect(mockVerifyPermit).toHaveBeenCalledWith(
+    expect.objectContaining({
+      executionPayloadHash: "original-plan-hash",
+      requiredBindings: ["environment", "payload_hash"],
+    }),
+    expect.objectContaining({
+      permitToken: "pt-fresh",
+      executionHashExpected: "original-plan-hash",
+    }),
+  );
+});
+
 it("sets verified=false when terminal allow has no permitToken", async () => {
   const hold = decision("hold", "ev-hold");
   const terminalNoPermit = { id: "ev-hold", decision: "allow" as const, evaluatedAt: "2026-04-30T00:00:00Z" };

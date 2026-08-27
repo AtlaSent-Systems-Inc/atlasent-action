@@ -954,6 +954,7 @@ async function runV21(env, flags, deps = {}) {
       (d) => d.id === inputs.waitForId && (d.decision === "hold" || d.decision === "escalate")
     );
     if (idx >= 0) {
+      const originalExecutionHash = decisions[idx].executionHashExpected ?? decisions[idx].execution_hash_expected;
       const terminal = await waitForTerminalDecision({
         apiUrl: inputs.apiUrl,
         apiKey: inputs.apiKey,
@@ -964,7 +965,7 @@ async function runV21(env, flags, deps = {}) {
       decisions = [...decisions];
       if (terminal.decision === "allow") {
         const item = items[idx];
-        const runtimeExecutionHash = terminal.executionHashExpected ?? terminal.execution_hash_expected;
+        const runtimeExecutionHash = terminal.executionHashExpected ?? terminal.execution_hash_expected ?? originalExecutionHash;
         const vr = terminal.permitToken ? await (0, import_enforce3.verifyPermit)(
           {
             apiKey: inputs.apiKey,

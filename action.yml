@@ -17,6 +17,9 @@ inputs:
   artifact-digest:
     description: 'SHA-256 digest of the artifact being deployed (e.g. sha256:<image-or-plan-hash>). Sent to evaluate as the canonical top-level execution_payload_hash, which the runtime binds into the permit. Re-presented at verify time as payload_hash — a permit issued for one artifact and presented for another fails with PAYLOAD_MISMATCH. Supply the SAME digest to the gate step and to the verify-permit step at the execution boundary so a workflow cannot evaluate one artifact and execute another.'
     required: false
+  change-plan:
+    description: 'Structured JSON describing the exact operation and revision/artifact about to execute, e.g. {"operation":"deploy","revision":"<git-sha>"}. Sent as the top-level change_plan field. Required by mandatory change-control actions such as production.deploy; the runtime derives the execution binding from it, so do not substitute artifact-digest for those actions.'
+    required: false
   verify-permit:
     description: 'Set "true" to run VERIFY-ONLY mode: re-verify an existing permit at the execution boundary (immediately before the protected step), independent of the gate that issued it. Requires permit-token; also pass action, actor, environment, and artifact-digest so the runtime re-binds the execution context. Fails closed on any missing / modified / expired / replayed / denied / context-mismatched permit. Outputs verified / verify-outcome / verify-error-code.'
     required: false

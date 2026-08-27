@@ -46,6 +46,7 @@ form is `AtlaSent-Systems-Inc/atlasent-action@v1`.
   with:
     action: production.deploy
     target-id: ${{ github.repository }}
+    change-plan: '{"operation":"deploy","revision":"${{ github.sha }}"}'
 
 - name: Deploy
   if: steps.gate.outputs.verified == 'true'
@@ -266,6 +267,7 @@ snapshot merely to force a policy match.
 | `context` | Additional application context; verified/derived GitHub facts win on collision. |
 | `approvals-from` | `pr-reviews` (default) or `none`. |
 | `artifact-digest` | SHA-256 artifact/execution binding. |
+| `change-plan` | Structured `{ operation, revision? or artifact_ref? }` JSON. Required by mandatory change-control actions such as `production.deploy`; sent top-level so the runtime derives the execution binding. |
 | `mode` | `enforce` (default) or `evaluate-only`. |
 | `wait-for-approval` | Wait for an authorized human decision after this single evaluation returns `hold` or `escalate`; default `false`. |
 | `max-wait-minutes` | Approval-wait limit for `wait-for-approval`; default 30. |

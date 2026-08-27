@@ -1394,6 +1394,49 @@ export async function run(): Promise<void> {
   const actor = getInput("actor") || "unknown";
   const targetId = getInput("target-id") || undefined;
   const explicitEnv = getInput("environment");
+  const rawChangePlan = getInput("change-plan");
+  let changePlan: EnforceConfig["change_plan"];
+  if (rawChangePlan) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawChangePlan);
+    } catch {
+      setOutput("decision", "error");
+      setOutput("verified", "false");
+      setFailed(
+        "AtlaSent Gate: change-plan must be valid JSON with operation and revision or artifact_ref",
+      );
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      setOutput("decision", "error");
+      setOutput("verified", "false");
+      setFailed(
+        "AtlaSent Gate: change-plan must be a JSON object with operation and revision or artifact_ref",
+      );
+    }
+    const candidate = parsed as Record<string, unknown>;
+    const operation = typeof candidate["operation"] === "string"
+      ? candidate["operation"].trim()
+      : "";
+    const revision = typeof candidate["revision"] === "string"
+      ? candidate["revision"].trim()
+      : "";
+    const artifactRef = typeof candidate["artifact_ref"] === "string"
+      ? candidate["artifact_ref"].trim()
+      : "";
+    if (!operation || (!revision && !artifactRef)) {
+      setOutput("decision", "error");
+      setOutput("verified", "false");
+      setFailed(
+        "AtlaSent Gate: change-plan requires a non-empty operation and at least one of revision or artifact_ref",
+      );
+    }
+    changePlan = {
+      operation,
+      ...(revision ? { revision } : {}),
+      ...(artifactRef ? { artifact_ref: artifactRef } : {}),
+    };
+  }
   let extraContext: Record<string, unknown> = {};
   try {
     extraContext = JSON.parse(getInput("context") || "{}");
@@ -1464,6 +1507,7 @@ export async function run(): Promise<void> {
     actor: `github:${actor}`,
     environment,
     targetId,
+    change_plan: changePlan,
     // Canonical artifact binding — the runtime binds this into the permit and
     // re-checks it at verify time (artifact-substitution defense).
     executionPayloadHash: artifactDigest,

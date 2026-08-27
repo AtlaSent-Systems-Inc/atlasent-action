@@ -164,6 +164,8 @@ var require_dist = __commonJS({
       const snap = config.state_snapshot ?? contextSnapshot;
       if (snap != null)
         payload["state_snapshot"] = snap;
+      if (config.change_plan != null)
+        payload["change_plan"] = config.change_plan;
       if (config.executionPayloadHash != null) {
         payload["execution_payload_hash"] = config.executionPayloadHash;
       }
@@ -3246,6 +3248,43 @@ async function run() {
   const actor = getInput("actor") || "unknown";
   const targetId = getInput("target-id") || void 0;
   const explicitEnv = getInput("environment");
+  const rawChangePlan = getInput("change-plan");
+  let changePlan;
+  if (rawChangePlan) {
+    let parsed;
+    try {
+      parsed = JSON.parse(rawChangePlan);
+    } catch {
+      setOutput("decision", "error");
+      setOutput("verified", "false");
+      setFailed(
+        "AtlaSent Gate: change-plan must be valid JSON with operation and revision or artifact_ref"
+      );
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      setOutput("decision", "error");
+      setOutput("verified", "false");
+      setFailed(
+        "AtlaSent Gate: change-plan must be a JSON object with operation and revision or artifact_ref"
+      );
+    }
+    const candidate = parsed;
+    const operation = typeof candidate["operation"] === "string" ? candidate["operation"].trim() : "";
+    const revision = typeof candidate["revision"] === "string" ? candidate["revision"].trim() : "";
+    const artifactRef = typeof candidate["artifact_ref"] === "string" ? candidate["artifact_ref"].trim() : "";
+    if (!operation || !revision && !artifactRef) {
+      setOutput("decision", "error");
+      setOutput("verified", "false");
+      setFailed(
+        "AtlaSent Gate: change-plan requires a non-empty operation and at least one of revision or artifact_ref"
+      );
+    }
+    changePlan = {
+      operation,
+      ...revision ? { revision } : {},
+      ...artifactRef ? { artifact_ref: artifactRef } : {}
+    };
+  }
   let extraContext = {};
   try {
     extraContext = JSON.parse(getInput("context") || "{}");
@@ -3284,6 +3323,7 @@ async function run() {
     actor: `github:${actor}`,
     environment,
     targetId,
+    change_plan: changePlan,
     // Canonical artifact binding — the runtime binds this into the permit and
     // re-checks it at verify time (artifact-substitution defense).
     executionPayloadHash: artifactDigest,

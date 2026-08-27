@@ -91,6 +91,18 @@ describe("evaluate", () => {
     expect((body["context"] as Record<string, unknown>)["target_id"]).toBe("svc-prod");
   });
 
+  it("forwards change_plan as a top-level field, never presentation context", async () => {
+    mockResponse(200, { decision: "allow" });
+    const changePlan = {
+      operation: "deploy",
+      revision: "a".repeat(40),
+    };
+    await evaluate({ ...BASE_CONFIG, change_plan: changePlan });
+    const body = JSON.parse(mockPost.mock.calls[0][1] as string) as Record<string, unknown>;
+    expect(body["change_plan"]).toEqual(changePlan);
+    expect((body["context"] as Record<string, unknown>)["change_plan"]).toBeUndefined();
+  });
+
   it("throws EnforceError(evaluate) on network error", async () => {
     mockPost.mockRejectedValueOnce(new Error("ECONNREFUSED"));
     await expect(evaluate(BASE_CONFIG)).rejects.toSatisfy(

@@ -206,6 +206,50 @@ describe("missing required inputs", () => {
 // ---------------------------------------------------------------------------
 
 describe("allow response", () => {
+  it("parses and forwards an exact structured change-plan", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("change-plan", JSON.stringify({
+      operation: "deploy",
+      revision: " c08d2cfc86bbbfef17b79c8902f502eac0836e56 ",
+    }));
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    const calls = (mockEnforce as unknown as { mock: { calls: Array<Array<unknown>> } }).mock.calls;
+    const config = calls[0][0] as { change_plan?: Record<string, unknown> };
+    expect(config.change_plan).toEqual({
+      operation: "deploy",
+      revision: "c08d2cfc86bbbfef17b79c8902f502eac0836e56",
+    });
+  });
+
+  it("fails closed before evaluate when change-plan lacks a revision or artifact_ref", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("change-plan", JSON.stringify({ operation: "deploy" }));
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    expect(mockEnforce).not.toHaveBeenCalled();
+    expect(getConsoleLogs().some((l) => l.includes("at least one of revision or artifact_ref"))).toBe(true);
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("error");
+    expect(outputs["verified"]).toBe("false");
+  });
+
+  it("fails closed before evaluate when change-plan is malformed JSON", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("change-plan", "{not-json");
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    expect(mockEnforce).not.toHaveBeenCalled();
+    expect(getConsoleLogs().some((l) => l.includes("change-plan must be valid JSON"))).toBe(true);
+  });
+
   it("sets decision=allow output and does NOT call process.exit", async () => {
     setApiKey();
     setInput("action", "production.deploy");

@@ -35,6 +35,16 @@ export interface EnforceConfig {
         payload?: unknown;
     };
     /**
+     * Structured execution coordinates for mandatory change-control actions.
+     * Forwarded as the top-level `change_plan` evaluate field so the runtime,
+     * not the caller, derives the canonical execution hash.
+     */
+    change_plan?: {
+        operation: string;
+        revision?: string;
+        artifact_ref?: string;
+    };
+    /**
      * SHA-256 digest of the artifact being authorized (canonical input, NOT
      * presentation metadata). Sent to evaluate as the top-level
      * `execution_payload_hash`, which the runtime binds into the permit

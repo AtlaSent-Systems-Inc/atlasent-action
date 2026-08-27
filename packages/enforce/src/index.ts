@@ -45,6 +45,16 @@ export interface EnforceConfig {
     payload?: unknown;
   };
   /**
+   * Structured execution coordinates for mandatory change-control actions.
+   * Forwarded as the top-level `change_plan` evaluate field so the runtime,
+   * not the caller, derives the canonical execution hash.
+   */
+  change_plan?: {
+    operation: string;
+    revision?: string;
+    artifact_ref?: string;
+  };
+  /**
    * SHA-256 digest of the artifact being authorized (canonical input, NOT
    * presentation metadata). Sent to evaluate as the top-level
    * `execution_payload_hash`, which the runtime binds into the permit
@@ -177,6 +187,7 @@ export async function evaluate(config: EnforceConfig): Promise<Decision> {
   // state_snapshot is a top-level body field (EvaluateBody.state_snapshot), not inside context.
   const snap = config.state_snapshot ?? contextSnapshot;
   if (snap != null) payload["state_snapshot"] = snap;
+  if (config.change_plan != null) payload["change_plan"] = config.change_plan;
   // Artifact digest is a canonical top-level input — the runtime binds it into
   // the permit (execution_hash_expected). Never buried in context/presentation.
   if (config.executionPayloadHash != null) {

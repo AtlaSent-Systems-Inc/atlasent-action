@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildManagementDecisionBrief,
   ChangeBriefError,
   computeGithubPlanDigest,
   fetchChangedFiles,
@@ -270,6 +271,7 @@ describe("fetchCheckRuns", () => {
     const result = await fetchCheckRuns({ repository: "acme/api", ref: "bbb", token: "t", fetchImpl: fn });
     expect(result.ok).toBe(true);
     expect(result.checks).toEqual([{ name: "build", status: "completed", conclusion: "success", html_url: null }]);
+    expect(result.truncated).toBe(false);
   });
 
   it("follows pagination across pages instead of silently dropping check runs beyond page 1", async () => {
@@ -287,6 +289,38 @@ describe("fetchCheckRuns", () => {
     expect(calls).toBe(2); // page 1 (100, full) -> page 2 (1, short) -> stop
     expect(result.checks).toHaveLength(101);
     expect(result.checks.at(-1)?.name).toBe("page2-check");
+    expect(result.truncated).toBe(false);
+  });
+
+  it("discloses truncation when the bounded reader receives ten full pages", async () => {
+    let calls = 0;
+    const fn = (async () => {
+      calls++;
+      const body = {
+        check_runs: Array.from({ length: 100 }, (_, i) => ({
+          name: `page-${calls}-check-${i}`,
+          status: "completed",
+          conclusion: "success",
+        })),
+      };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const result = await fetchCheckRuns({
+      repository: "acme/api",
+      ref: "bbb",
+      token: "t",
+      fetchImpl: fn,
+    });
+
+    expect(calls).toBe(10);
+    expect(result.checks).toHaveLength(1000);
+    expect(result.truncated).toBe(true);
   });
 });
 
@@ -375,6 +409,9 @@ describe("runChangeBrief", () => {
     expect(result.brief.brief_id).toBe("cb_test");
     expect(result.facts.changed_files).toHaveLength(1);
     expect(result.canonicalPlanDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(result.collection.status).toBe("complete");
+    expect(result.collection.sources.comparison.state).toBe("complete");
+    expect(result.collection.sources.checks.state).toBe("complete");
     expect(calls.some((u) => u.includes("/v1-change-brief"))).toBe(true);
     // The POST body must carry github_change_plan — the seam
     // atlasent-api's handler reads.
@@ -434,8 +471,148 @@ describe("runChangeBrief", () => {
 
     expect(warned).toBe(true);
     expect(result.facts.changed_files).toEqual([]);
+    expect(result.collection.status).toBe("partial");
+    expect(result.collection.sources.comparison.state).toBe("unavailable");
     // No /compare/ call should have been made without a base SHA.
     expect(calls.some((u) => u.includes("/compare/"))).toBe(false);
+  });
+});
+
+// ── management projection ───────────────────────────────────────────────
+
+describe("buildManagementDecisionBrief", () => {
+  it("translates sourced analysis into a queue-ready advisory record", async () => {
+    const readyBrief: ChangeBriefResponse = {
+      ...SAMPLE_BRIEF,
+      recommendation: {
+        value: "approve",
+        rationale: "The observed change is ready for management review.",
+      },
+      classification: {
+        value: "review_ready",
+        rationale: "Required preparation evidence is present.",
+      },
+      missing_evidence: [],
+    };
+    const routes = [...githubRoutes(), { match: "/v1-change-brief", body: readyBrief }];
+    const { fn } = makeFetch(routes);
+    const result = await runChangeBrief({
+      apiKey: "k",
+      apiUrl: "https://api.example.com/functions/v1",
+      actionType: "production.deploy",
+      targetSystem: "github",
+      targetId: "acme/api",
+      environment: "production",
+      actorId: "github:octocat",
+      githubToken: "gh-token",
+      repository: "acme/api",
+      eventName: "push",
+      eventPath: "/tmp/event.json",
+      fallbackSha: "b".repeat(40),
+      fallbackRef: "refs/heads/main",
+      readFile: () => JSON.stringify({ before: "a".repeat(40), after: "b".repeat(40) }),
+      fetchImpl: fn,
+    });
+
+    const management = buildManagementDecisionBrief(result);
+    expect(management.schema).toBe("management_decision_brief.v1");
+    expect(management.readiness).toBe("ready_for_review");
+    expect(management.management_summary.automated_analysis.changed_files_observed).toBe(1);
+    expect(management.management_summary.automated_analysis.check_runs_observed).toBe(1);
+    expect(management.evidence_binding.canonical_plan_digest).toBe(result.canonicalPlanDigest);
+    expect(management.authority_boundary).toEqual({
+      advisory_only: true,
+      separate_evaluate_and_permit_required: true,
+    });
+
+    const partialManagement = buildManagementDecisionBrief({
+      ...result,
+      collection: {
+        status: "partial",
+        sources: {
+          comparison: {
+            ...result.collection.sources.comparison,
+            state: "partial",
+            reason: "Additional changed files may exist.",
+          },
+          checks: {
+            ...result.collection.sources.checks,
+            state: "partial",
+            reason: "Additional check runs may exist.",
+          },
+        },
+      },
+    });
+    expect(partialManagement.management_summary.automated_analysis.changed_files_observed).toBe(1);
+    expect(partialManagement.management_summary.automated_analysis.check_runs_observed).toBe(1);
+  });
+
+  it("refuses to present a management-ready brief when source collection is incomplete", async () => {
+    const routes = [
+      { match: "/check-runs", body: { check_runs: [] } },
+      { match: "/v1-change-brief", body: SAMPLE_BRIEF },
+    ];
+    const { fn } = makeFetch(routes);
+    const result = await runChangeBrief({
+      apiKey: "k",
+      apiUrl: "https://api.example.com/functions/v1",
+      actionType: "production.deploy",
+      targetSystem: "github",
+      targetId: "acme/api",
+      environment: "production",
+      actorId: "github:octocat",
+      githubToken: "gh-token",
+      repository: "acme/api",
+      eventName: "workflow_dispatch",
+      fallbackSha: "b".repeat(40),
+      fallbackRef: "refs/heads/main",
+      fetchImpl: fn,
+    });
+
+    const management = buildManagementDecisionBrief(result);
+    expect(management.readiness).toBe("evidence_incomplete");
+    expect(management.management_summary.automated_analysis.changed_files_observed).toBeNull();
+    expect(management.management_summary.automated_analysis.check_runs_observed).toBe(0);
+    expect(management.next_actions.some((item) => item.includes("github_compare"))).toBe(true);
+
+    const summary = renderChangeBriefStepSummary(result);
+    expect(summary).toContain("| Changed files compared | Unknown — source unavailable |");
+    expect(summary).toContain("| GitHub check runs inspected | 0 |");
+    expect(summary).toContain("| Files changed | Unknown — GitHub comparison unavailable |");
+    expect(summary).not.toContain("| Changed files compared | 0 |");
+  });
+
+  it("reports an unavailable check-run read as unknown without erasing an observed diff", async () => {
+    const routes = [
+      githubRoutes()[0],
+      { match: "/check-runs", status: 503, body: { error: "temporarily unavailable" } },
+      { match: "/v1-change-brief", body: SAMPLE_BRIEF },
+    ];
+    const { fn } = makeFetch(routes);
+    const result = await runChangeBrief({
+      apiKey: "k",
+      apiUrl: "https://api.example.com/functions/v1",
+      actionType: "production.deploy",
+      targetSystem: "github",
+      targetId: "acme/api",
+      environment: "production",
+      actorId: "github:octocat",
+      githubToken: "gh-token",
+      repository: "acme/api",
+      eventName: "push",
+      eventPath: "/tmp/event.json",
+      fallbackSha: "b".repeat(40),
+      fallbackRef: "refs/heads/main",
+      readFile: () => JSON.stringify({ before: "a".repeat(40), after: "b".repeat(40) }),
+      fetchImpl: fn,
+    });
+
+    const management = buildManagementDecisionBrief(result);
+    expect(management.management_summary.automated_analysis.changed_files_observed).toBe(1);
+    expect(management.management_summary.automated_analysis.check_runs_observed).toBeNull();
+    expect(renderChangeBriefStepSummary(result)).toContain(
+      "| GitHub check runs inspected | Unknown — source unavailable |",
+    );
   });
 });
 
@@ -463,6 +640,10 @@ describe("renderChangeBriefStepSummary", () => {
       fetchImpl: fn,
     });
     const summary = renderChangeBriefStepSummary(result);
+    expect(summary).toContain("AtlaSent Management Decision Brief");
+    expect(summary).toContain("Work AtlaSent performed automatically");
+    expect(summary).toContain("Source collection integrity");
+    expect(summary).toContain("evidence_incomplete");
     expect(summary).toContain("cb_test");
     expect(summary).toContain("Migration changed.");
     expect(summary).toContain("rollback procedure");

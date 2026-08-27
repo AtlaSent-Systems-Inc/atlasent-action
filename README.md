@@ -449,9 +449,27 @@ artifact, per `v1-change-brief`'s own contract. A separate evaluate/verify
 step (the default `action:` mode, shown above) remains the actual
 authorization gate; do not gate a deploy on `change-brief-recommendation`.
 
-The job summary this step writes is the complete, sourced record of what was
-found (detected DB migrations, dependency/workflow changes, CI check status —
-explicitly never conflated with "tests passed", rollback readiness). The
+The job summary is rendered as a management decision brief rather than a raw
+fact dump. It translates the runtime's rationale and impact analysis, states
+the decision being requested, lists precise next actions, and shows the work
+AtlaSent performed automatically (changed files compared, check runs
+inspected, material differences found, and evidence gaps routed). Every brief
+retains the exact repository/base/head/digest binding. A failed, capped, or
+otherwise incomplete GitHub source read is `evidence_incomplete`; an empty
+read is never presented as an observed zero.
+
+The machine-readable `change-brief-decision-brief` output carries the same
+`management_decision_brief.v1` projection. Supporting routing outputs are
+`change-brief-decision-readiness` (`ready_for_review` or
+`evidence_incomplete`), `change-brief-source-collection` (`complete` or
+`partial`), and `change-brief-blocking-evidence-count`. All are advisory:
+they help populate a management queue, but they must never be used to gate a
+deployment. Only the separate evaluate/permit/verify path can authorize
+execution.
+
+The summary remains the complete, sourced record of what was found (detected
+DB migrations, dependency/workflow changes, CI check status — explicitly
+never conflated with "tests passed", rollback readiness). The
 `change-brief-console-url` output links into the AtlaSent console review
 screen, but that page does not yet carry this run's GitHub-sourced facts (a
 known gap in the console's request shape) — treat the job summary as

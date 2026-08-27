@@ -1,0 +1,39 @@
+trigger: none
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: self
+
+  - task: NodeTool@0
+    displayName: Use Node 20
+    inputs:
+      versionSpec: 20.x
+
+  - script: npm ci --prefix examples/azure-devops-entra-gate
+    displayName: Install pinned gate dependency
+
+  - task: AzureCLI@2
+    displayName: Validate AtlaSent Entra workload gate (no deploy)
+    inputs:
+      azureSubscription: $(ATLASENT_AZURE_SERVICE_CONNECTION)
+      scriptType: bash
+      scriptLocation: inlineScript
+      addSpnToEnvironment: false
+      inlineScript: |
+        set -euo pipefail
+        token="$(az account get-access-token \
+          --scope "$(ATLASENT_ENTRA_SCOPE)" \
+          --query accessToken \
+          --output tsv)"
+        test -n "$token"
+        export ATLASENT_ENTRA_TOKEN="$token"
+        node examples/azure-devops-entra-gate/validate.mjs
+    env:
+      ATLASENT_API_KEY: $(ATLASENT_API_KEY)
+      ATLASENT_BASE_URL: $(ATLASENT_BASE_URL)
+      ATLASENT_ACTION: $(ATLASENT_ACTION)
+      ATLASENT_ENVIRONMENT: $(ATLASENT_ENVIRONMENT)
+      ATLASENT_TARGET_ID: $(ATLASENT_TARGET_ID)

@@ -25,6 +25,7 @@ jobs:
 
       - name: Syntax and unit tests
         run: |
+          npm ci --ignore-scripts --prefix examples/azure-devops-entra-gate
           node --check examples/azure-devops-entra-gate/lib.mjs
           node --check examples/azure-devops-entra-gate/validate.mjs
           node --test examples/azure-devops-entra-gate/tests/*.node.mjs

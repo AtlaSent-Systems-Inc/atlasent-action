@@ -1915,12 +1915,22 @@ async function fetchCheckRuns(args) {
       const res = await fetchImpl(url, { headers: ghHeaders2(args.token) });
       if (!res.ok) {
         const text = await res.text().catch(() => "<unreadable>");
-        return { ok: false, checks: [], error: `check-runs failed (${res.status}): ${text.slice(0, 200)}` };
+        return {
+          ok: false,
+          checks: [],
+          truncated: false,
+          error: `check-runs failed (${res.status}): ${text.slice(0, 200)}`
+        };
       }
       const data = await res.json();
       batch = data.check_runs ?? [];
     } catch (err) {
-      return { ok: false, checks: [], error: err instanceof Error ? err.message : String(err) };
+      return {
+        ok: false,
+        checks: [],
+        truncated: false,
+        error: err instanceof Error ? err.message : String(err)
+      };
     }
     if (batch.length === 0)
       break;
@@ -1935,7 +1945,11 @@ async function fetchCheckRuns(args) {
     if (batch.length < CHECK_RUNS_PER_PAGE)
       break;
   }
-  return { ok: true, checks };
+  return {
+    ok: true,
+    checks,
+    truncated: checks.length >= MAX_CHECK_RUN_PAGES * CHECK_RUNS_PER_PAGE
+  };
 }
 var ChangeBriefError = class extends Error {
 };
@@ -1970,6 +1984,11 @@ async function runChangeBrief(opts) {
   let additions_total = 0;
   let deletions_total = 0;
   let compare_url = null;
+  let comparisonCollection = {
+    source: "github_compare",
+    state: "unavailable",
+    reason: "No base revision was available, so no source comparison could be collected."
+  };
   if (resolved.base_sha) {
     const compare = await fetchChangedFiles({
       repository: opts.repository,
@@ -1985,6 +2004,11 @@ async function runChangeBrief(opts) {
       additions_total = compare.additions_total;
       deletions_total = compare.deletions_total;
       compare_url = compare.compare_url;
+      comparisonCollection = {
+        source: "github_compare",
+        state: compare.truncated ? "partial" : "complete",
+        reason: compare.truncated ? `GitHub returned ${COMPARE_FILES_SOFT_CAP}+ changed files; the comparison may omit additional files.` : null
+      };
       log(`AtlaSent change-brief: ${changed_files.length} file(s) changed (+${additions_total}/-${deletions_total}).`);
       if (compare.truncated) {
         warn(
@@ -1992,6 +2016,11 @@ async function runChangeBrief(opts) {
         );
       }
     } else {
+      comparisonCollection = {
+        source: "github_compare",
+        state: "unavailable",
+        reason: compare.error ?? "GitHub comparison could not be collected."
+      };
       warn(`AtlaSent change-brief: could not read the diff (${compare.error}) \u2014 proceeding without it.`);
     }
   }
@@ -2004,7 +2033,27 @@ async function runChangeBrief(opts) {
   });
   if (!checksResult.ok) {
     warn(`AtlaSent change-brief: could not read check runs (${checksResult.error}) \u2014 proceeding without them.`);
+  } else if (checksResult.truncated) {
+    warn(
+      `AtlaSent change-brief: the check-run list reached the bounded read limit (${MAX_CHECK_RUN_PAGES * CHECK_RUNS_PER_PAGE}); additional checks may exist.`
+    );
   }
+  const checksCollection = checksResult.ok ? {
+    source: "github_check_runs",
+    state: checksResult.truncated ? "partial" : "complete",
+    reason: checksResult.truncated ? `The first ${MAX_CHECK_RUN_PAGES * CHECK_RUNS_PER_PAGE} check runs were collected; additional checks may exist.` : null
+  } : {
+    source: "github_check_runs",
+    state: "unavailable",
+    reason: checksResult.error ?? "GitHub check runs could not be collected."
+  };
+  const collection = {
+    status: comparisonCollection.state === "complete" && checksCollection.state === "complete" ? "complete" : "partial",
+    sources: {
+      comparison: comparisonCollection,
+      checks: checksCollection
+    }
+  };
   const facts = {
     repository: opts.repository,
     pull_request_number: resolved.pull_request_number,
@@ -2074,7 +2123,73 @@ async function runChangeBrief(opts) {
   } catch {
     throw new ChangeBriefError("Could not parse JSON response from v1-change-brief");
   }
-  return { facts, canonicalPlanDigest, brief };
+  return { facts, canonicalPlanDigest, brief, collection };
+}
+function buildManagementDecisionBrief(result) {
+  const { brief, facts, canonicalPlanDigest, collection } = result;
+  const blocking = brief.missing_evidence.filter((item) => item.blocking);
+  const reviewItems = brief.missing_evidence.filter((item) => !item.blocking);
+  const evidenceIncomplete = collection.status === "partial" || blocking.length > 0 || brief.classification.value === "incomplete" || brief.recommendation.value === "request_evidence";
+  const nextActions = [];
+  for (const source of Object.values(collection.sources)) {
+    if (source.state !== "complete") {
+      nextActions.push(
+        `Restore or confirm ${source.source}: ${source.reason ?? "source collection is incomplete"}`
+      );
+    }
+  }
+  for (const item of blocking)
+    nextActions.push(item.precise_question);
+  for (const item of reviewItems)
+    nextActions.push(item.precise_question);
+  if (nextActions.length === 0) {
+    nextActions.push(
+      "Review this advisory brief, then use the separate AtlaSent evaluate/permit gate before execution."
+    );
+  }
+  let decisionRequested;
+  if (evidenceIncomplete) {
+    decisionRequested = "Resolve the identified evidence gaps before relying on this brief for a management decision.";
+  } else if (brief.recommendation.value === "deny" || brief.classification.value === "prohibited") {
+    decisionRequested = "Review the reported prohibition; this brief cannot authorize execution or create an exception.";
+  } else if (brief.recommendation.value === "escalate" || brief.classification.value === "exceptional") {
+    decisionRequested = "Decide whether to route a separately authorized exception for this exact change plan.";
+  } else {
+    decisionRequested = "Review the recommendation and, if appropriate, continue to the separate authority gate.";
+  }
+  return {
+    schema: "management_decision_brief.v1",
+    brief_id: brief.brief_id,
+    readiness: evidenceIncomplete ? "evidence_incomplete" : "ready_for_review",
+    recommendation: brief.recommendation,
+    classification: brief.classification,
+    decision_requested: decisionRequested,
+    management_summary: {
+      business_rationale: brief.recommendation.rationale,
+      impact: brief.impact.blast_radius_note ?? "No business-impact narrative was reported; impact remains unknown.",
+      automated_analysis: {
+        changed_files_observed: facts.changed_files.length,
+        check_runs_observed: facts.checks.length,
+        material_differences: brief.material_differences.length,
+        blocking_evidence_gaps: blocking.length,
+        review_items: reviewItems.length,
+        source_collection: collection.status
+      }
+    },
+    next_actions: nextActions,
+    evidence_binding: {
+      repository: facts.repository,
+      base_sha: facts.base_sha,
+      head_sha: facts.head_sha,
+      retrieved_at: facts.retrieved_at,
+      canonical_plan_digest: canonicalPlanDigest,
+      source_collection: collection.sources
+    },
+    authority_boundary: {
+      advisory_only: true,
+      separate_evaluate_and_permit_required: true
+    }
+  };
 }
 function findingLine(label, finding) {
   if (!finding)
@@ -2090,12 +2205,35 @@ var SIGNIFICANCE_EMOJI = {
   informational: "\u26AA"
 };
 function renderChangeBriefStepSummary(result) {
-  const { brief, facts, canonicalPlanDigest } = result;
+  const { brief, facts, canonicalPlanDigest, collection } = result;
+  const management = buildManagementDecisionBrief(result);
   const lines = [
     "",
-    "## \u{1F4CB} AtlaSent Change Brief",
+    "## \u{1F4CB} AtlaSent Management Decision Brief",
+    "",
+    `**Decision readiness:** \`${management.readiness}\``,
+    "",
+    `**Decision requested:** ${management.decision_requested}`,
     "",
     `**Recommendation:** \`${brief.recommendation.value}\` \u2014 ${brief.recommendation.rationale}`,
+    "",
+    "### Business translation",
+    "",
+    `- **Why this matters:** ${management.management_summary.business_rationale}`,
+    `- **Potential impact:** ${management.management_summary.impact}`,
+    "",
+    "### Work AtlaSent performed automatically",
+    "",
+    "| Analysis | Observed result |",
+    "|---|---|",
+    `| Source collection | \`${management.management_summary.automated_analysis.source_collection}\` |`,
+    `| Changed files compared | ${management.management_summary.automated_analysis.changed_files_observed} |`,
+    `| GitHub check runs inspected | ${management.management_summary.automated_analysis.check_runs_observed} |`,
+    `| Material differences identified | ${management.management_summary.automated_analysis.material_differences} |`,
+    `| Blocking evidence gaps routed | ${management.management_summary.automated_analysis.blocking_evidence_gaps} |`,
+    `| Additional review items | ${management.management_summary.automated_analysis.review_items} |`,
+    "",
+    "### Evidence binding",
     "",
     `| Field | Value |`,
     `|---|---|`,
@@ -2107,6 +2245,15 @@ function renderChangeBriefStepSummary(result) {
     `| Canonical plan digest | \`${canonicalPlanDigest}\` |`,
     `| Baseline comparison | ${brief.baseline.comparison_possible ? "\u2705 possible" : "\u26AA not possible"} |`
   ];
+  lines.push(
+    "",
+    "### Source collection integrity",
+    "",
+    "| Source | Status | Disclosure |",
+    "|---|---|---|",
+    `| GitHub comparison | \`${collection.sources.comparison.state}\` | ${collection.sources.comparison.reason ?? "Collected without a known gap."} |`,
+    `| GitHub check runs | \`${collection.sources.checks.state}\` | ${collection.sources.checks.reason ?? "Collected without a known gap."} |`
+  );
   if (brief.material_differences.length > 0) {
     lines.push("", "### Material differences from baseline", "");
     for (const d of brief.material_differences) {
@@ -2125,6 +2272,9 @@ function renderChangeBriefStepSummary(result) {
     for (const m of nonBlockingMissing)
       lines.push(`- **${m.kind}**: ${m.precise_question}`);
   }
+  lines.push("", "### Recommended next actions", "");
+  for (const action of management.next_actions)
+    lines.push(`- ${action}`);
   lines.push(
     "",
     "### Impact",
@@ -2689,6 +2839,10 @@ async function runChangeBriefStep(apiKey, apiUrl) {
     setOutput("change-brief-material-differences-count", "");
     setOutput("change-brief-canonical-plan-digest", "");
     setOutput("change-brief-console-url", "");
+    setOutput("change-brief-decision-readiness", "");
+    setOutput("change-brief-source-collection", "");
+    setOutput("change-brief-blocking-evidence-count", "");
+    setOutput("change-brief-decision-brief", "");
   };
   let result;
   try {
@@ -2725,12 +2879,20 @@ async function runChangeBriefStep(apiKey, apiUrl) {
     setFailed(`AtlaSent Change Brief: ${message}`);
     return;
   }
-  const { brief, canonicalPlanDigest } = result;
+  const { brief, canonicalPlanDigest, collection } = result;
+  const managementBrief = buildManagementDecisionBrief(result);
   setOutput("change-brief-id", brief.brief_id);
   setOutput("change-brief-recommendation", brief.recommendation.value);
   setOutput("change-brief-classification", brief.classification.value);
   setOutput("change-brief-material-differences-count", String(brief.material_differences.length));
   setOutput("change-brief-canonical-plan-digest", canonicalPlanDigest);
+  setOutput("change-brief-decision-readiness", managementBrief.readiness);
+  setOutput("change-brief-source-collection", collection.status);
+  setOutput(
+    "change-brief-blocking-evidence-count",
+    String(managementBrief.management_summary.automated_analysis.blocking_evidence_gaps)
+  );
+  setOutput("change-brief-decision-brief", JSON.stringify(managementBrief));
   const consoleUrl = `${consoleBaseUrl}/change-brief?` + new URLSearchParams({
     action_type: actionType,
     target_system: targetSystem,
@@ -2743,6 +2905,8 @@ async function runChangeBriefStep(apiKey, apiUrl) {
   info(`  Brief ID:             ${brief.brief_id}`);
   info(`  Recommendation:       ${brief.recommendation.value}`);
   info(`  Classification:       ${brief.classification.value}`);
+  info(`  Decision readiness:   ${managementBrief.readiness}`);
+  info(`  Source collection:    ${collection.status}`);
   info(`  Material differences: ${brief.material_differences.length}`);
   const summary = renderChangeBriefStepSummary(result) + `
 [Continue in the AtlaSent console](${consoleUrl}) \u2014 note: that page does not yet carry this run's GitHub-sourced facts (see this action's README); the table above is the full picture.

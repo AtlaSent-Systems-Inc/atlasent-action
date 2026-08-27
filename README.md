@@ -37,23 +37,53 @@ form is `AtlaSent-Systems-Inc/atlasent-action@v1`.
 ## Quick start
 
 ```yaml
-- name: Authorization gate
-  id: gate
-  uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
-  env:
-    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
-    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
-  with:
-    action: production.deploy
-    target-id: ${{ github.repository }}
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Authorization gate
+        id: gate
+        uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+        with:
+          action: production.deploy
+          environment: production
+          target-id: ${{ github.repository }}
 
-- name: Deploy
-  if: steps.gate.outputs.verified == 'true'
-  run: ./deploy.sh
+      - name: Deploy
+        if: steps.gate.outputs.verified == 'true'
+        run: ./deploy.sh
 ```
 
 **Gate on `verified`, not on `decision`.** `verified=true` means the action was
 allowed and the server successfully verified the single-use permit.
+
+## Verified GitHub workload actor
+
+`production.deploy` never authorizes the caller-supplied `actor` string. The
+Action requests the job's GitHub OIDC token (audience
+`atlasent:actor_identity.v1`) and sends it to the runtime-owned identity broker.
+The broker verifies GitHub's signature and exact enrolled repository, workflow,
+ref, GitHub Environment, AtlaSent environment, tenant, and action before it
+mints `actor_identity.v1`. Missing OIDC permission or any binding mismatch
+blocks the step before evaluation.
+
+Each production deploy job therefore needs:
+
+- `permissions: id-token: write`
+- a GitHub `environment:` matching its enrolled workload binding
+- an `ATLASENT_API_KEY` carrying `evaluate:write`, `verify:execute`, and
+  `idp_broker:mint`
+
+The verified workload is the authorizing actor. The human who dispatched the
+run is retained separately as `context.triggering_actor` for provenance; it is
+not allowed to impersonate the workload.
 
 ## Customer integration starters
 
@@ -166,6 +196,10 @@ jobs:
   authorize:
     needs: build
     runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       permit: ${{ steps.gate.outputs.permit-token }}
     steps:
@@ -183,6 +217,10 @@ jobs:
   deploy:
     needs: [build, authorize]
     runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:

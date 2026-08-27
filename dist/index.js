@@ -729,6 +729,7 @@ async function emitEvidenceEvent(cfg, event, log = console) {
 }
 
 // src/workloadIdentity.ts
+var import_node_crypto = require("node:crypto");
 var GITHUB_ACTIONS_OIDC_AUDIENCE = "atlasent:actor_identity.v1";
 var WorkloadIdentityError = class extends Error {
   constructor(message) {
@@ -745,6 +746,19 @@ function responseDetail(body) {
   } catch {
   }
   return body.trim().slice(0, 300) || "empty response";
+}
+function isMissingBrokerMintScope(status, body) {
+  if (status !== 403)
+    return false;
+  try {
+    const parsed = JSON.parse(body);
+    return parsed["error"] === "insufficient_scope" && typeof parsed["message"] === "string" && parsed["message"].includes("idp_broker:mint");
+  } catch {
+    return false;
+  }
+}
+function apiKeyCredentialReference(apiKey) {
+  return `sha256:${(0, import_node_crypto.createHash)("sha256").update(apiKey).digest("hex").slice(0, 16)}`;
 }
 async function requestGithubOidcToken(deps) {
   const requestUrl = (deps.env["ACTIONS_ID_TOKEN_REQUEST_URL"] ?? "").trim();
@@ -826,8 +840,9 @@ async function mintGithubActionsActorIdentity(args, deps = {}) {
   }
   const body = await response.text();
   if (!response.ok) {
+    const remediation = isMissingBrokerMintScope(response.status, body) ? ` Credential reference ${apiKeyCredentialReference(args.apiKey)}; an operator can match it to the first 16 characters of api_keys.key_hash and grant only idp_broker:mint.` : "";
     throw new WorkloadIdentityError(
-      `AtlaSent workload identity broker rejected this job (HTTP ${response.status}): ${responseDetail(body)}`
+      `AtlaSent workload identity broker rejected this job (HTTP ${response.status}): ${responseDetail(body)}.${remediation}`
     );
   }
   let parsed;
@@ -1091,7 +1106,7 @@ function formatSyncDiff(run2) {
 }
 
 // src/governanceAgents.ts
-var import_node_crypto = require("node:crypto");
+var import_node_crypto2 = require("node:crypto");
 var fs2 = __toESM(require("node:fs"));
 var path2 = __toESM(require("node:path"));
 var SEVERITY_RANK = {
@@ -1327,7 +1342,7 @@ function readArtifactFile(artifactPath, workspace, fs_) {
 }
 function hashArtifact(artifact) {
   const canonical = canonicalJson(artifact);
-  return "sha256:" + (0, import_node_crypto.createHash)("sha256").update(canonical).digest("hex");
+  return "sha256:" + (0, import_node_crypto2.createHash)("sha256").update(canonical).digest("hex");
 }
 function canonicalJson(value) {
   if (value === null || typeof value !== "object")
@@ -1520,15 +1535,15 @@ function summarizeOutcome(o) {
 }
 
 // src/evidenceBundle.ts
-var import_node_crypto2 = require("node:crypto");
+var import_node_crypto3 = require("node:crypto");
 function genId() {
-  return (0, import_node_crypto2.randomUUID)();
+  return (0, import_node_crypto3.randomUUID)();
 }
 function hmacSha256(secret, input) {
-  return (0, import_node_crypto2.createHmac)("sha256", secret).update(input, "utf8").digest("hex");
+  return (0, import_node_crypto3.createHmac)("sha256", secret).update(input, "utf8").digest("hex");
 }
 function sha256Hex(input) {
-  return (0, import_node_crypto2.createHash)("sha256").update(input, "utf8").digest("hex");
+  return (0, import_node_crypto3.createHash)("sha256").update(input, "utf8").digest("hex");
 }
 function buildComplianceControls(hasAuditHash) {
   return [

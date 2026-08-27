@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   GITHUB_ACTIONS_OIDC_AUDIENCE,
   WorkloadIdentityError,
+  apiKeyCredentialReference,
   mintGithubActionsActorIdentity,
 } from "../workloadIdentity";
 
@@ -59,6 +60,10 @@ function okFetch() {
 }
 
 describe("mintGithubActionsActorIdentity", () => {
+  it("derives a stable one-way API-key credential reference", () => {
+    expect(apiKeyCredentialReference("ask_live_key")).toBe("sha256:5869162d91fd769f");
+  });
+
   it("exchanges the job OIDC token for a runtime-minted assertion", async () => {
     const fetchImpl = okFetch();
     const masked: string[] = [];
@@ -131,6 +136,45 @@ describe("mintGithubActionsActorIdentity", () => {
         { fetchImpl: fetchImpl as typeof fetch, env: ENV },
       ),
     ).rejects.toThrow(/binding_mismatch/);
+  });
+
+  it("identifies the exact key safely when the broker mint scope is missing", async () => {
+    const apiKey = "ask_test_secret-value-that-must-not-be-logged";
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: "jwt" })))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: "insufficient_scope",
+            message: "Missing permission: idp_broker:mint",
+            status: 403,
+          }),
+          { status: 403 },
+        ),
+      );
+
+    let error: unknown;
+    try {
+      await mintGithubActionsActorIdentity(
+        {
+          apiUrl: "https://runtime.example/functions/v1",
+          apiKey,
+          actionType: "production.deploy",
+          environment: "staging",
+        },
+        { fetchImpl: fetchImpl as typeof fetch, env: ENV },
+      );
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(WorkloadIdentityError);
+    const message = (error as Error).message;
+    expect(message).toContain(apiKeyCredentialReference(apiKey));
+    expect(message).toContain("grant only idp_broker:mint");
+    expect(message).not.toContain(apiKey);
+    expect(message).not.toContain(apiKey.slice(0, 12));
   });
 
   it("rejects a malformed successful broker response", async () => {

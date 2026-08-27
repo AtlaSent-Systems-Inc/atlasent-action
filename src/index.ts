@@ -55,6 +55,7 @@ import { runVqpVerify } from "./vqpVerify";
 import { resolveApprovals, type ApprovalEvidence } from "./approvals";
 import { buildGateStepSummary, type GateOutcome } from "./stepSummary";
 import {
+  buildManagementDecisionBrief,
   ChangeBriefError,
   renderChangeBriefStepSummary,
   runChangeBrief,
@@ -921,6 +922,10 @@ async function runChangeBriefStep(apiKey: string, apiUrl: string): Promise<void>
     setOutput("change-brief-material-differences-count", "");
     setOutput("change-brief-canonical-plan-digest", "");
     setOutput("change-brief-console-url", "");
+    setOutput("change-brief-decision-readiness", "");
+    setOutput("change-brief-source-collection", "");
+    setOutput("change-brief-blocking-evidence-count", "");
+    setOutput("change-brief-decision-brief", "");
   };
 
   let result;
@@ -960,13 +965,21 @@ async function runChangeBriefStep(apiKey: string, apiUrl: string): Promise<void>
     return;
   }
 
-  const { brief, canonicalPlanDigest } = result;
+  const { brief, canonicalPlanDigest, collection } = result;
+  const managementBrief = buildManagementDecisionBrief(result);
 
   setOutput("change-brief-id", brief.brief_id);
   setOutput("change-brief-recommendation", brief.recommendation.value);
   setOutput("change-brief-classification", brief.classification.value);
   setOutput("change-brief-material-differences-count", String(brief.material_differences.length));
   setOutput("change-brief-canonical-plan-digest", canonicalPlanDigest);
+  setOutput("change-brief-decision-readiness", managementBrief.readiness);
+  setOutput("change-brief-source-collection", collection.status);
+  setOutput(
+    "change-brief-blocking-evidence-count",
+    String(managementBrief.management_summary.automated_analysis.blocking_evidence_gaps),
+  );
+  setOutput("change-brief-decision-brief", JSON.stringify(managementBrief));
 
   // NOTE: this deep link does NOT carry `github_change_plan` — the console's
   // /change-brief route builds its request from URL query params only, and a
@@ -991,6 +1004,8 @@ async function runChangeBriefStep(apiKey: string, apiUrl: string): Promise<void>
   info(`  Brief ID:             ${brief.brief_id}`);
   info(`  Recommendation:       ${brief.recommendation.value}`);
   info(`  Classification:       ${brief.classification.value}`);
+  info(`  Decision readiness:   ${managementBrief.readiness}`);
+  info(`  Source collection:    ${collection.status}`);
   info(`  Material differences: ${brief.material_differences.length}`);
 
   const summary =

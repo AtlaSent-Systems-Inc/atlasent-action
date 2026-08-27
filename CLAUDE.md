@@ -25,7 +25,7 @@ The action supports several mutually exclusive modes, checked in this priority o
 | **Policy sync** | `policy-sync: "true"` | Reads a JSON bundle file and posts it to `v1-policy-sync`; outputs `sync-status` / `sync-diff` / `sync-summary` |
 | **Release-mode** | `release-mode: "register-and-verify"` | Registers a release candidate and drives two verification probes against the control-plane |
 | **Governance agents** | `governance-agents:` set | Runs advisory governance-agent slugs and emits `governance-findings` / `governance-highest-severity` |
-| **Change Brief** | `change-brief: "true"` | Gathers this run's real GitHub/CI facts (base/head SHA, changed files, check-run conclusions) and calls `v1-change-brief` — a preparation artifact for human review, not an authorization decision. Outputs `change-brief-id` / `change-brief-recommendation` / `change-brief-classification` / `change-brief-material-differences-count` / `change-brief-canonical-plan-digest` / `change-brief-console-url` |
+| **Change Brief** | `change-brief: "true"` | Gathers this run's real GitHub/CI facts, calls `v1-change-brief`, and renders an evidence-bound `management_decision_brief.v1` projection. Source-read gaps are disclosed as `evidence_incomplete`; the projection remains advisory and never authorizes execution. |
 | **VQP verify** | `vqp-snapshot-id:` set | Re-derives a VQP snapshot and audits hash/verdict drift |
 | **Trajectory verify** | `trajectory-verify: "true"` | Calls `v1/trajectory-verify` to check the current CI step against an authorized trajectory |
 
@@ -66,7 +66,7 @@ Required secrets (set in repository or org secrets):
 | `ATLASENT_API_KEY` | API key scoped to at least `evaluate:write` + `verify:execute` |
 | `ATLASENT_BASE_URL` | Supabase project URL, e.g. `https://<ref>.supabase.co/functions/v1` |
 
-Key action inputs (see `action.yml` for the full list of 71 inputs / 48 outputs):
+Key action inputs (see `action.yml` for the full list of 71 inputs / 53 outputs):
 
 | Input | Default | Description |
 |---|---|---|

@@ -533,8 +533,10 @@ export interface ManagementDecisionBrief {
     business_rationale: string;
     impact: string;
     automated_analysis: {
-      changed_files_observed: number;
-      check_runs_observed: number;
+      /** Null means the comparison source could not be read; zero means it was read and contained no files. */
+      changed_files_observed: number | null;
+      /** Null means the check-run source could not be read; zero means it was read and contained no runs. */
+      check_runs_observed: number | null;
       material_differences: number;
       blocking_evidence_gaps: number;
       review_items: number;
@@ -835,8 +837,10 @@ export function buildManagementDecisionBrief(
         brief.impact.blast_radius_note ??
         "No business-impact narrative was reported; impact remains unknown.",
       automated_analysis: {
-        changed_files_observed: facts.changed_files.length,
-        check_runs_observed: facts.checks.length,
+        changed_files_observed:
+          collection.sources.comparison.state === "unavailable" ? null : facts.changed_files.length,
+        check_runs_observed:
+          collection.sources.checks.state === "unavailable" ? null : facts.checks.length,
         material_differences: brief.material_differences.length,
         blocking_evidence_gaps: blocking.length,
         review_items: reviewItems.length,
@@ -873,9 +877,18 @@ const SIGNIFICANCE_EMOJI: Record<string, string> = {
   informational: "⚪",
 };
 
+function renderObservedCount(value: number | null): string {
+  return value === null ? "Unknown — source unavailable" : String(value);
+}
+
 export function renderChangeBriefStepSummary(result: RunChangeBriefResult): string {
   const { brief, facts, canonicalPlanDigest, collection } = result;
   const management = buildManagementDecisionBrief(result);
+  const changedFilesObserved = management.management_summary.automated_analysis.changed_files_observed;
+  const changedFilesSummary =
+    changedFilesObserved === null
+      ? "Unknown — GitHub comparison unavailable"
+      : `${changedFilesObserved} (+${facts.additions_total}/-${facts.deletions_total})`;
   const lines: string[] = [
     "",
     "## 📋 AtlaSent Management Decision Brief",
@@ -896,8 +909,8 @@ export function renderChangeBriefStepSummary(result: RunChangeBriefResult): stri
     "| Analysis | Observed result |",
     "|---|---|",
     `| Source collection | \`${management.management_summary.automated_analysis.source_collection}\` |`,
-    `| Changed files compared | ${management.management_summary.automated_analysis.changed_files_observed} |`,
-    `| GitHub check runs inspected | ${management.management_summary.automated_analysis.check_runs_observed} |`,
+    `| Changed files compared | ${renderObservedCount(management.management_summary.automated_analysis.changed_files_observed)} |`,
+    `| GitHub check runs inspected | ${renderObservedCount(management.management_summary.automated_analysis.check_runs_observed)} |`,
     `| Material differences identified | ${management.management_summary.automated_analysis.material_differences} |`,
     `| Blocking evidence gaps routed | ${management.management_summary.automated_analysis.blocking_evidence_gaps} |`,
     `| Additional review items | ${management.management_summary.automated_analysis.review_items} |`,
@@ -910,7 +923,7 @@ export function renderChangeBriefStepSummary(result: RunChangeBriefResult): stri
     `| Classification | \`${brief.classification.value}\` |`,
     `| Repository | \`${facts.repository}\` |`,
     `| Base → Head | \`${facts.base_sha.slice(0, 8)}\` → \`${facts.head_sha.slice(0, 8)}\` |`,
-    `| Files changed | ${facts.changed_files.length} (+${facts.additions_total}/-${facts.deletions_total}) |`,
+    `| Files changed | ${changedFilesSummary} |`,
     `| Canonical plan digest | \`${canonicalPlanDigest}\` |`,
     `| Baseline comparison | ${brief.baseline.comparison_possible ? "✅ possible" : "⚪ not possible"} |`,
   ];

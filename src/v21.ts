@@ -192,6 +192,13 @@ export async function runV21(
         (d.decision === "hold" || d.decision === "escalate"),
     );
     if (idx >= 0) {
+      // The approval-status endpoint returns the fresh permit but does not
+      // repeat the execution hash derived during the original evaluation.
+      // Preserve that immutable binding across hold/escalate → allow so the
+      // fresh permit is still verified against the exact approved plan.
+      const originalExecutionHash =
+        decisions[idx].executionHashExpected ??
+        decisions[idx].execution_hash_expected;
       const terminal = await waitForTerminalDecision({
         apiUrl: inputs.apiUrl,
         apiKey: inputs.apiKey,
@@ -205,7 +212,9 @@ export async function runV21(
         // Uses @atlasent/enforce's canonical verifyPermit() implementation.
         const item = items[idx];
         const runtimeExecutionHash =
-          terminal.executionHashExpected ?? terminal.execution_hash_expected;
+          terminal.executionHashExpected ??
+          terminal.execution_hash_expected ??
+          originalExecutionHash;
         const vr = terminal.permitToken
           ? await verifyPermit(
               {

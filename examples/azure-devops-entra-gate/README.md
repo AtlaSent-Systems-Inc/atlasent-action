@@ -46,3 +46,19 @@ token or the AtlaSent API key.
 
 The eventual customer rollout order remains runtime → consumer → batch after
 human review. This draft does not merge, deploy, enable, enroll, or dispatch.
+
+## Batch validation
+
+`azure-pipelines-batch.yml` is the stacked no-deploy batch variant. Set
+`ATLASENT_EVALUATIONS_JSON` to an array of 2–100 items containing
+`action_type`, `environment`, and optional `target_id`,
+`execution_payload_hash`, and `context`. The client discards caller-supplied
+`actor_id` or `actor_identity` and binds the one broker-minted assertion to
+every item.
+
+The batch validator requires an exact batch ID, ordered one-for-one results,
+`partial=false`, an allow decision for every item, and successful permit
+verification under each item's own environment, target, and payload digest.
+It contains no protected command. `ATLASENT_BATCH_ID` is optional for ordinary
+validation and may be fixed to a UUID only for the separately reviewed
+idempotency/replay case.

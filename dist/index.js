@@ -721,7 +721,167 @@ async function emitEvidenceEvent(cfg, event, log = console) {
   }
 }
 
+// src/workloadIdentity.ts
+var GITHUB_ACTIONS_OIDC_AUDIENCE = "atlasent:actor_identity.v1";
+var WorkloadIdentityError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "WorkloadIdentityError";
+  }
+};
+function responseDetail(body) {
+  try {
+    const parsed = JSON.parse(body);
+    const message = parsed["message"] ?? parsed["error_description"] ?? parsed["error"];
+    if (typeof message === "string" && message.trim())
+      return message.trim().slice(0, 300);
+  } catch {
+  }
+  return body.trim().slice(0, 300) || "empty response";
+}
+async function requestGithubOidcToken(deps) {
+  const requestUrl = (deps.env["ACTIONS_ID_TOKEN_REQUEST_URL"] ?? "").trim();
+  const requestToken = (deps.env["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] ?? "").trim();
+  if (!requestUrl || !requestToken) {
+    throw new WorkloadIdentityError(
+      "GitHub OIDC is unavailable. Grant this job `permissions: id-token: write`; the production.deploy gate will not fall back to a caller-supplied actor."
+    );
+  }
+  deps.mask?.(requestToken);
+  const url = new URL(requestUrl);
+  url.searchParams.set("audience", GITHUB_ACTIONS_OIDC_AUDIENCE);
+  let response;
+  try {
+    response = await deps.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${requestToken}`,
+        Accept: "application/json"
+      }
+    });
+  } catch (error) {
+    throw new WorkloadIdentityError(
+      `Could not obtain the GitHub OIDC token: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  const body = await response.text();
+  if (!response.ok) {
+    throw new WorkloadIdentityError(
+      `GitHub OIDC token request failed (HTTP ${response.status}): ${responseDetail(body)}`
+    );
+  }
+  let token = "";
+  try {
+    const parsed = JSON.parse(body);
+    token = typeof parsed["value"] === "string" ? parsed["value"] : "";
+  } catch {
+  }
+  if (!token) {
+    throw new WorkloadIdentityError("GitHub OIDC token response did not contain `value`");
+  }
+  deps.mask?.(token);
+  return token;
+}
+function isIdentitySource(value) {
+  if (!value || typeof value !== "object")
+    return false;
+  const source = value;
+  return source["issuer"] === "https://token.actions.githubusercontent.com" && typeof source["repository"] === "string" && typeof source["repository_id"] === "string" && typeof source["ref"] === "string" && typeof source["sha"] === "string" && typeof source["workflow_ref"] === "string" && typeof source["actor"] === "string" && typeof source["actor_id"] === "string" && typeof source["run_id"] === "string" && typeof source["run_attempt"] === "string" && typeof source["environment"] === "string";
+}
+async function mintGithubActionsActorIdentity(args, deps = {}) {
+  const resolved = {
+    fetchImpl: deps.fetchImpl ?? fetch,
+    env: deps.env ?? process.env,
+    mask: deps.mask
+  };
+  const idToken = await requestGithubOidcToken(resolved);
+  const apiUrl = args.apiUrl.replace(/\/+$/, "");
+  let response;
+  try {
+    response = await resolved.fetchImpl(`${apiUrl}/v1-idp-broker/mint/actor-identity`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${args.apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({
+        provider: "github_actions",
+        id_token: idToken,
+        action_type: args.actionType,
+        environment: args.environment
+      })
+    });
+  } catch (error) {
+    throw new WorkloadIdentityError(
+      `AtlaSent workload identity broker is unreachable: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  const body = await response.text();
+  if (!response.ok) {
+    throw new WorkloadIdentityError(
+      `AtlaSent workload identity broker rejected this job (HTTP ${response.status}): ${responseDetail(body)}`
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new WorkloadIdentityError("AtlaSent workload identity broker returned non-JSON");
+  }
+  const actorId = typeof parsed["actor_id"] === "string" ? parsed["actor_id"] : "";
+  const assertion = parsed["assertion"];
+  if (!actorId || !assertion || typeof assertion !== "object" || assertion["version"] !== "actor_identity.v1" || !isIdentitySource(parsed["source"])) {
+    throw new WorkloadIdentityError(
+      "AtlaSent workload identity broker returned an invalid actor_identity.v1 response"
+    );
+  }
+  return {
+    actorId,
+    assertion,
+    source: parsed["source"]
+  };
+}
+
 // src/v21.ts
+async function bindBatchWorkloadIdentities(items, cfg, deps) {
+  const mint = deps.mintWorkloadIdentity ?? mintGithubActionsActorIdentity;
+  const bound = [];
+  for (const item of items) {
+    const sanitized = { ...item };
+    delete sanitized.actor_identity;
+    if (item.action !== PRODUCTION_DEPLOY_ACTION) {
+      bound.push(sanitized);
+      continue;
+    }
+    const environment = item.environment?.trim();
+    if (!environment) {
+      throw new WorkloadIdentityError(
+        "Every production.deploy batch evaluation requires its own non-empty `environment` binding"
+      );
+    }
+    const identity = await mint(
+      {
+        apiUrl: cfg.apiUrl,
+        apiKey: cfg.apiKey,
+        actionType: item.action,
+        environment
+      },
+      { mask: deps.mask }
+    );
+    bound.push({
+      ...sanitized,
+      actor: identity.actorId,
+      environment,
+      actor_identity: identity.assertion,
+      context: {
+        ...item.context ?? {},
+        triggering_actor: `github:${identity.source.actor}`
+      }
+    });
+  }
+  return bound;
+}
 async function emitBatchEvidence(decisions, items, cfg, log = console) {
   const tasks = [];
   for (let i = 0; i < decisions.length; i++) {
@@ -760,9 +920,14 @@ async function emitBatchEvidence(decisions, items, cfg, log = console) {
   }
   await Promise.allSettled(tasks);
 }
-async function runV21(env, flags) {
+async function runV21(env, flags, deps = {}) {
   const inputs = parseInputs(env);
-  const items = inputs.evaluations ?? [inputs.single];
+  const parsedItems = inputs.evaluations ?? [inputs.single];
+  const items = inputs.evaluations ? await bindBatchWorkloadIdentities(
+    parsedItems,
+    { apiKey: inputs.apiKey, apiUrl: inputs.apiUrl },
+    deps
+  ) : parsedItems;
   const batch = await evaluateMany(
     inputs.apiUrl,
     inputs.apiKey,
@@ -2304,128 +2469,6 @@ function renderChangeBriefStepSummary(result) {
   return lines.join("\n");
 }
 
-// src/workloadIdentity.ts
-var GITHUB_ACTIONS_OIDC_AUDIENCE = "atlasent:actor_identity.v1";
-var WorkloadIdentityError = class extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "WorkloadIdentityError";
-  }
-};
-function responseDetail(body) {
-  try {
-    const parsed = JSON.parse(body);
-    const message = parsed["message"] ?? parsed["error_description"] ?? parsed["error"];
-    if (typeof message === "string" && message.trim())
-      return message.trim().slice(0, 300);
-  } catch {
-  }
-  return body.trim().slice(0, 300) || "empty response";
-}
-async function requestGithubOidcToken(deps) {
-  const requestUrl = (deps.env["ACTIONS_ID_TOKEN_REQUEST_URL"] ?? "").trim();
-  const requestToken = (deps.env["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] ?? "").trim();
-  if (!requestUrl || !requestToken) {
-    throw new WorkloadIdentityError(
-      "GitHub OIDC is unavailable. Grant this job `permissions: id-token: write`; the production.deploy gate will not fall back to a caller-supplied actor."
-    );
-  }
-  deps.mask?.(requestToken);
-  const url = new URL(requestUrl);
-  url.searchParams.set("audience", GITHUB_ACTIONS_OIDC_AUDIENCE);
-  let response;
-  try {
-    response = await deps.fetchImpl(url, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${requestToken}`,
-        Accept: "application/json"
-      }
-    });
-  } catch (error) {
-    throw new WorkloadIdentityError(
-      `Could not obtain the GitHub OIDC token: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-  const body = await response.text();
-  if (!response.ok) {
-    throw new WorkloadIdentityError(
-      `GitHub OIDC token request failed (HTTP ${response.status}): ${responseDetail(body)}`
-    );
-  }
-  let token = "";
-  try {
-    const parsed = JSON.parse(body);
-    token = typeof parsed["value"] === "string" ? parsed["value"] : "";
-  } catch {
-  }
-  if (!token) {
-    throw new WorkloadIdentityError("GitHub OIDC token response did not contain `value`");
-  }
-  deps.mask?.(token);
-  return token;
-}
-function isIdentitySource(value) {
-  if (!value || typeof value !== "object")
-    return false;
-  const source = value;
-  return source["issuer"] === "https://token.actions.githubusercontent.com" && typeof source["repository"] === "string" && typeof source["repository_id"] === "string" && typeof source["ref"] === "string" && typeof source["sha"] === "string" && typeof source["workflow_ref"] === "string" && typeof source["actor"] === "string" && typeof source["actor_id"] === "string" && typeof source["run_id"] === "string" && typeof source["run_attempt"] === "string" && typeof source["environment"] === "string";
-}
-async function mintGithubActionsActorIdentity(args, deps = {}) {
-  const resolved = {
-    fetchImpl: deps.fetchImpl ?? fetch,
-    env: deps.env ?? process.env,
-    mask: deps.mask
-  };
-  const idToken = await requestGithubOidcToken(resolved);
-  const apiUrl = args.apiUrl.replace(/\/+$/, "");
-  let response;
-  try {
-    response = await resolved.fetchImpl(`${apiUrl}/v1-idp-broker/mint/actor-identity`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${args.apiKey}`,
-        "Content-Type": "application/json",
-        Accept: "application/json"
-      },
-      body: JSON.stringify({
-        provider: "github_actions",
-        id_token: idToken,
-        action_type: args.actionType,
-        environment: args.environment
-      })
-    });
-  } catch (error) {
-    throw new WorkloadIdentityError(
-      `AtlaSent workload identity broker is unreachable: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-  const body = await response.text();
-  if (!response.ok) {
-    throw new WorkloadIdentityError(
-      `AtlaSent workload identity broker rejected this job (HTTP ${response.status}): ${responseDetail(body)}`
-    );
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    throw new WorkloadIdentityError("AtlaSent workload identity broker returned non-JSON");
-  }
-  const actorId = typeof parsed["actor_id"] === "string" ? parsed["actor_id"] : "";
-  const assertion = parsed["assertion"];
-  if (!actorId || !assertion || typeof assertion !== "object" || assertion["version"] !== "actor_identity.v1" || !isIdentitySource(parsed["source"])) {
-    throw new WorkloadIdentityError(
-      "AtlaSent workload identity broker returned an invalid actor_identity.v1 response"
-    );
-  }
-  return {
-    actorId,
-    assertion,
-    source: parsed["source"]
-  };
-}
-
 // src/index.ts
 function getApiKey() {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -3331,10 +3374,11 @@ async function run() {
           "INPUT_WAIT-FOR-ID": waitForId,
           "INPUT_WAIT-TIMEOUT-MS": String(waitTimeoutMs)
         },
-        { v2Batch, v2Streaming }
+        { v2Batch, v2Streaming },
+        { mask: maskValue }
       );
     } catch (err) {
-      const msg = err instanceof import_enforce4.EnforceError || err instanceof GateInfraError ? err.message : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
+      const msg = err instanceof import_enforce4.EnforceError || err instanceof GateInfraError || err instanceof WorkloadIdentityError ? err.message : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
       setOutput("verified", "false");
       setOutput("decisions", "[]");
       setOutput("batch-id", "");

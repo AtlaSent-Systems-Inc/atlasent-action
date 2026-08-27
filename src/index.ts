@@ -1359,10 +1359,13 @@ export async function run(): Promise<void> {
           "INPUT_WAIT-TIMEOUT-MS": String(waitTimeoutMs),
         },
         { v2Batch, v2Streaming },
+        { mask: maskValue },
       );
     } catch (err) {
       const msg =
-        err instanceof EnforceError || err instanceof GateInfraError
+        err instanceof EnforceError ||
+        err instanceof GateInfraError ||
+        err instanceof WorkloadIdentityError
           ? err.message
           : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
       setOutput("verified", "false");

@@ -6,6 +6,8 @@ export interface EvaluateRequest {
   action: string;
   actor: string;
   environment?: string;
+  /** Runtime-minted workload assertion (wire: `actor_identity`). Caller values are discarded. */
+  actor_identity?: Record<string, unknown>;
   /** Target resource id — bound at evaluate and re-presented at verify (wire: `target_id`). */
   target_id?: string;
   /**

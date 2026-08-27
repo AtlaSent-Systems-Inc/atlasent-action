@@ -22,11 +22,77 @@ import { parseInputs } from "./inputs";
 import { waitForTerminalDecision } from "./stream";
 import type { Decision, EvaluateRequest } from "./types";
 import { emitEvidenceEvent } from "./evidenceClient";
+import { PRODUCTION_DEPLOY_ACTION } from "./canonicalAction";
+import {
+  WorkloadIdentityError,
+  mintGithubActionsActorIdentity,
+  type MintedGithubActionsIdentity,
+} from "./workloadIdentity";
 
 export interface RunOutput {
   decisions: Decision[];
   failed: boolean;
   batchId: string;
+}
+
+interface RunV21Deps {
+  mintWorkloadIdentity?: typeof mintGithubActionsActorIdentity;
+  mask?: (value: string) => void;
+}
+
+/**
+ * Replace every production.deploy batch actor with a separately minted,
+ * runtime-verified GitHub workload identity. A distinct mint per item keeps
+ * the source OIDC credential and the resulting assertion single-use. Caller
+ * supplied actor_identity fields are stripped from every item.
+ */
+async function bindBatchWorkloadIdentities(
+  items: EvaluateRequest[],
+  cfg: { apiKey: string; apiUrl: string },
+  deps: RunV21Deps,
+): Promise<EvaluateRequest[]> {
+  const mint = deps.mintWorkloadIdentity ?? mintGithubActionsActorIdentity;
+  const bound: EvaluateRequest[] = [];
+
+  for (const item of items) {
+    const sanitized = { ...item };
+    delete sanitized.actor_identity;
+
+    if (item.action !== PRODUCTION_DEPLOY_ACTION) {
+      bound.push(sanitized);
+      continue;
+    }
+
+    const environment = item.environment?.trim();
+    if (!environment) {
+      throw new WorkloadIdentityError(
+        "Every production.deploy batch evaluation requires its own non-empty `environment` binding",
+      );
+    }
+
+    const identity: MintedGithubActionsIdentity = await mint(
+      {
+        apiUrl: cfg.apiUrl,
+        apiKey: cfg.apiKey,
+        actionType: item.action,
+        environment,
+      },
+      { mask: deps.mask },
+    );
+
+    bound.push({
+      ...sanitized,
+      actor: identity.actorId,
+      environment,
+      actor_identity: identity.assertion,
+      context: {
+        ...(item.context ?? {}),
+        triggering_actor: `github:${identity.source.actor}`,
+      },
+    });
+  }
+
+  return bound;
 }
 
 /**
@@ -87,9 +153,17 @@ export async function emitBatchEvidence(
 export async function runV21(
   env: Record<string, string | undefined>,
   flags: { v2Batch: boolean; v2Streaming: boolean },
+  deps: RunV21Deps = {},
 ): Promise<RunOutput> {
   const inputs = parseInputs(env);
-  const items = inputs.evaluations ?? [inputs.single!];
+  const parsedItems = inputs.evaluations ?? [inputs.single!];
+  const items = inputs.evaluations
+    ? await bindBatchWorkloadIdentities(
+        parsedItems,
+        { apiKey: inputs.apiKey, apiUrl: inputs.apiUrl },
+        deps,
+      )
+    : parsedItems;
 
   const batch = await evaluateMany(
     inputs.apiUrl,

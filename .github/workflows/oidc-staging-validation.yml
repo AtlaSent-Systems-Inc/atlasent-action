@@ -1,0 +1,150 @@
+name: GitHub OIDC staging validation (no deploy)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  validate-broker-only:
+    name: Validate staging broker (no evaluate or deploy)
+    runs-on: ubuntu-latest
+    environment: oidc-staging-validation
+    timeout-minutes: 20
+    env:
+      ATLASENT_STAGING_API_KEY: ${{ secrets.ATLASENT_STAGING_API_KEY }}
+      ATLASENT_STAGING_BASE_URL: ${{ secrets.ATLASENT_STAGING_BASE_URL }}
+    steps:
+      - name: Exercise fail-closed OIDC matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${ATLASENT_STAGING_API_KEY:-}" || -z "${ATLASENT_STAGING_BASE_URL:-}" ]]; then
+            echo "::error::staging-only API key and base URL are required"
+            exit 1
+          fi
+
+          broker_url="${ATLASENT_STAGING_BASE_URL%/}/v1-idp-broker/mint/actor-identity"
+          results_dir="${RUNNER_TEMP}/atlasent-oidc-validation"
+          mkdir -p "$results_dir"
+          results="$results_dir/results.jsonl"
+          : > "$results"
+
+          get_oidc_token() {
+            local separator='?'
+            [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *'?'* ]] && separator='&'
+            local response token
+            response="$(curl --fail --silent --show-error \
+              -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              -H 'Accept: application/json' \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=atlasent%3Aactor_identity.v1")"
+            token="$(jq -er '.value' <<<"$response")"
+            echo "::add-mask::$token" >&2
+            printf '%s' "$token"
+          }
+
+          run_case() {
+            local case_name="$1" token="$2" requested_environment="$3"
+            local expected_status="$4" expected_error="$5"
+            local response_file="$results_dir/${case_name}.response.json"
+            local headers_file="$results_dir/${case_name}.headers"
+            local payload status error request_id actor_id
+
+            payload="$(jq -nc \
+              --arg token "$token" \
+              --arg environment "$requested_environment" \
+              '{provider:"github_actions",id_token:$token,action_type:"production.deploy",environment:$environment}')"
+            status="$(curl --silent --show-error \
+              --output "$response_file" \
+              --dump-header "$headers_file" \
+              --write-out '%{http_code}' \
+              --request POST \
+              --header "Authorization: Bearer $ATLASENT_STAGING_API_KEY" \
+              --header 'Content-Type: application/json' \
+              --data "$payload" \
+              "$broker_url")"
+
+            error="$(jq -r '.error // ""' "$response_file")"
+            request_id="$(awk 'BEGIN{IGNORECASE=1} /^x-request-id:/ {gsub("\\r", "", $2); print $2}' "$headers_file" | tail -1)"
+            actor_id="$(jq -r '.actor_id // ""' "$response_file")"
+
+            if [[ "$status" != "$expected_status" || "$error" != "$expected_error" ]]; then
+              echo "::error title=OIDC case failed::${case_name}: expected ${expected_status}/${expected_error:-<none>}, got ${status}/${error:-<none>}"
+              rm -f "$response_file" "$headers_file"
+              exit 1
+            fi
+            if [[ -z "$request_id" ]]; then
+              echo "::error title=OIDC evidence incomplete::${case_name}: response omitted x-request-id"
+              rm -f "$response_file" "$headers_file"
+              exit 1
+            fi
+            if [[ "$case_name" == 'valid' && "$actor_id" != github-actions:repo:1165435318:workflow:* ]]; then
+              echo "::error::valid case returned an unexpected workload actor"
+              rm -f "$response_file" "$headers_file"
+              exit 1
+            fi
+
+            jq -nc \
+              --arg case "$case_name" \
+              --arg status "$status" \
+              --arg error "$error" \
+              --arg request_id "$request_id" \
+              '{case:$case,http_status:($status|tonumber),error:$error,request_id:$request_id}' \
+              >> "$results"
+            rm -f "$response_file" "$headers_file"
+          }
+
+          token="$(get_oidc_token)"
+          token_header="${token%%.*}"
+          token_rest="${token#*.}"
+          token_payload="${token_rest%%.*}"
+          token_signature="${token_rest#*.}"
+          forged_first='x'
+          [[ "${token_signature:0:1}" == 'x' ]] && forged_first='y'
+          forged="${token_header}.${token_payload}.${forged_first}${token_signature:1}"
+          echo "::add-mask::$forged"
+
+          run_case missing '' staging 400 bad_request
+          run_case forged "$forged" staging 401 unauthorized
+          run_case wrong_binding "$token" test 403 github_actions_binding_mismatch
+          run_case valid "$token" staging 200 ''
+          run_case replay "$token" staging 409 github_actions_token_replayed
+
+          expiring_token="$(get_oidc_token)"
+          expires_at="$(OIDC_TOKEN="$expiring_token" node <<'NODE'
+          const token = process.env.OIDC_TOKEN;
+          const segment = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+          const payload = JSON.parse(Buffer.from(segment, 'base64').toString('utf8'));
+          if (!Number.isInteger(payload.exp)) process.exit(1);
+          process.stdout.write(String(payload.exp));
+          NODE
+          )"
+          now="$(date +%s)"
+          wait_seconds=$((expires_at + 62 - now))
+          if (( wait_seconds > 0 )); then
+            echo "Waiting ${wait_seconds}s for the signed token to pass exp plus verifier skew."
+            sleep "$wait_seconds"
+          fi
+          run_case expired "$expiring_token" staging 401 unauthorized
+
+          {
+            echo '## GitHub OIDC staging broker validation'
+            echo
+            echo '> No evaluate, verify, or deployment endpoint was called.'
+            echo
+            echo '| Case | HTTP | Error | Request ID |'
+            echo '|---|---:|---|---|'
+            jq -r '"| `\(.case)` | `\(.http_status)` | `\(.error)` | `\(.request_id)` |"' "$results"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload redacted validation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: github-oidc-staging-validation-${{ github.run_id }}
+          path: ${{ runner.temp }}/atlasent-oidc-validation/results.jsonl
+          if-no-files-found: error
+          retention-days: 14

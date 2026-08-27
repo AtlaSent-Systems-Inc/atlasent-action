@@ -85,6 +85,12 @@ The verified workload is the authorizing actor. The human who dispatched the
 run is retained separately as `context.triggering_actor` for provenance; it is
 not allowed to impersonate the workload.
 
+The same rule applies to the `evaluations` batch input. Every
+`production.deploy` item must include its own non-empty `environment`; the
+Action obtains an independent GitHub OIDC token and runtime-minted assertion
+for each such item. Mixed batches retain their supplied actors for
+non-production actions. Any caller-supplied `actor_identity` is discarded.
+
 ## Customer integration starters
 
 - [Salesforce change gate](./examples/salesforce-change-gate/) — a customer-owned, sandbox-first workflow that combines GitHub approvals, Gearset validation evidence, an artifact-bound AtlaSent permit, Salesforce CLI execution, independent observation, and AtlaSent execution closeout. It does not require access to any private AtlaSent source repository.

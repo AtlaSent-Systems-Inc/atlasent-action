@@ -1026,11 +1026,23 @@ async function runChangeBriefStep(apiKey: string, apiUrl: string): Promise<void>
   info(`  Source collection:    ${collection.status}`);
   info(`  Material differences: ${brief.material_differences.length}`);
 
+  // Lead with a plain-language, human-approvable summary and a prominent
+  // link into the console's decision UI — a business reviewer should not
+  // have to parse a raw evidence table to find "what is this and where do
+  // I approve it". The full evidence detail (source facts, hashes) stays
+  // available immediately below, collapsed by default, for anyone who
+  // wants to verify the automated analysis rather than just act on it.
   const summary =
+    "\n## 📋 AtlaSent Change Brief\n\n" +
+    `**Decision requested:** ${managementBrief.decision_requested}\n\n` +
+    `**Recommendation:** \`${brief.recommendation.value}\` — ${brief.recommendation.rationale}\n\n` +
+    `### 👉 [Review and decide in the AtlaSent console](${consoleUrl})\n\n` +
+    "<details>\n" +
+    "<summary>Full evidence detail (source facts, hashes, evidence binding — click to expand)</summary>\n\n" +
     renderChangeBriefStepSummary(result) +
-    "\n" +
-    `[Continue in the AtlaSent console](${consoleUrl}) — note: that page does not yet carry ` +
-    "this run's GitHub-sourced facts (see this action's README); the table above is the full picture.\n";
+    "\n</details>\n\n" +
+    "> Note: the console page above does not yet carry this run's GitHub-sourced facts " +
+    "(see this action's README); the expanded detail is the full picture for those.\n";
   appendToStepSummary(summary);
 
   const commentEnabled = getInput("pr-comment-on-change-brief").toLowerCase() === "true";

@@ -3168,9 +3168,19 @@ async function runChangeBriefStep(apiKey, apiUrl) {
   info(`  Decision readiness:   ${managementBrief.readiness}`);
   info(`  Source collection:    ${collection.status}`);
   info(`  Material differences: ${brief.material_differences.length}`);
-  const summary = renderChangeBriefStepSummary(result) + `
-[Continue in the AtlaSent console](${consoleUrl}) \u2014 note: that page does not yet carry this run's GitHub-sourced facts (see this action's README); the table above is the full picture.
-`;
+  const summary = `
+## \u{1F4CB} AtlaSent Change Brief
+
+**Decision requested:** ${managementBrief.decision_requested}
+
+**Recommendation:** \`${brief.recommendation.value}\` \u2014 ${brief.recommendation.rationale}
+
+### \u{1F449} [Review and decide in the AtlaSent console](${consoleUrl})
+
+<details>
+<summary>Full evidence detail (source facts, hashes, evidence binding \u2014 click to expand)</summary>
+
+` + renderChangeBriefStepSummary(result) + "\n</details>\n\n> Note: the console page above does not yet carry this run's GitHub-sourced facts (see this action's README); the expanded detail is the full picture for those.\n";
   appendToStepSummary(summary);
   const commentEnabled = getInput("pr-comment-on-change-brief").toLowerCase() === "true";
   if (commentEnabled && gh.pr_number) {

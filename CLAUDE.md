@@ -2,6 +2,11 @@
 
 GitHub Action that enforces execution-time AtlaSent authorization gates on deployments and other critical CI/CD actions. Calls the AtlaSent API (`v1-evaluate` + `v1-verify-permit`), issues a cryptographically signed permit on `allow`, and fails closed (`deny`, `hold`, `escalate` all fail the workflow step with a human-readable denial reason).
 
+## Before you build or merge (standing instruction, 2026-08-28 — betty)
+
+- **Before starting any new implementation**, check recent PRs, branches, and commits for existing or in-flight work covering the same task before writing new code.
+- **Before merging any pull request**, check recent PRs/commits for duplicate or overlapping work — including work landed on a sibling repo in the same cross-repo change — before merging.
+
 ## Architecture baseline
 
 > Canonical cross-repo reference: [`atlasent-docs/architecture/ARCHITECTURE-BASELINE.md`](https://github.com/AtlaSent-Systems-Inc/atlasent-docs/blob/main/architecture/ARCHITECTURE-BASELINE.md)

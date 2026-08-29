@@ -40,7 +40,7 @@ jobs:
       contents: write
       statuses: write   # required for the AtlaSent gate's best-effort commit-status post
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}

@@ -27,7 +27,7 @@ jobs:
       id-token: write   # required for cosign keyless signing (Sigstore OIDC)
       statuses: write   # required for the AtlaSent gate's best-effort commit-status post
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
           fetch-depth: 0

@@ -142,7 +142,7 @@ jobs:
 
       - name: Upload redacted validation results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: github-oidc-staging-validation-${{ github.run_id }}
           path: ${{ runner.temp }}/atlasent-oidc-validation/results.jsonl

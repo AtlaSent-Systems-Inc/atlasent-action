@@ -1,6 +1,6 @@
 # AtlaSent Gate Action
 
-Execution-time authorization for consequential GitHub Actions.
+GitHub Action that enforces execution-time AtlaSent authorization gates on deployments and other critical CI/CD actions.
 
 AtlaSent evaluates an attempted action before it executes, issues a scoped permit
 when the action is authorized, and verifies that permit before the protected step

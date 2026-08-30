@@ -48,7 +48,7 @@ let result;
 if (args[0] === 'org' && args[1] === 'display') {
   result = { status: 0, result: {
     orgId: '${SF_ORG_ID}', username: 'atlasent-pilot@example.test',
-    instanceUrl: 'https://floqast--pilot.sandbox.my.salesforce.com'
+    instanceUrl: 'https://customer--pilot.sandbox.my.salesforce.com'
   } };
 } else if (args[0] === 'data' && args[1] === 'query' && args.join(' ').includes('FROM Organization')) {
   result = { status: 0, result: { totalSize: 1, records: [{
@@ -127,8 +127,8 @@ test('zero-write preflight proves GitHub, Gearset, AtlaSent, and Salesforce conn
     PR_NUMBER: '7',
     GEARSET_CHECK_NAME: 'Gearset Validation',
     MIN_APPROVALS: '2',
-    SF_TARGET_ORG: 'floqast-sandbox',
-    SF_EXPECTED_INSTANCE_HOST: 'floqast--pilot.sandbox.my.salesforce.com',
+    SF_TARGET_ORG: 'customer-sandbox',
+    SF_EXPECTED_INSTANCE_HOST: 'customer--pilot.sandbox.my.salesforce.com',
     CONFIRM_SANDBOX: 'true',
     EVIDENCE_DIR: evidenceDir,
     GITHUB_OUTPUT: outputFile,
@@ -198,7 +198,7 @@ async function runExecution(mode, markerCount) {
     HEAD_SHA: headSha,
     HEAD_REF: 'pilot/marker',
     CANDIDATE_DIR: candidate,
-    SF_TARGET_ORG: 'floqast-sandbox',
+    SF_TARGET_ORG: 'customer-sandbox',
     SF_ORG_ID,
     EVIDENCE_DIR: evidenceDir,
     PR_NUMBER: '7',

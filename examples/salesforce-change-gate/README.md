@@ -36,7 +36,7 @@ You do not need to learn AtlaSent internals or request access to any private Atl
 | Owner | Complete before the first preflight |
 |---|---|
 | AtlaSent | Provision your test organization; activate the `production.deploy` policy and constraint bundle; provide the deployed runtime URL and org-scoped API key; make Authorization Lineage and Production Change Closeout available in the Console. |
-| Your GitHub admin | Create the protected `floqast-sandbox` Environment; add the values below; require an environment reviewer; install the AtlaSent GitHub App; allow it on the Salesforce repository; protect the trusted integration paths. |
+| Your GitHub admin | Create the protected `customer-sandbox` Environment; add the values below; require an environment reviewer; install the AtlaSent GitHub App; allow it on the Salesforce repository; protect the trusted integration paths. |
 | Your Salesforce admin | Create or select the dedicated sandbox integration user, grant the bounded pilot permissions below, authenticate it locally, and save only its SFDX auth URL in the protected GitHub Environment. |
 | Your Gearset admin | Confirm the exact successful GitHub check name written on the current PR head SHA. |
 
@@ -44,15 +44,15 @@ Once those four rows are complete, your operator only selects the PR branch, ent
 
 ## One-time connection checklist
 
-Create a protected GitHub Environment named `floqast-sandbox`. Require an environment reviewer and prevent self-review. Add these environment values.
+Create a protected GitHub Environment named `customer-sandbox`. Require an environment reviewer and prevent self-review. Add these environment values.
 
 | Kind | Name | Value / owner |
 |---|---|---|
 | Secret | `ATLASENT_API_KEY` | AtlaSent provides an org-scoped test key. Required scopes: `evaluate:write`, `verify:execute`, `consequential_operations:write`, `production_change:write`, and `integrations:read`. |
 | Variable | `ATLASENT_BASE_URL` | AtlaSent provides the deployed function root, ending in `/functions/v1`. |
 | Variable | `ATLASENT_CONSOLE_URL` | Normally `https://console.atlasent.io`. |
-| Secret | `SFDX_AUTH_URL` | FloQast creates this from a dedicated Salesforce sandbox integration user and saves it directly as a GitHub secret. Never send it by email or place it in a file. |
-| Variable | `SF_TARGET_ORG_ALIAS` | Suggested: `floqast-sandbox`. |
+| Secret | `SFDX_AUTH_URL` | You create this from a dedicated Salesforce sandbox integration user and save it directly as a GitHub secret. Never send it by email or place it in a file. |
+| Variable | `SF_TARGET_ORG_ALIAS` | Suggested: `customer-sandbox`. |
 | Variable | `SF_EXPECTED_INSTANCE_HOST` | Exact sandbox host returned by Salesforce, without `https://`. The preflight refuses every other host and also queries `Organization.IsSandbox`. |
 | Variable | `GEARSET_CHECK_NAME` | Exact GitHub check-run name or commit-status context Gearset posts on the PR. |
 | Variable | `MIN_APPROVALS` | Suggested: `2`. |
@@ -60,20 +60,20 @@ Create a protected GitHub Environment named `floqast-sandbox`. Require an enviro
 
 AtlaSent must also complete these one-time items before handoff:
 
-- Provision the FloQast test organization in the runtime.
+- Provision your test organization in the runtime.
 - Activate `production.deploy` and publish its constraint bundle.
 - Mint the scoped API key above.
-- Install the AtlaSent GitHub App for the FloQast GitHub organization and bind this repository to the active `production.deploy` action class.
+- Install the AtlaSent GitHub App for your GitHub organization and bind this repository to the active `production.deploy` action class.
 - Confirm the runtime routes used by this starter are deployed: `v1-org-status`, `v1-consequential-operations`, `v1-production-change-closeout`, `v1-github-app-config`, `v1-evaluate`, and `v1-verify-permit`.
 
 ## Create the Salesforce sandbox credential
 
-FloQast performs this locally; AtlaSent never receives the credential.
+You perform this locally; AtlaSent never receives the credential.
 
 ```bash
 npm install --global @salesforce/cli@2.149.9
-sf org login web --instance-url https://test.salesforce.com --alias floqast-sandbox
-sf org auth show-sfdx-auth-url --target-org floqast-sandbox --json
+sf org login web --instance-url https://test.salesforce.com --alias customer-sandbox
+sf org auth show-sfdx-auth-url --target-org customer-sandbox --json
 ```
 
 Copy only the returned `sfdxAuthUrl` value into the GitHub Environment secret `SFDX_AUTH_URL`. Treat it as a credential. The dedicated user should have only the sandbox and metadata permissions needed for the bounded proof.

@@ -11,7 +11,7 @@ mismatch fails closed.
 workflow attempts action
         │
         ▼
-AtlaSent evaluates organizational authority
+AtlaSent evaluates authorization under organizational authority
         │
    ┌────┴────┐
    │         │
@@ -81,9 +81,14 @@ Each production deploy job therefore needs:
 - an `ATLASENT_API_KEY` carrying `evaluate:write`, `verify:execute`, and
   `idp_broker:mint`
 
-The verified workload is the authorizing actor. The human who dispatched the
-run is retained separately as `context.triggering_actor` for provenance; it is
-not allowed to impersonate the workload.
+The verified workload is the protected-action **Actor whose organizational
+authority is evaluated**. Verifying the workload identity establishes who or
+what is acting; it does **not** itself grant organizational authority or
+authorize the deployment. The AtlaSent runtime separately determines whether
+that exact action is authorized now under the organization's current authority,
+policy, approvals, and request bindings. The human who dispatched the run is
+retained separately as `context.triggering_actor` for provenance; it is not
+allowed to impersonate the workload.
 
 The same rule applies to the `evaluations` batch input. Every
 `production.deploy` item must include its own non-empty `environment`; the

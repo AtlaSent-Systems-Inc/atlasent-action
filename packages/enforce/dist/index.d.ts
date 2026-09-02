@@ -52,6 +52,19 @@ export interface EnforceConfig {
         artifact_ref?: string;
     };
     /**
+     * Typed solo-operator compensating-control evidence for action types
+     * OUTSIDE the four mandatory-change-control types `changePlan` covers
+     * (production.deploy, infrastructure.change, production.rollback,
+     * secret.configuration.change). A canonical top-level evaluate field —
+     * never buried in context — mirroring `changePlan`'s own contract. See
+     * atlasent-api `_shared/solo-operator-evidence-profile.ts` for the
+     * supported `kind`s (`control_override`, `access_grant`) and their
+     * required fields. Only meaningful together with a fresh
+     * `context.solo_operator_compensating_control` trigger and a prior
+     * `solo-operator-attest` step recording the SAME evidence.
+     */
+    evidenceProfile?: Record<string, unknown>;
+    /**
      * SHA-256 digest of the artifact being authorized (canonical input, NOT
      * presentation metadata). Sent to evaluate as the top-level
      * `execution_payload_hash`, which the runtime binds into the permit

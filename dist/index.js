@@ -168,6 +168,8 @@ var require_dist = __commonJS({
         payload["state_snapshot"] = snap;
       if (config.changePlan != null)
         payload["change_plan"] = config.changePlan;
+      if (config.evidenceProfile != null)
+        payload["evidence_profile"] = config.evidenceProfile;
       if (config.executionPayloadHash != null) {
         payload["execution_payload_hash"] = config.executionPayloadHash;
       }
@@ -2504,6 +2506,120 @@ function renderChangeBriefStepSummary(result) {
   return lines.join("\n");
 }
 
+// src/soloOperatorAttest.ts
+var SOLO_OPERATOR_ATTEST_ACTION_TYPE = "solo_operator.attest";
+var SoloOperatorAttestError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "SoloOperatorAttestError";
+  }
+};
+function productionDeployChangePlan(verifiedSha, artifactDigest) {
+  return {
+    operation: "deploy",
+    revision: verifiedSha,
+    ...artifactDigest ? { artifact_ref: artifactDigest } : {}
+  };
+}
+async function attestSoloOperator(args, deps = {}) {
+  const resolved = {
+    fetchImpl: deps.fetchImpl ?? fetch,
+    env: deps.env ?? process.env,
+    mask: deps.mask
+  };
+  if (args.actionType !== PRODUCTION_DEPLOY_ACTION && !args.evidenceProfile) {
+    throw new SoloOperatorAttestError(
+      `'${args.actionType}' is not production.deploy and requires an 'evidence-profile' input \u2014 a typed JSON object (see atlasent-api _shared/solo-operator-evidence-profile.ts for the supported kinds: control_override, access_grant).`
+    );
+  }
+  let identity;
+  try {
+    identity = await mintGithubActionsActorIdentity(
+      {
+        apiUrl: args.apiUrl,
+        apiKey: args.apiKey,
+        actionType: SOLO_OPERATOR_ATTEST_ACTION_TYPE,
+        environment: ""
+      },
+      resolved
+    );
+  } catch (error) {
+    if (error instanceof WorkloadIdentityError) {
+      throw new SoloOperatorAttestError(
+        `Could not mint a verified actor identity for the solo-operator attestation: ${error.message}`
+      );
+    }
+    throw error;
+  }
+  let changePlan;
+  if (args.actionType === PRODUCTION_DEPLOY_ACTION) {
+    const verifiedSha = identity.source.sha;
+    if (!verifiedSha) {
+      throw new SoloOperatorAttestError(
+        "production.deploy requires a change_plan with a non-empty revision, but the verified GitHub workload identity did not carry a commit SHA."
+      );
+    }
+    changePlan = productionDeployChangePlan(verifiedSha, args.artifactDigest);
+  }
+  const body = {
+    action_class_id: args.actionClassId,
+    commit_sha: args.commitSha,
+    attestation_reason: args.attestationReason,
+    actor_identity: identity.assertion,
+    ...args.targetId ? { target_id: args.targetId } : {},
+    ...args.environment ? { environment: args.environment } : {},
+    ...changePlan ? { change_plan: changePlan } : {},
+    ...args.evidenceProfile ? { evidence_profile: args.evidenceProfile } : {}
+  };
+  const apiUrl = args.apiUrl.replace(/\/+$/, "");
+  let response;
+  try {
+    response = await resolved.fetchImpl(`${apiUrl}/v1-solo-operator-attest`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${args.apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+  } catch (error) {
+    throw new SoloOperatorAttestError(
+      `AtlaSent solo-operator attest endpoint is unreachable: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  const responseText = await response.text();
+  if (!response.ok) {
+    let detail = responseText.trim().slice(0, 300);
+    try {
+      const parsed2 = JSON.parse(responseText);
+      const message = parsed2["error"] ?? parsed2["message"];
+      if (typeof message === "string" && message.trim())
+        detail = message.trim().slice(0, 300);
+    } catch {
+    }
+    throw new SoloOperatorAttestError(
+      `Solo-operator attestation was rejected (HTTP ${response.status}): ${detail || "empty response"}`
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(responseText);
+  } catch {
+    throw new SoloOperatorAttestError("Solo-operator attest endpoint returned non-JSON");
+  }
+  const attestation = parsed.attestation;
+  const attestationId = typeof attestation?.["id"] === "string" ? attestation["id"] : "";
+  const attestedBy = typeof attestation?.["attested_by"] === "string" ? attestation["attested_by"] : "";
+  const changePlanHash = typeof attestation?.["change_plan_hash"] === "string" ? attestation["change_plan_hash"] : "";
+  if (!attestationId || !attestedBy || !changePlanHash) {
+    throw new SoloOperatorAttestError(
+      "Solo-operator attest endpoint returned an incomplete attestation record"
+    );
+  }
+  return { attestationId, attestedBy, changePlanHash };
+}
+
 // src/index.ts
 function getApiKey() {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -3285,6 +3401,73 @@ async function runReleaseModeStep() {
     return;
   }
 }
+async function runSoloOperatorAttestStep(apiKey, apiUrl) {
+  const rawAction = getInput("action", true);
+  try {
+    assertValidActionType(rawAction);
+  } catch (err) {
+    setOutput("solo-attestation-id", "");
+    setFailed(
+      `AtlaSent solo-operator-attest: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return;
+  }
+  const actionType = normalizeProtectedAction(rawAction).canonical;
+  const actionClassId = getInput("solo-operator-action-class-id", true);
+  const attestationReason = getInput("solo-operator-attestation-reason", true);
+  const gh = getGitHubContext();
+  const commitSha = getInput("commit-sha") || gh.sha;
+  if (!commitSha) {
+    setOutput("solo-attestation-id", "");
+    setFailed(
+      "AtlaSent solo-operator-attest: commit SHA is required (set commit-sha or GITHUB_SHA)"
+    );
+    return;
+  }
+  const targetId = getInput("target-id") || void 0;
+  const environment = getInput("environment") || void 0;
+  const artifactDigest = getInput("artifact-digest") || void 0;
+  let evidenceProfile;
+  const evidenceProfileRaw = getInput("evidence-profile");
+  if (evidenceProfileRaw) {
+    try {
+      evidenceProfile = JSON.parse(evidenceProfileRaw);
+    } catch {
+      setOutput("solo-attestation-id", "");
+      setFailed("AtlaSent solo-operator-attest: `evidence-profile` is not valid JSON");
+      return;
+    }
+  }
+  info(
+    `AtlaSent solo-operator attest: recording evidence for ${actionType}@${commitSha.slice(0, 8)}`
+  );
+  let result;
+  try {
+    result = await attestSoloOperator(
+      {
+        apiUrl,
+        apiKey,
+        actionType,
+        actionClassId,
+        commitSha,
+        attestationReason,
+        targetId,
+        environment,
+        artifactDigest,
+        evidenceProfile
+      },
+      { mask: maskValue }
+    );
+  } catch (err) {
+    setOutput("solo-attestation-id", "");
+    const msg = err instanceof SoloOperatorAttestError || err instanceof WorkloadIdentityError ? err.message : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
+    setFailed(`AtlaSent solo-operator-attest: ${msg}. No attestation recorded (fail-closed).`);
+    return;
+  }
+  setOutput("solo-attestation-id", result.attestationId);
+  setOutput("solo-attested-by", result.attestedBy);
+  info(`  Attestation recorded: ${result.attestationId} (attested by ${result.attestedBy})`);
+}
 async function runVqpVerifyStep() {
   const snapshotId = getInput("vqp-snapshot-id", true);
   const supabaseUrl = getInput("vqp-supabase-url") || (process.env["ATLASENT_SUPABASE_URL"] ?? "").trim();
@@ -3409,6 +3592,10 @@ async function run() {
   }
   if (getInput("change-brief").toLowerCase() === "true") {
     await runChangeBriefStep(apiKey, apiUrl);
+    return;
+  }
+  if (getInput("solo-operator-attest").toLowerCase() === "true") {
+    await runSoloOperatorAttestStep(apiKey, apiUrl);
     return;
   }
   if (getInput("verify-permit").toLowerCase() === "true") {
@@ -3582,11 +3769,24 @@ async function run() {
     return;
   }
   const directExecutionPayloadHash = actionType === PRODUCTION_DEPLOY_ACTION ? void 0 : artifactDigest;
+  let evidenceProfile;
+  const evidenceProfileRaw = getInput("evidence-profile") || void 0;
+  if (evidenceProfileRaw) {
+    try {
+      evidenceProfile = JSON.parse(evidenceProfileRaw);
+    } catch {
+      setOutput("decision", "deny");
+      setOutput("verified", "false");
+      setFailed("AtlaSent Gate: `evidence-profile` is not valid JSON");
+      return;
+    }
+  }
   const evaluateOnly = (getInput("mode") || "enforce").trim().toLowerCase() === "evaluate-only";
   const waitForApprovalInput = (getInput("wait-for-approval") || "false").trim().toLowerCase() === "true";
   const maxWaitMinutesRaw = parseInt(getInput("max-wait-minutes") || "30", 10);
   const maxWaitMinutes = Number.isFinite(maxWaitMinutesRaw) && maxWaitMinutesRaw > 0 ? maxWaitMinutesRaw : 30;
   const maxWaitMs = maxWaitMinutes * 6e4;
+  const soloOperatorContext = (getInput("solo-operator-context") || "false").trim().toLowerCase() === "true";
   const config = {
     apiKey,
     apiUrl,
@@ -3596,6 +3796,7 @@ async function run() {
     environment,
     targetId,
     changePlan: productionChangePlan,
+    evidenceProfile,
     // Canonical artifact binding — the runtime binds this into the permit and
     // re-checks it at verify time (artifact-substitution defense).
     executionPayloadHash: directExecutionPayloadHash,
@@ -3652,7 +3853,8 @@ async function run() {
       ...approvalEvidence && approvalEvidence.source === "pr-reviews" ? {
         approvals: approvalEvidence.approvals,
         approving_reviewers: approvalEvidence.approving_reviewers
-      } : {}
+      } : {},
+      ...soloOperatorContext ? { solo_operator_compensating_control: {} } : {}
     }
   };
   async function reportEnforceFailure(err) {

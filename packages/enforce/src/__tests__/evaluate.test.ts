@@ -116,6 +116,22 @@ describe("evaluate", () => {
     expect((body["context"] as Record<string, unknown>)["change_plan"]).toBeUndefined();
   });
 
+  it("forwards evidence_profile as a top-level field, distinct from change_plan", async () => {
+    mockResponse(200, { decision: "allow" });
+    const evidenceProfile = {
+      kind: "control_override",
+      control_id: "waf-rule-442",
+      override_scope: "inbound traffic only, api.example.com",
+      reason: "Active incident INC-1029.",
+      expires_at: "2026-08-30T13:00:00Z",
+    };
+    await evaluate({ ...BASE_CONFIG, evidenceProfile });
+    const body = JSON.parse(mockPost.mock.calls[0][1] as string) as Record<string, unknown>;
+    expect(body["evidence_profile"]).toEqual(evidenceProfile);
+    expect(body["change_plan"]).toBeUndefined();
+    expect((body["context"] as Record<string, unknown>)["evidence_profile"]).toBeUndefined();
+  });
+
   it("throws EnforceError(evaluate) on network error", async () => {
     mockPost.mockRejectedValueOnce(new Error("ECONNREFUSED"));
     await expect(evaluate(BASE_CONFIG)).rejects.toSatisfy(

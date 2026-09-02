@@ -492,6 +492,96 @@ than `pull_request`/`push`), `change-request`, `rollback-previous-sha` /
 `pr-comment-on-change-brief` (default `"false"` — opt in, since a comment on
 every push would be noisy). Full reference in [`action.yml`](./action.yml).
 
+## Solo-operator compensating control (attest mode)
+
+Independent-approval action classes (`requires_independent_approval: true`)
+normally need a distinct second human's review before an `allow` — the
+`approving_reviewers` derived from `approvals-from: pr-reviews` above. A
+single-accountable-human org has no second reviewer to derive that from, so
+this branch would deny unconditionally without a different evidence path.
+
+The AtlaSent runtime's solo-operator compensating control substitutes a
+server-verified evidence chain (a fresh attestation from the org's own
+`solo_operator_attested_identity`, green CI on the commit, the PR's real
+merge timestamp past a cooling-off window, and a passing staging-acceptance
+run) for the missing second reviewer — see
+`atlasent-api` `_shared/solo-operator-compensating-control.ts`. This action's
+`solo-operator-attest: "true"` mode records the ONE fact only the real solo
+operator can supply: mint a verified actor identity from THIS job's GitHub
+OIDC token (bound to `solo_operator.attest`, distinct from the identity
+minted for the protected action itself) and POST it plus this change's
+evidence to `/v1-solo-operator-attest`. It authorizes nothing by itself —
+the later evaluate step still independently re-verifies everything else.
+
+```yaml
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # GitHub workload identity for the solo_operator.attest mint
+    steps:
+      - uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        id: attest
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+        with:
+          solo-operator-attest: "true"
+          action: production.deploy
+          solo-operator-action-class-id: ${{ vars.PRODUCTION_DEPLOY_ACTION_CLASS_ID }}
+          solo-operator-attestation-reason: "Solo founder deploy; CI green and staging accepted before promoting."
+          target-id: api-service
+          environment: live
+          artifact-digest: ${{ needs.build.outputs.digest }}
+
+  deploy:
+    needs: [build, attest]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      pull-requests: write
+    steps:
+      - uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+        with:
+          action: production.deploy
+          target-id: api-service
+          environment: live
+          artifact-digest: ${{ needs.build.outputs.digest }}
+          solo-operator-context: "true"
+      - run: ./scripts/deploy.sh
+```
+
+`solo-operator-action-class-id` is a UUID — find it via the AtlaSent console
+or API, not derivable from the action_type string alone; store it as a repo
+or org variable. `solo-operator-context: "true"` on the `deploy` job's gate
+step is what tells the evaluate call to try the compensating control if the
+ordinary `approving_reviewers` path is unprovable (as it always is for a
+true solo operator) — it grants no authority by itself, and still requires a
+fresh, matching attestation to have been recorded.
+
+For a **non-`production.deploy`** action type (e.g. `control.override`,
+`access.grant`), the runtime has no generic "change plan" concept — pass a
+typed `evidence-profile` JSON object to BOTH steps instead (the SAME object
+each time, or the attestation and the evaluate call derive different hashes
+and the control denies):
+
+```yaml
+      - uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        with:
+          solo-operator-attest: "true"
+          action: control.override
+          solo-operator-action-class-id: ${{ vars.CONTROL_OVERRIDE_ACTION_CLASS_ID }}
+          solo-operator-attestation-reason: "Solo founder disabling a WAF rule during an active incident."
+          evidence-profile: |
+            {"kind":"control_override","control_id":"waf-rule-442","override_scope":"inbound traffic only, api.example.com","reason":"Active incident INC-1029.","expires_at":"2026-08-30T13:00:00Z"}
+```
+
+See `atlasent-api` `_shared/solo-operator-evidence-profile.ts` for the full
+field set per `kind` (`control_override`, `access_grant`).
+
 ## Other modes
 
 The repository also contains additional CI-oriented surfaces such as batch

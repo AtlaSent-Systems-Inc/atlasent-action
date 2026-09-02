@@ -49,6 +49,7 @@ import {
   GATE_PERMITTED_ACTIONS,
   LEGACY_PRODUCTION_DEPLOY_ALIAS,
   PRODUCTION_DEPLOY_ACTION,
+  assertValidActionType,
   normalizeProtectedAction,
 } from "./canonicalAction";
 import { runVqpVerify } from "./vqpVerify";
@@ -65,6 +66,7 @@ import {
   mintGithubActionsActorIdentity,
   type MintedGithubActionsIdentity,
 } from "./workloadIdentity";
+import { SoloOperatorAttestError, attestSoloOperator } from "./soloOperatorAttest";
 
 function getApiKey(): string {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -1165,6 +1167,95 @@ async function runReleaseModeStep(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Solo-operator compensating-control attestation step
+// ---------------------------------------------------------------------------
+//
+// Records evidence for the runtime's solo-operator compensating control
+// (atlasent-api _shared/solo-operator-compensating-control.ts) BEFORE a
+// later `action:` evaluate step tries to use it. This step authorizes
+// nothing by itself — see soloOperatorAttest.ts's header for the full
+// trust model. Run it as its own step, then pass
+// `context: '{"solo_operator_compensating_control": {}}'` (and, for a
+// non-production.deploy action, the SAME `evidence-profile` JSON again) to
+// the actual `action:` evaluate step that follows.
+
+async function runSoloOperatorAttestStep(apiKey: string, apiUrl: string): Promise<void> {
+  const rawAction = getInput("action", true);
+  try {
+    assertValidActionType(rawAction);
+  } catch (err) {
+    setOutput("solo-attestation-id", "");
+    setFailed(
+      `AtlaSent solo-operator-attest: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return;
+  }
+  const actionType = normalizeProtectedAction(rawAction).canonical;
+
+  const actionClassId = getInput("solo-operator-action-class-id", true);
+  const attestationReason = getInput("solo-operator-attestation-reason", true);
+  const gh = getGitHubContext();
+  const commitSha = getInput("commit-sha") || gh.sha;
+  if (!commitSha) {
+    setOutput("solo-attestation-id", "");
+    setFailed(
+      "AtlaSent solo-operator-attest: commit SHA is required (set commit-sha or GITHUB_SHA)",
+    );
+    return;
+  }
+  const targetId = getInput("target-id") || undefined;
+  const environment = getInput("environment") || undefined;
+  const artifactDigest = getInput("artifact-digest") || undefined;
+
+  let evidenceProfile: Record<string, unknown> | undefined;
+  const evidenceProfileRaw = getInput("evidence-profile");
+  if (evidenceProfileRaw) {
+    try {
+      evidenceProfile = JSON.parse(evidenceProfileRaw) as Record<string, unknown>;
+    } catch {
+      setOutput("solo-attestation-id", "");
+      setFailed("AtlaSent solo-operator-attest: `evidence-profile` is not valid JSON");
+      return;
+    }
+  }
+
+  info(
+    `AtlaSent solo-operator attest: recording evidence for ${actionType}@${commitSha.slice(0, 8)}`,
+  );
+
+  let result;
+  try {
+    result = await attestSoloOperator(
+      {
+        apiUrl,
+        apiKey,
+        actionType,
+        actionClassId,
+        commitSha,
+        attestationReason,
+        targetId,
+        environment,
+        artifactDigest,
+        evidenceProfile,
+      },
+      { mask: maskValue },
+    );
+  } catch (err) {
+    setOutput("solo-attestation-id", "");
+    const msg =
+      err instanceof SoloOperatorAttestError || err instanceof WorkloadIdentityError
+        ? err.message
+        : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
+    setFailed(`AtlaSent solo-operator-attest: ${msg}. No attestation recorded (fail-closed).`);
+    return;
+  }
+
+  setOutput("solo-attestation-id", result.attestationId);
+  setOutput("solo-attested-by", result.attestedBy);
+  info(`  Attestation recorded: ${result.attestationId} (attested by ${result.attestedBy})`);
+}
+
+// ---------------------------------------------------------------------------
 // VQP re-derivation audit step
 // ---------------------------------------------------------------------------
 
@@ -1355,6 +1446,17 @@ export async function run(): Promise<void> {
   // actual authorization boundary for the deploy itself.
   if (getInput("change-brief").toLowerCase() === "true") {
     await runChangeBriefStep(apiKey, apiUrl);
+    return;
+  }
+
+  // ── Solo-operator attest path ───────────────────────────────────────────────
+  //
+  // Records solo-operator compensating-control evidence for a LATER `action:`
+  // evaluate step (this action's ordinary mode) to use — see
+  // soloOperatorAttest.ts's header. Mints no permit and authorizes nothing by
+  // itself.
+  if (getInput("solo-operator-attest").toLowerCase() === "true") {
+    await runSoloOperatorAttestStep(apiKey, apiUrl);
     return;
   }
 
@@ -1591,6 +1693,25 @@ export async function run(): Promise<void> {
   const directExecutionPayloadHash =
     actionType === PRODUCTION_DEPLOY_ACTION ? undefined : artifactDigest;
 
+  // Typed solo-operator compensating-control evidence for a NON-production.deploy
+  // action type — the same JSON a prior `solo-operator-attest: true` step in
+  // this workflow was given, so the hash this evaluate() call derives matches
+  // what was attested. A no-op unless the action class both requires
+  // independent approval and the ordinary approving_reviewers path is
+  // unprovable — see atlasent-api _shared/solo-operator-evidence-profile.ts.
+  let evidenceProfile: Record<string, unknown> | undefined;
+  const evidenceProfileRaw = getInput("evidence-profile") || undefined;
+  if (evidenceProfileRaw) {
+    try {
+      evidenceProfile = JSON.parse(evidenceProfileRaw) as Record<string, unknown>;
+    } catch {
+      setOutput("decision", "deny");
+      setOutput("verified", "false");
+      setFailed("AtlaSent Gate: `evidence-profile` is not valid JSON");
+      return;
+    }
+  }
+
   // evaluate-only (issue-permit) mode: ISSUE a permit without verifying or
   // consuming it, so a workflow can express the two-step EXECUTION-BOUNDARY
   // pattern entirely with atlasent-action — this step issues the permit, and a
@@ -1615,6 +1736,17 @@ export async function run(): Promise<void> {
     Number.isFinite(maxWaitMinutesRaw) && maxWaitMinutesRaw > 0 ? maxWaitMinutesRaw : 30;
   const maxWaitMs = maxWaitMinutes * 60_000;
 
+  // Convenience trigger for the solo-operator compensating control — an
+  // alternative to hand-writing `context: '{"solo_operator_compensating_control": {}}'`.
+  // Only the PRESENCE of this key is ever read server-side (see atlasent-api
+  // _shared/solo-operator-compensating-control.ts); it grants no authority by
+  // itself, and is a no-op unless this evaluate call also reaches a genuinely
+  // unprovable independent-approval branch AND a matching, fresh
+  // solo-operator-attest step already recorded evidence for this exact
+  // change_plan/evidence_profile.
+  const soloOperatorContext =
+    (getInput("solo-operator-context") || "false").trim().toLowerCase() === "true";
+
   const config: EnforceConfig = {
     apiKey,
     apiUrl,
@@ -1624,6 +1756,7 @@ export async function run(): Promise<void> {
     environment,
     targetId,
     changePlan: productionChangePlan,
+    evidenceProfile,
     // Canonical artifact binding — the runtime binds this into the permit and
     // re-checks it at verify time (artifact-substitution defense).
     executionPayloadHash: directExecutionPayloadHash,
@@ -1683,6 +1816,7 @@ export async function run(): Promise<void> {
             approving_reviewers: approvalEvidence.approving_reviewers,
           }
         : {}),
+      ...(soloOperatorContext ? { solo_operator_compensating_control: {} } : {}),
     },
   };
 

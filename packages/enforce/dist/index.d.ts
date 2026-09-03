@@ -1,3 +1,22 @@
+/**
+ * Additive ADR-055 acceptance-lane hint (atlasent-api's `signing_hint` on an
+ * INSUFFICIENT_APPROVALS deny, or a two-stage lifecycle class's escalate
+ * outcome): the server-computed binding a caller must reproduce EXACTLY to
+ * mint a valid `approval_artifact.v1` / `approval_quorum.v1` for THIS
+ * specific request. `action_hash` cannot be reverse-engineered by the
+ * caller (the server hashes the fully enriched context, not the raw
+ * request), so this is the only way to bind a correct artifact.
+ */
+export interface ApprovalSigningHint {
+    assertion_type: string;
+    bind: {
+        action_hash: string;
+        tenant_id: string;
+        environment: string;
+        required_role?: string;
+        required_roles?: string[];
+    };
+}
 export interface EnforceConfig {
     apiKey: string;
     apiUrl?: string;
@@ -52,6 +71,19 @@ export interface EnforceConfig {
         artifact_ref?: string;
     };
     /**
+     * Typed solo-operator compensating-control evidence for action types
+     * OUTSIDE the four mandatory-change-control types `changePlan` covers
+     * (production.deploy, infrastructure.change, production.rollback,
+     * secret.configuration.change). A canonical top-level evaluate field —
+     * never buried in context — mirroring `changePlan`'s own contract. See
+     * atlasent-api `_shared/solo-operator-evidence-profile.ts` for the
+     * supported `kind`s (`control_override`, `access_grant`) and their
+     * required fields. Only meaningful together with a fresh
+     * `context.solo_operator_compensating_control` trigger and a prior
+     * `solo-operator-attest` step recording the SAME evidence.
+     */
+    evidenceProfile?: Record<string, unknown>;
+    /**
      * SHA-256 digest of the artifact being authorized (canonical input, NOT
      * presentation metadata). Sent to evaluate as the top-level
      * `execution_payload_hash`, which the runtime binds into the permit
@@ -69,6 +101,41 @@ export interface EnforceConfig {
      * not sent. Values are the wire keys: "environment" | "target_id" | "payload_hash".
      */
     requiredBindings?: Array<"environment" | "target_id" | "payload_hash">;
+    /**
+     * A caller-assembled `approval_quorum.v1` (or a single `{artifact: ...}`
+     * `approval` envelope — see `approval` below), sent verbatim as the
+     * evaluate request's top-level `quorum` field. This package does not
+     * build or interpret it; it is opaque cargo. Normally populated by the
+     * `onInsufficientApprovals` retry below rather than supplied up front.
+     */
+    quorum?: Record<string, unknown>;
+    /** A single-artifact `{artifact: ApprovalArtifactV1}` envelope, sent as
+     *  the evaluate request's top-level `approval` field. Mutually exclusive
+     *  with `quorum` in practice (the runtime accepts either shape), but this
+     *  package sends both if both happen to be set — the caller decides
+     *  which to populate. */
+    approval?: Record<string, unknown>;
+    /**
+     * ADR-055 two-call acceptance lane. When the FIRST evaluate() response is
+     * `deny` with `deny_code === "INSUFFICIENT_APPROVALS"` and carries a
+     * `signing_hint`, `evaluate()` calls this callback with that hint AND the
+     * denied response's own `evaluationId` (request_id/evaluation_id — see
+     * mapDecision below) — a caller minting real evidence from that hint
+     * needs to name WHICH evaluate() call it is evidence for (e.g.
+     * atlasent-api's v1-github-approval-mint requires `evaluation_id` in its
+     * body precisely so it can independently bind the minted artifact to
+     * that original call's own persisted context, rather than trusting a
+     * bare caller-supplied action_hash). A non-undefined return value is sent
+     * as `quorum` on ONE automatic retry evaluate() call (never more than
+     * one — see the recursion guard in evaluate() below); an
+     * undefined/thrown result returns the original deny unchanged. This lets
+     * a caller (e.g. atlasent-action's githubApprovalMint wiring) mint real
+     * evidence bound to the server-computed action_hash without
+     * restructuring its own call sites — both `evaluate(config)` directly
+     * and the composed `enforce(config, fn)` get the retry transparently,
+     * since both funnel through evaluate() here.
+     */
+    onInsufficientApprovals?: (hint: ApprovalSigningHint, evaluationId: string | undefined) => Promise<Record<string, unknown> | undefined>;
 }
 export interface Decision {
     decision: "allow" | "deny" | "hold" | "escalate";

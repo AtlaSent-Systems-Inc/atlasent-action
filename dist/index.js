@@ -168,6 +168,12 @@ var require_dist = __commonJS({
         payload["state_snapshot"] = snap;
       if (config.changePlan != null)
         payload["change_plan"] = config.changePlan;
+      if (config.evidenceProfile != null)
+        payload["evidence_profile"] = config.evidenceProfile;
+      if (config.quorum != null)
+        payload["quorum"] = config.quorum;
+      if (config.approval != null)
+        payload["approval"] = config.approval;
       if (config.executionPayloadHash != null) {
         payload["execution_payload_hash"] = config.executionPayloadHash;
       }
@@ -198,7 +204,20 @@ var require_dist = __commonJS({
       } catch {
         throw new EnforceError2("Non-JSON response from AtlaSent API", "evaluate");
       }
-      return mapDecision(raw);
+      const decision = mapDecision(raw);
+      if (decision.decision === "deny" && decision.denyCode === "INSUFFICIENT_APPROVALS" && config.onInsufficientApprovals && raw["signing_hint"] != null && typeof raw["signing_hint"] === "object") {
+        const hint = raw["signing_hint"];
+        let quorum;
+        try {
+          quorum = await config.onInsufficientApprovals(hint, decision.evaluationId);
+        } catch {
+          quorum = void 0;
+        }
+        if (quorum) {
+          return evaluate2({ ...config, quorum, onInsufficientApprovals: void 0 });
+        }
+      }
+      return decision;
     }
     function verify2(decision) {
       switch (decision.decision) {
@@ -2516,6 +2535,194 @@ function renderChangeBriefStepSummary(result) {
   return lines.join("\n");
 }
 
+// src/soloOperatorAttest.ts
+var SOLO_OPERATOR_ATTEST_ACTION_TYPE = "solo_operator.attest";
+var SoloOperatorAttestError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "SoloOperatorAttestError";
+  }
+};
+function productionDeployChangePlan(verifiedSha, artifactDigest) {
+  return {
+    operation: "deploy",
+    revision: verifiedSha,
+    ...artifactDigest ? { artifact_ref: artifactDigest } : {}
+  };
+}
+async function attestSoloOperator(args, deps = {}) {
+  const resolved = {
+    fetchImpl: deps.fetchImpl ?? fetch,
+    env: deps.env ?? process.env,
+    mask: deps.mask
+  };
+  if (args.actionType !== PRODUCTION_DEPLOY_ACTION && !args.evidenceProfile) {
+    throw new SoloOperatorAttestError(
+      `'${args.actionType}' is not production.deploy and requires an 'evidence-profile' input \u2014 a typed JSON object (see atlasent-api _shared/solo-operator-evidence-profile.ts for the supported kinds: control_override, access_grant).`
+    );
+  }
+  let identity;
+  try {
+    identity = await mintGithubActionsActorIdentity(
+      {
+        apiUrl: args.apiUrl,
+        apiKey: args.apiKey,
+        actionType: SOLO_OPERATOR_ATTEST_ACTION_TYPE,
+        environment: ""
+      },
+      resolved
+    );
+  } catch (error) {
+    if (error instanceof WorkloadIdentityError) {
+      throw new SoloOperatorAttestError(
+        `Could not mint a verified actor identity for the solo-operator attestation: ${error.message}`
+      );
+    }
+    throw error;
+  }
+  let changePlan;
+  if (args.actionType === PRODUCTION_DEPLOY_ACTION) {
+    const verifiedSha = identity.source.sha;
+    if (!verifiedSha) {
+      throw new SoloOperatorAttestError(
+        "production.deploy requires a change_plan with a non-empty revision, but the verified GitHub workload identity did not carry a commit SHA."
+      );
+    }
+    changePlan = productionDeployChangePlan(verifiedSha, args.artifactDigest);
+  }
+  const body = {
+    action_class_id: args.actionClassId,
+    commit_sha: args.commitSha,
+    attestation_reason: args.attestationReason,
+    actor_identity: identity.assertion,
+    ...args.targetId ? { target_id: args.targetId } : {},
+    ...args.environment ? { environment: args.environment } : {},
+    ...changePlan ? { change_plan: changePlan } : {},
+    ...args.evidenceProfile ? { evidence_profile: args.evidenceProfile } : {}
+  };
+  const apiUrl = args.apiUrl.replace(/\/+$/, "");
+  let response;
+  try {
+    response = await resolved.fetchImpl(`${apiUrl}/v1-solo-operator-attest`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${args.apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+  } catch (error) {
+    throw new SoloOperatorAttestError(
+      `AtlaSent solo-operator attest endpoint is unreachable: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  const responseText = await response.text();
+  if (!response.ok) {
+    let detail = responseText.trim().slice(0, 300);
+    try {
+      const parsed2 = JSON.parse(responseText);
+      const message = parsed2["error"] ?? parsed2["message"];
+      if (typeof message === "string" && message.trim())
+        detail = message.trim().slice(0, 300);
+    } catch {
+    }
+    throw new SoloOperatorAttestError(
+      `Solo-operator attestation was rejected (HTTP ${response.status}): ${detail || "empty response"}`
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(responseText);
+  } catch {
+    throw new SoloOperatorAttestError("Solo-operator attest endpoint returned non-JSON");
+  }
+  const attestation = parsed.attestation;
+  const attestationId = typeof attestation?.["id"] === "string" ? attestation["id"] : "";
+  const attestedBy = typeof attestation?.["attested_by"] === "string" ? attestation["attested_by"] : "";
+  const changePlanHash = typeof attestation?.["change_plan_hash"] === "string" ? attestation["change_plan_hash"] : "";
+  if (!attestationId || !attestedBy || !changePlanHash) {
+    throw new SoloOperatorAttestError(
+      "Solo-operator attest endpoint returned an incomplete attestation record"
+    );
+  }
+  return { attestationId, attestedBy, changePlanHash };
+}
+
+// src/githubApprovalMint.ts
+var GithubApprovalMintError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "GithubApprovalMintError";
+  }
+};
+async function mintGithubApprovalArtifacts(args, deps = {}) {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const apiUrl = args.apiUrl.replace(/\/+$/, "");
+  const body = {
+    evaluation_id: args.evaluationId,
+    repository: args.repository,
+    pull_request_number: args.pullRequestNumber,
+    action_type: args.actionType,
+    action_hash: args.hint.bind.action_hash,
+    environment: args.hint.bind.environment,
+    ...args.resourceId ? { resource_id: args.resourceId } : {}
+  };
+  let response;
+  try {
+    response = await fetchImpl(`${apiUrl}/v1-github-approval-mint`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${args.apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+  } catch (error) {
+    throw new GithubApprovalMintError(
+      `AtlaSent GitHub-approval-mint endpoint is unreachable: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  const responseText = await response.text();
+  if (!response.ok) {
+    let detail = responseText.trim().slice(0, 300);
+    try {
+      const parsed2 = JSON.parse(responseText);
+      const message = parsed2["message"] ?? parsed2["error"];
+      if (typeof message === "string" && message.trim())
+        detail = message.trim().slice(0, 300);
+    } catch {
+    }
+    throw new GithubApprovalMintError(
+      `GitHub-approval-mint was rejected (HTTP ${response.status}): ${detail || "empty response"}`
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(responseText);
+  } catch {
+    throw new GithubApprovalMintError("GitHub-approval-mint endpoint returned non-JSON");
+  }
+  const reviewers = Array.isArray(parsed.reviewers) ? parsed.reviewers.filter((r) => typeof r === "string") : [];
+  const artifacts = Array.isArray(parsed.artifacts) ? parsed.artifacts : [];
+  if (artifacts.length === 0) {
+    throw new GithubApprovalMintError("GitHub-approval-mint endpoint returned no artifacts");
+  }
+  return { reviewers, artifacts };
+}
+function buildApprovalQuorum(hint, artifacts) {
+  return {
+    version: "approval_quorum.v1",
+    tenant_id: hint.bind.tenant_id,
+    action_hash: hint.bind.action_hash,
+    environment: hint.bind.environment,
+    issued_at: (/* @__PURE__ */ new Date()).toISOString(),
+    policy: { required_count: artifacts.length },
+    approvals: artifacts
+  };
+}
+
 // src/index.ts
 function getApiKey() {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -3297,6 +3504,73 @@ async function runReleaseModeStep() {
     return;
   }
 }
+async function runSoloOperatorAttestStep(apiKey, apiUrl) {
+  const rawAction = getInput("action", true);
+  try {
+    assertValidActionType(rawAction);
+  } catch (err) {
+    setOutput("solo-attestation-id", "");
+    setFailed(
+      `AtlaSent solo-operator-attest: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return;
+  }
+  const actionType = normalizeProtectedAction(rawAction).canonical;
+  const actionClassId = getInput("solo-operator-action-class-id", true);
+  const attestationReason = getInput("solo-operator-attestation-reason", true);
+  const gh = getGitHubContext();
+  const commitSha = getInput("commit-sha") || gh.sha;
+  if (!commitSha) {
+    setOutput("solo-attestation-id", "");
+    setFailed(
+      "AtlaSent solo-operator-attest: commit SHA is required (set commit-sha or GITHUB_SHA)"
+    );
+    return;
+  }
+  const targetId = getInput("target-id") || void 0;
+  const environment = getInput("environment") || void 0;
+  const artifactDigest = getInput("artifact-digest") || void 0;
+  let evidenceProfile;
+  const evidenceProfileRaw = getInput("evidence-profile");
+  if (evidenceProfileRaw) {
+    try {
+      evidenceProfile = JSON.parse(evidenceProfileRaw);
+    } catch {
+      setOutput("solo-attestation-id", "");
+      setFailed("AtlaSent solo-operator-attest: `evidence-profile` is not valid JSON");
+      return;
+    }
+  }
+  info(
+    `AtlaSent solo-operator attest: recording evidence for ${actionType}@${commitSha.slice(0, 8)}`
+  );
+  let result;
+  try {
+    result = await attestSoloOperator(
+      {
+        apiUrl,
+        apiKey,
+        actionType,
+        actionClassId,
+        commitSha,
+        attestationReason,
+        targetId,
+        environment,
+        artifactDigest,
+        evidenceProfile
+      },
+      { mask: maskValue }
+    );
+  } catch (err) {
+    setOutput("solo-attestation-id", "");
+    const msg = err instanceof SoloOperatorAttestError || err instanceof WorkloadIdentityError ? err.message : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`;
+    setFailed(`AtlaSent solo-operator-attest: ${msg}. No attestation recorded (fail-closed).`);
+    return;
+  }
+  setOutput("solo-attestation-id", result.attestationId);
+  setOutput("solo-attested-by", result.attestedBy);
+  info(`  Attestation recorded: ${result.attestationId} (attested by ${result.attestedBy})`);
+}
 async function runVqpVerifyStep() {
   const snapshotId = getInput("vqp-snapshot-id", true);
   const supabaseUrl = getInput("vqp-supabase-url") || (process.env["ATLASENT_SUPABASE_URL"] ?? "").trim();
@@ -3421,6 +3695,10 @@ async function run() {
   }
   if (getInput("change-brief").toLowerCase() === "true") {
     await runChangeBriefStep(apiKey, apiUrl);
+    return;
+  }
+  if (getInput("solo-operator-attest").toLowerCase() === "true") {
+    await runSoloOperatorAttestStep(apiKey, apiUrl);
     return;
   }
   if (getInput("verify-permit").toLowerCase() === "true") {
@@ -3576,6 +3854,38 @@ async function run() {
       warn: warning
     });
   }
+  const approvalArtifactMintEnabled = (getInput("approval-artifact-mint") || "true").trim().toLowerCase() !== "false";
+  const mintPrNumber = approvalEvidence?.pr_number ?? (gh.pr_number && /^\d+$/.test(gh.pr_number) ? parseInt(gh.pr_number, 10) : null);
+  const onInsufficientApprovals = approvalsFrom === "pr-reviews" && approvalArtifactMintEnabled && mintPrNumber ? async (hint, evaluationId) => {
+    if (!evaluationId) {
+      warning(
+        "AtlaSent Gate: the evaluate() deny carried no evaluation_id \u2014 cannot mint a bound GitHub approval artifact for it"
+      );
+      return void 0;
+    }
+    try {
+      const minted = await mintGithubApprovalArtifacts({
+        apiUrl,
+        apiKey,
+        repository: gh.repository,
+        pullRequestNumber: mintPrNumber,
+        actionType,
+        hint,
+        evaluationId,
+        resourceId: targetId
+      });
+      info(
+        `AtlaSent Gate: minted ${minted.artifacts.length} approval_artifact.v1 from GitHub PR review(s) by ${minted.reviewers.join(", ")}`
+      );
+      return buildApprovalQuorum(hint, minted.artifacts);
+    } catch (error) {
+      if (error instanceof GithubApprovalMintError) {
+        warning(`AtlaSent Gate: could not mint a GitHub approval artifact: ${error.message}`);
+        return void 0;
+      }
+      throw error;
+    }
+  } : void 0;
   const artifactDigest = getInput("artifact-digest") || void 0;
   const changePlanOperation = actionType.split(".").pop() || actionType;
   const productionChangePlan = MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) ? {
@@ -3595,11 +3905,24 @@ async function run() {
     return;
   }
   const directExecutionPayloadHash = MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) ? void 0 : artifactDigest;
+  let evidenceProfile;
+  const evidenceProfileRaw = getInput("evidence-profile") || void 0;
+  if (evidenceProfileRaw) {
+    try {
+      evidenceProfile = JSON.parse(evidenceProfileRaw);
+    } catch {
+      setOutput("decision", "deny");
+      setOutput("verified", "false");
+      setFailed("AtlaSent Gate: `evidence-profile` is not valid JSON");
+      return;
+    }
+  }
   const evaluateOnly = (getInput("mode") || "enforce").trim().toLowerCase() === "evaluate-only";
   const waitForApprovalInput = (getInput("wait-for-approval") || "false").trim().toLowerCase() === "true";
   const maxWaitMinutesRaw = parseInt(getInput("max-wait-minutes") || "30", 10);
   const maxWaitMinutes = Number.isFinite(maxWaitMinutesRaw) && maxWaitMinutesRaw > 0 ? maxWaitMinutesRaw : 30;
   const maxWaitMs = maxWaitMinutes * 6e4;
+  const soloOperatorContext = (getInput("solo-operator-context") || "false").trim().toLowerCase() === "true";
   const config = {
     apiKey,
     apiUrl,
@@ -3609,6 +3932,8 @@ async function run() {
     environment,
     targetId,
     changePlan: productionChangePlan,
+    evidenceProfile,
+    onInsufficientApprovals,
     // Canonical artifact binding — the runtime binds this into the permit and
     // re-checks it at verify time (artifact-substitution defense).
     executionPayloadHash: directExecutionPayloadHash,
@@ -3665,7 +3990,8 @@ async function run() {
       ...approvalEvidence && approvalEvidence.source === "pr-reviews" ? {
         approvals: approvalEvidence.approvals,
         approving_reviewers: approvalEvidence.approving_reviewers
-      } : {}
+      } : {},
+      ...soloOperatorContext ? { solo_operator_compensating_control: {} } : {}
     }
   };
   async function reportEnforceFailure(err) {

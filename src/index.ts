@@ -24,7 +24,7 @@ import {
   waitForApprovalResolution,
   EnforceError,
 } from "@atlasent/enforce";
-import type { Decision, EnforceConfig } from "@atlasent/enforce";
+import type { ApprovalSigningHint, Decision, EnforceConfig } from "@atlasent/enforce";
 import { GateInfraError } from "./gate";
 import { runV21 } from "./v21";
 import { runPolicySync } from "./policySync";
@@ -67,6 +67,11 @@ import {
   type MintedGithubActionsIdentity,
 } from "./workloadIdentity";
 import { SoloOperatorAttestError, attestSoloOperator } from "./soloOperatorAttest";
+import {
+  GithubApprovalMintError,
+  buildApprovalQuorum,
+  mintGithubApprovalArtifacts,
+} from "./githubApprovalMint";
 
 function getApiKey(): string {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -1664,6 +1669,51 @@ export async function run(): Promise<void> {
     });
   }
 
+  // ADR-055 two-call acceptance lane: when the evaluate() call below denies
+  // with INSUFFICIENT_APPROVALS and a signing_hint (the action class
+  // requires a real, verified approval_artifact.v1/approval_quorum.v1 — a
+  // bare context.approvals count was never sufficient proof), mint real
+  // evidence FROM the PR reviews we just read, bound to the server's exact
+  // action_hash, and retry once. Only offered when approvals-from actually
+  // resolved a PR to read reviews from — a workflow with no PR (e.g. a
+  // manual dispatch with no associated pull request) has nothing to mint
+  // from here; see soloOperatorAttest.ts for that shape instead. A minting
+  // failure (no qualifying reviewer, endpoint unreachable, missing scope)
+  // is NOT escalated into a harder failure — it just means the original
+  // deny stands, exactly the behavior before this feature existed.
+  const approvalArtifactMintEnabled =
+    (getInput("approval-artifact-mint") || "true").trim().toLowerCase() !== "false";
+  const mintPrNumber: number | null =
+    approvalEvidence?.pr_number ??
+    (gh.pr_number && /^\d+$/.test(gh.pr_number) ? parseInt(gh.pr_number, 10) : null);
+  const onInsufficientApprovals =
+    approvalsFrom === "pr-reviews" && approvalArtifactMintEnabled && mintPrNumber
+      ? async (hint: ApprovalSigningHint): Promise<Record<string, unknown> | undefined> => {
+          try {
+            const minted = await mintGithubApprovalArtifacts({
+              apiUrl,
+              apiKey,
+              repository: gh.repository,
+              pullRequestNumber: mintPrNumber,
+              actionType,
+              hint,
+              resourceId: targetId,
+            });
+            info(
+              `AtlaSent Gate: minted ${minted.artifacts.length} approval_artifact.v1 ` +
+                `from GitHub PR review(s) by ${minted.reviewers.join(", ")}`,
+            );
+            return buildApprovalQuorum(hint, minted.artifacts);
+          } catch (error) {
+            if (error instanceof GithubApprovalMintError) {
+              warning(`AtlaSent Gate: could not mint a GitHub approval artifact: ${error.message}`);
+              return undefined;
+            }
+            throw error;
+          }
+        }
+      : undefined;
+
   const artifactDigest = getInput("artifact-digest") || undefined;
   const productionChangePlan = actionType === PRODUCTION_DEPLOY_ACTION
     ? {
@@ -1757,6 +1807,7 @@ export async function run(): Promise<void> {
     targetId,
     changePlan: productionChangePlan,
     evidenceProfile,
+    onInsufficientApprovals,
     // Canonical artifact binding — the runtime binds this into the permit and
     // re-checks it at verify time (artifact-substitution defense).
     executionPayloadHash: directExecutionPayloadHash,

@@ -78,6 +78,10 @@ async function evaluate(config) {
         payload["change_plan"] = config.changePlan;
     if (config.evidenceProfile != null)
         payload["evidence_profile"] = config.evidenceProfile;
+    if (config.quorum != null)
+        payload["quorum"] = config.quorum;
+    if (config.approval != null)
+        payload["approval"] = config.approval;
     // Artifact digest is a canonical top-level input — the runtime binds it into
     // the permit (execution_hash_expected). Never buried in context/presentation.
     if (config.executionPayloadHash != null) {
@@ -112,7 +116,33 @@ async function evaluate(config) {
     catch {
         throw new EnforceError("Non-JSON response from AtlaSent API", "evaluate");
     }
-    return mapDecision(raw);
+    const decision = mapDecision(raw);
+    // ADR-055 two-call acceptance lane (see EnforceConfig.onInsufficientApprovals
+    // above). `config.onInsufficientApprovals` is stripped on the retry call
+    // below, so this branch can only ever fire once per original evaluate()
+    // invocation — no unbounded recursion, no double-mint on a callback that
+    // itself denies.
+    if (decision.decision === "deny" &&
+        decision.denyCode === "INSUFFICIENT_APPROVALS" &&
+        config.onInsufficientApprovals &&
+        raw["signing_hint"] != null &&
+        typeof raw["signing_hint"] === "object") {
+        const hint = raw["signing_hint"];
+        let quorum;
+        try {
+            quorum = await config.onInsufficientApprovals(hint);
+        }
+        catch {
+            // The callback failing to produce evidence is not itself a new
+            // failure mode — fall through and return the original deny, same as
+            // "the callback declined."
+            quorum = undefined;
+        }
+        if (quorum) {
+            return evaluate({ ...config, quorum, onInsufficientApprovals: undefined });
+        }
+    }
+    return decision;
 }
 // ---------------------------------------------------------------------------
 // Step 2 — verify (decision check — no HTTP call)

@@ -170,6 +170,10 @@ var require_dist = __commonJS({
         payload["change_plan"] = config.changePlan;
       if (config.evidenceProfile != null)
         payload["evidence_profile"] = config.evidenceProfile;
+      if (config.quorum != null)
+        payload["quorum"] = config.quorum;
+      if (config.approval != null)
+        payload["approval"] = config.approval;
       if (config.executionPayloadHash != null) {
         payload["execution_payload_hash"] = config.executionPayloadHash;
       }
@@ -200,7 +204,20 @@ var require_dist = __commonJS({
       } catch {
         throw new EnforceError2("Non-JSON response from AtlaSent API", "evaluate");
       }
-      return mapDecision(raw);
+      const decision = mapDecision(raw);
+      if (decision.decision === "deny" && decision.denyCode === "INSUFFICIENT_APPROVALS" && config.onInsufficientApprovals && raw["signing_hint"] != null && typeof raw["signing_hint"] === "object") {
+        const hint = raw["signing_hint"];
+        let quorum;
+        try {
+          quorum = await config.onInsufficientApprovals(hint);
+        } catch {
+          quorum = void 0;
+        }
+        if (quorum) {
+          return evaluate2({ ...config, quorum, onInsufficientApprovals: void 0 });
+        }
+      }
+      return decision;
     }
     function verify2(decision) {
       switch (decision.decision) {
@@ -2620,6 +2637,79 @@ async function attestSoloOperator(args, deps = {}) {
   return { attestationId, attestedBy, changePlanHash };
 }
 
+// src/githubApprovalMint.ts
+var GithubApprovalMintError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "GithubApprovalMintError";
+  }
+};
+async function mintGithubApprovalArtifacts(args, deps = {}) {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const apiUrl = args.apiUrl.replace(/\/+$/, "");
+  const body = {
+    repository: args.repository,
+    pull_request_number: args.pullRequestNumber,
+    action_type: args.actionType,
+    action_hash: args.hint.bind.action_hash,
+    environment: args.hint.bind.environment,
+    ...args.resourceId ? { resource_id: args.resourceId } : {}
+  };
+  let response;
+  try {
+    response = await fetchImpl(`${apiUrl}/v1-github-approval-mint`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${args.apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+  } catch (error) {
+    throw new GithubApprovalMintError(
+      `AtlaSent GitHub-approval-mint endpoint is unreachable: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  const responseText = await response.text();
+  if (!response.ok) {
+    let detail = responseText.trim().slice(0, 300);
+    try {
+      const parsed2 = JSON.parse(responseText);
+      const message = parsed2["message"] ?? parsed2["error"];
+      if (typeof message === "string" && message.trim())
+        detail = message.trim().slice(0, 300);
+    } catch {
+    }
+    throw new GithubApprovalMintError(
+      `GitHub-approval-mint was rejected (HTTP ${response.status}): ${detail || "empty response"}`
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(responseText);
+  } catch {
+    throw new GithubApprovalMintError("GitHub-approval-mint endpoint returned non-JSON");
+  }
+  const reviewers = Array.isArray(parsed.reviewers) ? parsed.reviewers.filter((r) => typeof r === "string") : [];
+  const artifacts = Array.isArray(parsed.artifacts) ? parsed.artifacts : [];
+  if (artifacts.length === 0) {
+    throw new GithubApprovalMintError("GitHub-approval-mint endpoint returned no artifacts");
+  }
+  return { reviewers, artifacts };
+}
+function buildApprovalQuorum(hint, artifacts) {
+  return {
+    version: "approval_quorum.v1",
+    tenant_id: hint.bind.tenant_id,
+    action_hash: hint.bind.action_hash,
+    environment: hint.bind.environment,
+    issued_at: (/* @__PURE__ */ new Date()).toISOString(),
+    policy: { required_count: artifacts.length },
+    approvals: artifacts
+  };
+}
+
 // src/index.ts
 function getApiKey() {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -3751,6 +3841,31 @@ async function run() {
       warn: warning
     });
   }
+  const approvalArtifactMintEnabled = (getInput("approval-artifact-mint") || "true").trim().toLowerCase() !== "false";
+  const mintPrNumber = approvalEvidence?.pr_number ?? (gh.pr_number && /^\d+$/.test(gh.pr_number) ? parseInt(gh.pr_number, 10) : null);
+  const onInsufficientApprovals = approvalsFrom === "pr-reviews" && approvalArtifactMintEnabled && mintPrNumber ? async (hint) => {
+    try {
+      const minted = await mintGithubApprovalArtifacts({
+        apiUrl,
+        apiKey,
+        repository: gh.repository,
+        pullRequestNumber: mintPrNumber,
+        actionType,
+        hint,
+        resourceId: targetId
+      });
+      info(
+        `AtlaSent Gate: minted ${minted.artifacts.length} approval_artifact.v1 from GitHub PR review(s) by ${minted.reviewers.join(", ")}`
+      );
+      return buildApprovalQuorum(hint, minted.artifacts);
+    } catch (error) {
+      if (error instanceof GithubApprovalMintError) {
+        warning(`AtlaSent Gate: could not mint a GitHub approval artifact: ${error.message}`);
+        return void 0;
+      }
+      throw error;
+    }
+  } : void 0;
   const artifactDigest = getInput("artifact-digest") || void 0;
   const productionChangePlan = actionType === PRODUCTION_DEPLOY_ACTION ? {
     operation: "deploy",
@@ -3797,6 +3912,7 @@ async function run() {
     targetId,
     changePlan: productionChangePlan,
     evidenceProfile,
+    onInsufficientApprovals,
     // Canonical artifact binding — the runtime binds this into the permit and
     // re-checks it at verify time (artifact-substitution defense).
     executionPayloadHash: directExecutionPayloadHash,

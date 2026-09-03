@@ -980,3 +980,185 @@ describe("verified/derived context fields resist operator override", () => {
     expect(enforceConfig.context["approvals"]).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 8. GitHub-approval-artifact minting wiring (atlasent-api#2830)
+//
+// @atlasent/enforce is mocked at the module level (see the top of this
+// file), so evaluate()'s own retry logic (tested directly and thoroughly in
+// packages/enforce/src/__tests__/evaluate.test.ts) never actually runs here.
+// What these tests prove instead is the piece only index.ts owns: does it
+// build the `onInsufficientApprovals` callback with the right shape, under
+// the right conditions, and does invoking it actually call
+// v1-github-approval-mint with the correct body and return a correctly
+// bound approval_quorum.v1?
+// ---------------------------------------------------------------------------
+
+describe("GitHub-approval-artifact minting wiring", () => {
+  function setGitHubContext(overrides: Partial<Record<string, string>> = {}) {
+    const defaults: Record<string, string> = {
+      GITHUB_REPOSITORY: "acme/widgets",
+      GITHUB_REF: "refs/heads/main",
+      GITHUB_SHA: "abc123real",
+      GITHUB_RUN_ID: "999",
+      GITHUB_RUN_NUMBER: "1",
+      GITHUB_WORKFLOW: "deploy",
+      GITHUB_EVENT_NAME: "push",
+      GITHUB_SERVER_URL: "https://github.com",
+    };
+    for (const [k, v] of Object.entries({ ...defaults, ...overrides })) {
+      process.env[k] = v;
+    }
+  }
+
+  function getConfig(): Record<string, unknown> {
+    const calls = (mockEnforce as unknown as { mock: { calls: Array<Array<unknown>> } }).mock.calls;
+    return calls[0][0] as Record<string, unknown>;
+  }
+
+  const HINT = {
+    assertion_type: "approval_artifact.v1",
+    bind: { action_hash: "hash-abc", tenant_id: "org-1", environment: "production" },
+  };
+
+  let savedFetch: typeof fetch;
+  beforeEach(() => {
+    savedFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = savedFetch;
+  });
+
+  it("wires a callback when approvals-from: pr-reviews resolves a PR (the default)", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setGitHubContext();
+    mockResolveApprovals.mockResolvedValueOnce({
+      approvals: 1,
+      approving_reviewers: ["alice"],
+      pr_number: 42,
+      source: "pr-reviews",
+    });
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    expect(typeof getConfig()["onInsufficientApprovals"]).toBe("function");
+  });
+
+  it("does NOT wire a callback when approvals-from: none", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("approvals-from", "none");
+    setGitHubContext();
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    expect(getConfig()["onInsufficientApprovals"]).toBeUndefined();
+  });
+
+  it("does NOT wire a callback when approval-artifact-mint: false", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("approval-artifact-mint", "false");
+    setGitHubContext();
+    mockResolveApprovals.mockResolvedValueOnce({
+      approvals: 1,
+      approving_reviewers: ["alice"],
+      pr_number: 42,
+      source: "pr-reviews",
+    });
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    expect(getConfig()["onInsufficientApprovals"]).toBeUndefined();
+  });
+
+  it("does NOT wire a callback when no PR was resolved (nothing to mint from)", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setGitHubContext();
+    mockResolveApprovals.mockResolvedValueOnce({
+      approvals: 0,
+      approving_reviewers: [],
+      pr_number: null,
+      source: "pr-reviews",
+    });
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    expect(getConfig()["onInsufficientApprovals"]).toBeUndefined();
+  });
+
+  it("the wired callback calls v1-github-approval-mint with the correct body and returns a bound quorum", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setGitHubContext();
+    mockResolveApprovals.mockResolvedValueOnce({
+      approvals: 1,
+      approving_reviewers: ["alice"],
+      pr_number: 42,
+      source: "pr-reviews",
+    });
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/v1-github-approval-mint$/);
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body["repository"]).toBe("acme/widgets");
+      expect(body["pull_request_number"]).toBe(42);
+      expect(body["action_type"]).toBe("production.deploy");
+      expect(body["action_hash"]).toBe("hash-abc");
+      expect(body["environment"]).toBe("production");
+      return new Response(
+        JSON.stringify({
+          reviewers: ["alice"],
+          artifacts: [{ version: "approval_artifact.v1", reviewer: { principal_id: "github:alice" } }],
+        }),
+        { status: 200 },
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await run();
+
+    const callback = getConfig()["onInsufficientApprovals"] as (
+      hint: typeof HINT,
+    ) => Promise<Record<string, unknown> | undefined>;
+    const quorum = await callback(HINT);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(quorum).toBeDefined();
+    expect(quorum!["version"]).toBe("approval_quorum.v1");
+    expect(quorum!["tenant_id"]).toBe("org-1");
+    expect(quorum!["action_hash"]).toBe("hash-abc");
+    expect((quorum!["approvals"] as unknown[]).length).toBe(1);
+  });
+
+  it("the wired callback returns undefined (never throws) when the mint endpoint rejects the call", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setGitHubContext();
+    mockResolveApprovals.mockResolvedValueOnce({
+      approvals: 1,
+      approving_reviewers: ["alice"],
+      pr_number: 42,
+      source: "pr-reviews",
+    });
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    globalThis.fetch = vi.fn(
+      async () => new Response(JSON.stringify({ error: "insufficient_scope" }), { status: 403 }),
+    ) as unknown as typeof fetch;
+
+    await run();
+
+    const callback = getConfig()["onInsufficientApprovals"] as (
+      hint: typeof HINT,
+    ) => Promise<Record<string, unknown> | undefined>;
+    await expect(callback(HINT)).resolves.toBeUndefined();
+  });
+});

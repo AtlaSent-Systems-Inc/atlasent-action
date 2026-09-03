@@ -167,6 +167,55 @@ Set `approvals-from: none` only when the selected policy does not depend on
 GitHub-review-derived approval evidence or when a different, explicitly trusted
 authority source is being used.
 
+### Real signed approval artifacts (atlasent-api#2830)
+
+`context.approvals`/`context.approving_reviewers` above are a plain number and
+a name list — enough for a policy template that counts, but not a
+cryptographic proof a reviewer actually approved. `production.deploy`'s Canon
+floor requires a real `requires_human_approval` gate, which only accepts a
+signed `approval_artifact.v1` / `approval_quorum.v1` — not a self-reported
+count.
+
+By default (`approval-artifact-mint: true`), when an evaluate() call denies
+with `INSUFFICIENT_APPROVALS` and asks for one of these artifacts, the action
+automatically:
+
+1. Calls `v1-github-approval-mint`, which independently re-reads the PR's
+   reviews via the org's own GitHub App installation (never trusting what
+   this action already reported) and mints one signed `approval_artifact.v1`
+   per distinct reviewer whose latest review is `APPROVED`.
+2. Packages them into an `approval_quorum.v1` bound to the server's exact
+   `action_hash` for this request.
+3. Retries the evaluate() call once with that quorum attached.
+
+This requires the API key to also carry the `approval_artifact:mint` scope
+(alongside `evaluate:write`/`verify:execute`) and `GITHUB_TOKEN` — the same
+requirements `approvals-from: pr-reviews` already has, plus the one scope. A
+minting failure (no qualifying reviewer, wrong scope, endpoint unreachable)
+never escalates into a harder failure; it just leaves the original deny
+standing. Set `approval-artifact-mint: "false"` to disable the retry entirely
+and always see the original deny.
+
+```yaml
+- name: Authorization gate
+  id: gate
+  uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+    GITHUB_TOKEN: ${{ github.token }}
+  with:
+    action: production.deploy
+    environment: live
+```
+
+This is a different mechanism from the solo-operator compensating control
+below: that one is for a single-accountable-human org with no second
+reviewer to derive an artifact from at all (e.g. a manually-dispatched
+workflow with no associated pull request). This one is for the ordinary case
+where a real second human DID leave an approving PR review — it turns that
+fact into cryptographic evidence instead of working around its absence.
+
 ## Stronger execution-boundary pattern
 
 The default one-step mode performs evaluate → permit → verify in the gate step.

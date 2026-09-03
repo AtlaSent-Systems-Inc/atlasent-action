@@ -77,6 +77,21 @@ inputs:
       which denies a count-gated deploy (the fail-closed direction).
     required: false
     default: 'pr-reviews'
+  approval-artifact-mint:
+    description: |
+      When `approvals-from: pr-reviews` and the evaluate() call denies with
+      INSUFFICIENT_APPROVALS asking for a real signed approval_artifact.v1
+      (atlasent-api#2830), automatically mint one FROM the PR's actual
+      GitHub reviews (via v1-github-approval-mint, independently
+      re-verified server-side through the org's GitHub App installation —
+      never a self-reported count) and retry once. Set "false" to disable
+      this and let the original deny stand unretried — e.g. if the API key
+      does not carry the `approval_artifact:mint` scope. Requires
+      GITHUB_TOKEN (same as approvals-from: pr-reviews). A minting failure
+      (no qualifying reviewer, endpoint unreachable) never escalates beyond
+      the original deny.
+    required: false
+    default: 'true'
   evaluations:
     description: 'JSON array of evaluation requests for batch mode, e.g. [{"action":"production.deploy","actor":"ignored","environment":"production"}]. Each production.deploy item requires environment and uses its own runtime-minted GitHub OIDC workload actor; caller actor and actor_identity values cannot authorize it. When set, single-eval inputs (action, actor, context) are ignored.'
     required: false

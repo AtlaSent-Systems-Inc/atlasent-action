@@ -572,6 +572,9 @@ async function loopEvaluate(apiUrl, headers, items) {
 
 // src/canonicalAction.ts
 var PRODUCTION_DEPLOY_ACTION = "production.deploy";
+var INFRASTRUCTURE_CHANGE_ACTION = "infrastructure.change";
+var PRODUCTION_ROLLBACK_ACTION = "production.rollback";
+var SECRET_CONFIGURATION_CHANGE_ACTION = "secret.configuration.change";
 var PACKAGE_RELEASE_ACTION = "package.release";
 var TRIAL_BLINDING_SETUP_ACTION = "trial.blinding.setup";
 var TRIAL_UNBLINDING_EXECUTE_ACTION = "trial.unblinding.execute";
@@ -580,11 +583,20 @@ var TRUST_ROOT_PUBLISH_ACTION = "trust_root.publish";
 var LEGACY_PRODUCTION_DEPLOY_ALIAS = "deployment.production";
 var GATE_PERMITTED_ACTIONS = /* @__PURE__ */ new Set([
   PRODUCTION_DEPLOY_ACTION,
+  INFRASTRUCTURE_CHANGE_ACTION,
+  PRODUCTION_ROLLBACK_ACTION,
+  SECRET_CONFIGURATION_CHANGE_ACTION,
   PACKAGE_RELEASE_ACTION,
   TRIAL_BLINDING_SETUP_ACTION,
   TRIAL_UNBLINDING_EXECUTE_ACTION,
   TRIAL_UNBLINDING_EMERGENCY_ACTION,
   TRUST_ROOT_PUBLISH_ACTION
+]);
+var MANDATORY_CHANGE_CONTROL_ACTIONS = /* @__PURE__ */ new Set([
+  PRODUCTION_DEPLOY_ACTION,
+  INFRASTRUCTURE_CHANGE_ACTION,
+  PRODUCTION_ROLLBACK_ACTION,
+  SECRET_CONFIGURATION_CHANGE_ACTION
 ]);
 function normalizeProtectedAction(raw) {
   if (raw === LEGACY_PRODUCTION_DEPLOY_ALIAS) {
@@ -2937,7 +2949,7 @@ function resolveEnvironment(explicit, ref, apiKey) {
 }
 async function resolveProtectedActor(args) {
   const triggeringActorId = `github:${args.triggeringActor}`;
-  if (args.actionType !== PRODUCTION_DEPLOY_ACTION) {
+  if (!MANDATORY_CHANGE_CONTROL_ACTIONS.has(args.actionType)) {
     return { actorId: triggeringActorId, triggeringActorId };
   }
   const workloadIdentity = await mintGithubActionsActorIdentity(
@@ -3076,17 +3088,17 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
     return;
   }
   const actorId = actorResolution.actorId;
-  if (actionType === PRODUCTION_DEPLOY_ACTION && !runtimeExecutionHash) {
+  if (MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) && !runtimeExecutionHash) {
     setOutput("decision", "deny");
     setOutput("verified", "false");
     setOutput("verify-outcome", "invalid");
     setOutput("verify-error-code", "MISSING_BINDING");
     setFailed(
-      "Deploy blocked at execution boundary: production.deploy requires the opaque execution-hash output from its evaluate-only gate. The raw artifact-digest is not the runtime-derived change-plan binding."
+      `Deploy blocked at execution boundary: "${actionType}" requires the opaque execution-hash output from its evaluate-only gate. The raw artifact-digest is not the runtime-derived change-plan binding.`
     );
     return;
   }
-  const verificationPayloadHash = actionType === PRODUCTION_DEPLOY_ACTION ? runtimeExecutionHash : artifactDigest;
+  const verificationPayloadHash = MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) ? runtimeExecutionHash : artifactDigest;
   maskValue(permitToken);
   const config = {
     apiKey,
@@ -3875,8 +3887,9 @@ async function run() {
     }
   } : void 0;
   const artifactDigest = getInput("artifact-digest") || void 0;
-  const productionChangePlan = actionType === PRODUCTION_DEPLOY_ACTION ? {
-    operation: "deploy",
+  const changePlanOperation = actionType.split(".").pop() || actionType;
+  const productionChangePlan = MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) ? {
+    operation: changePlanOperation,
     revision: actorResolution.workloadIdentity?.source.sha ?? "",
     ...artifactDigest ? { artifact_ref: artifactDigest } : {}
   } : void 0;
@@ -3887,11 +3900,11 @@ async function run() {
     setOutput("verify-outcome", "invalid");
     setOutput("verify-error-code", "MISSING_BINDING");
     setFailed(
-      "AtlaSent Gate: the verified GitHub workload identity did not carry a commit SHA, so a complete production.deploy change_plan cannot be derived. Deploy blocked (fail-closed)."
+      `AtlaSent Gate: the verified GitHub workload identity did not carry a commit SHA, so a complete "${actionType}" change_plan cannot be derived. Deploy blocked (fail-closed).`
     );
     return;
   }
-  const directExecutionPayloadHash = actionType === PRODUCTION_DEPLOY_ACTION ? void 0 : artifactDigest;
+  const directExecutionPayloadHash = MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) ? void 0 : artifactDigest;
   let evidenceProfile;
   const evidenceProfileRaw = getInput("evidence-profile") || void 0;
   if (evidenceProfileRaw) {
@@ -4248,7 +4261,7 @@ async function run() {
       );
       return;
     }
-    const boundaryBindingGuidance = actionType === PRODUCTION_DEPLOY_ACTION ? "this step's `execution-hash` output" : "the SAME `artifact-digest` (when one was evaluated)";
+    const boundaryBindingGuidance = MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) ? "this step's `execution-hash` output" : "the SAME `artifact-digest` (when one was evaluated)";
     warning(
       "AtlaSent Gate: evaluate-only mode \u2014 a permit was ISSUED but NOT verified or consumed. The single-use permit is consumed at the EXECUTION BOUNDARY. Add a second AtlaSent step with `verify-permit: true`, this step's `permit-token` output, and " + boundaryBindingGuidance + ", then gate the protected step on THAT step's `verified == 'true'`. Do NOT gate the deploy on this step's `decision` or `permit-issued` \u2014 neither proves the artifact/environment were re-bound at the boundary."
     );

@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   GATE_PERMITTED_ACTIONS,
+  INFRASTRUCTURE_CHANGE_ACTION,
   LEGACY_PRODUCTION_DEPLOY_ALIAS,
+  MANDATORY_CHANGE_CONTROL_ACTIONS,
   PACKAGE_RELEASE_ACTION,
   PRODUCTION_DEPLOY_ACTION,
+  PRODUCTION_ROLLBACK_ACTION,
   PROTECTED_ACTIONS_CATALOG,
+  SECRET_CONFIGURATION_CHANGE_ACTION,
   TRIAL_BLINDING_SETUP_ACTION,
   TRIAL_UNBLINDING_EMERGENCY_ACTION,
   TRIAL_UNBLINDING_EXECUTE_ACTION,
@@ -94,12 +98,39 @@ describe("canonicalAction", () => {
       expect(GATE_PERMITTED_ACTIONS.has(TRUST_ROOT_PUBLISH_ACTION)).toBe(true);
     });
 
+    it("permits the other three mandatory-change-control action types", () => {
+      expect(GATE_PERMITTED_ACTIONS.has(INFRASTRUCTURE_CHANGE_ACTION)).toBe(true);
+      expect(GATE_PERMITTED_ACTIONS.has(PRODUCTION_ROLLBACK_ACTION)).toBe(true);
+      expect(GATE_PERMITTED_ACTIONS.has(SECRET_CONFIGURATION_CHANGE_ACTION)).toBe(true);
+    });
+
     it("is a conservative explicit allow-list (not open to arbitrary types)", () => {
-      expect(GATE_PERMITTED_ACTIONS.size).toBe(6);
+      expect(GATE_PERMITTED_ACTIONS.size).toBe(9);
       // A well-formed but unlisted action is NOT gate-permitted, even though
       // its format is valid — the runtime policy is the authority, but the
       // gate's client-side guard stays explicit.
       expect(GATE_PERMITTED_ACTIONS.has("database.migration.apply")).toBe(false);
+    });
+  });
+
+  describe("MANDATORY_CHANGE_CONTROL_ACTIONS", () => {
+    it("contains exactly the four action types atlasent-api mandatorily requires a verified actor + change_plan for", () => {
+      expect(MANDATORY_CHANGE_CONTROL_ACTIONS.size).toBe(4);
+      expect(MANDATORY_CHANGE_CONTROL_ACTIONS.has(PRODUCTION_DEPLOY_ACTION)).toBe(true);
+      expect(MANDATORY_CHANGE_CONTROL_ACTIONS.has(INFRASTRUCTURE_CHANGE_ACTION)).toBe(true);
+      expect(MANDATORY_CHANGE_CONTROL_ACTIONS.has(PRODUCTION_ROLLBACK_ACTION)).toBe(true);
+      expect(MANDATORY_CHANGE_CONTROL_ACTIONS.has(SECRET_CONFIGURATION_CHANGE_ACTION)).toBe(true);
+    });
+
+    it("is a strict subset of GATE_PERMITTED_ACTIONS (every mandatory-change-control type is also gate-permitted)", () => {
+      for (const action of MANDATORY_CHANGE_CONTROL_ACTIONS) {
+        expect(GATE_PERMITTED_ACTIONS.has(action)).toBe(true);
+      }
+    });
+
+    it("does not include package.release or trust_root.publish (workload-identity-optional action types)", () => {
+      expect(MANDATORY_CHANGE_CONTROL_ACTIONS.has(PACKAGE_RELEASE_ACTION)).toBe(false);
+      expect(MANDATORY_CHANGE_CONTROL_ACTIONS.has(TRUST_ROOT_PUBLISH_ACTION)).toBe(false);
     });
 
     it("package.release is distinct from production.deploy", () => {

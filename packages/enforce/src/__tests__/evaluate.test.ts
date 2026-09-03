@@ -116,6 +116,22 @@ describe("evaluate", () => {
     expect((body["context"] as Record<string, unknown>)["change_plan"]).toBeUndefined();
   });
 
+  it("forwards evidence_profile as a top-level field, distinct from change_plan", async () => {
+    mockResponse(200, { decision: "allow" });
+    const evidenceProfile = {
+      kind: "control_override",
+      control_id: "waf-rule-442",
+      override_scope: "inbound traffic only, api.example.com",
+      reason: "Active incident INC-1029.",
+      expires_at: "2026-08-30T13:00:00Z",
+    };
+    await evaluate({ ...BASE_CONFIG, evidenceProfile });
+    const body = JSON.parse(mockPost.mock.calls[0][1] as string) as Record<string, unknown>;
+    expect(body["evidence_profile"]).toEqual(evidenceProfile);
+    expect(body["change_plan"]).toBeUndefined();
+    expect((body["context"] as Record<string, unknown>)["evidence_profile"]).toBeUndefined();
+  });
+
   it("throws EnforceError(evaluate) on network error", async () => {
     mockPost.mockRejectedValueOnce(new Error("ECONNREFUSED"));
     await expect(evaluate(BASE_CONFIG)).rejects.toSatisfy(
@@ -276,5 +292,157 @@ describe("evaluate", () => {
     });
     const d = await evaluate(BASE_CONFIG);
     expect(d.auditHash).toBe("sha256:real-hash");
+  });
+
+  // ── quorum / approval forwarding ───────────────────────────────────────────
+
+  it("forwards quorum as a top-level field", async () => {
+    mockResponse(200, { decision: "allow" });
+    const quorum = { version: "approval_quorum.v1", tenant_id: "org-1", action_hash: "h", environment: "production", policy: { required_count: 1 }, approvals: [] };
+    await evaluate({ ...BASE_CONFIG, quorum });
+    const body = JSON.parse(mockPost.mock.calls[0][1] as string) as Record<string, unknown>;
+    expect(body["quorum"]).toEqual(quorum);
+  });
+
+  it("forwards approval as a top-level field", async () => {
+    mockResponse(200, { decision: "allow" });
+    const approval = { artifact: { version: "approval_artifact.v1" } };
+    await evaluate({ ...BASE_CONFIG, approval });
+    const body = JSON.parse(mockPost.mock.calls[0][1] as string) as Record<string, unknown>;
+    expect(body["approval"]).toEqual(approval);
+  });
+
+  // ── ADR-055 two-call acceptance lane (onInsufficientApprovals retry) ──────
+
+  const SIGNING_HINT = {
+    assertion_type: "approval_artifact.v1",
+    bind: { action_hash: "hash-abc", tenant_id: "org-1", environment: "production" },
+  };
+
+  it("retries once with the callback's quorum on an INSUFFICIENT_APPROVALS deny carrying a signing_hint, passing the deny's own evaluationId", async () => {
+    mockResponse(200, {
+      decision: "deny",
+      deny_code: "INSUFFICIENT_APPROVALS",
+      signing_hint: SIGNING_HINT,
+      request_id: "ev-1",
+    });
+    mockResponse(200, { decision: "allow", permit_token: "pt-retry" });
+
+    const onInsufficientApprovals = vi.fn().mockResolvedValue({
+      version: "approval_quorum.v1",
+      approvals: [{ version: "approval_artifact.v1" }],
+    });
+
+    const d = await evaluate({ ...BASE_CONFIG, onInsufficientApprovals });
+
+    expect(mockPost).toHaveBeenCalledTimes(2);
+    expect(onInsufficientApprovals).toHaveBeenCalledWith(SIGNING_HINT, "ev-1");
+    expect(d.decision).toBe("allow");
+    expect(d.permitToken).toBe("pt-retry");
+    const secondBody = JSON.parse(mockPost.mock.calls[1][1] as string) as Record<string, unknown>;
+    expect((secondBody["quorum"] as Record<string, unknown>)["version"]).toBe("approval_quorum.v1");
+  });
+
+  it("passes evaluationId as undefined to the callback when the deny response carries no request_id/evaluation_id", async () => {
+    mockResponse(200, {
+      decision: "deny",
+      deny_code: "INSUFFICIENT_APPROVALS",
+      signing_hint: SIGNING_HINT,
+    });
+    const onInsufficientApprovals = vi.fn().mockResolvedValue(undefined);
+
+    await evaluate({ ...BASE_CONFIG, onInsufficientApprovals });
+
+    expect(onInsufficientApprovals).toHaveBeenCalledWith(SIGNING_HINT, undefined);
+  });
+
+  it("returns the original deny, unretried, when the callback resolves to undefined", async () => {
+    mockResponse(200, {
+      decision: "deny",
+      deny_code: "INSUFFICIENT_APPROVALS",
+      deny_reason: "no reviewers found",
+      signing_hint: SIGNING_HINT,
+    });
+    const onInsufficientApprovals = vi.fn().mockResolvedValue(undefined);
+
+    const d = await evaluate({ ...BASE_CONFIG, onInsufficientApprovals });
+
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(d.decision).toBe("deny");
+    expect(d.denyReason).toBe("no reviewers found");
+  });
+
+  it("returns the original deny, unretried, when the callback throws", async () => {
+    mockResponse(200, {
+      decision: "deny",
+      deny_code: "INSUFFICIENT_APPROVALS",
+      signing_hint: SIGNING_HINT,
+    });
+    const onInsufficientApprovals = vi.fn().mockRejectedValue(new Error("mint unreachable"));
+
+    const d = await evaluate({ ...BASE_CONFIG, onInsufficientApprovals });
+
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(d.decision).toBe("deny");
+  });
+
+  it("never retries a deny with a different deny_code", async () => {
+    mockResponse(200, {
+      decision: "deny",
+      deny_code: "ENVIRONMENT_MISMATCH",
+      signing_hint: SIGNING_HINT,
+    });
+    const onInsufficientApprovals = vi.fn();
+
+    await evaluate({ ...BASE_CONFIG, onInsufficientApprovals });
+
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(onInsufficientApprovals).not.toHaveBeenCalled();
+  });
+
+  it("never retries INSUFFICIENT_APPROVALS when no signing_hint is present", async () => {
+    mockResponse(200, { decision: "deny", deny_code: "INSUFFICIENT_APPROVALS" });
+    const onInsufficientApprovals = vi.fn();
+
+    await evaluate({ ...BASE_CONFIG, onInsufficientApprovals });
+
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(onInsufficientApprovals).not.toHaveBeenCalled();
+  });
+
+  it("never calls the callback when no callback is configured", async () => {
+    mockResponse(200, {
+      decision: "deny",
+      deny_code: "INSUFFICIENT_APPROVALS",
+      signing_hint: SIGNING_HINT,
+    });
+
+    const d = await evaluate(BASE_CONFIG);
+
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(d.decision).toBe("deny");
+  });
+
+  it("retries at most once even if the retried response is itself an unretried-shape INSUFFICIENT_APPROVALS deny", async () => {
+    // The retry call strips onInsufficientApprovals from config, so even a
+    // second INSUFFICIENT_APPROVALS+signing_hint response cannot trigger a
+    // second retry — this proves the guard, not just the happy path.
+    mockResponse(200, {
+      decision: "deny",
+      deny_code: "INSUFFICIENT_APPROVALS",
+      signing_hint: SIGNING_HINT,
+    });
+    mockResponse(200, {
+      decision: "deny",
+      deny_code: "INSUFFICIENT_APPROVALS",
+      signing_hint: SIGNING_HINT,
+    });
+    const onInsufficientApprovals = vi.fn().mockResolvedValue({ version: "approval_quorum.v1" });
+
+    const d = await evaluate({ ...BASE_CONFIG, onInsufficientApprovals });
+
+    expect(mockPost).toHaveBeenCalledTimes(2);
+    expect(onInsufficientApprovals).toHaveBeenCalledTimes(1);
+    expect(d.decision).toBe("deny");
   });
 });

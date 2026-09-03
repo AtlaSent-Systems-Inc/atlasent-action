@@ -17,6 +17,13 @@ inputs:
   artifact-digest:
     description: 'SHA-256 digest of the artifact being deployed (e.g. sha256:<image-or-plan-hash>). For production.deploy this becomes change_plan.artifact_ref and the runtime derives the permit execution hash from the complete plan; for other actions it remains the direct execution_payload_hash. At a separate verify-permit boundary, pass the gate output execution-hash rather than this raw artifact digest.'
     required: false
+  evidence-profile:
+    description: 'JSON solo-operator compensating-control evidence for a NON-production.deploy action type (e.g. {"kind":"control_override","control_id":"...","override_scope":"...","reason":"...","expires_at":"..."} or {"kind":"access_grant",...} — see atlasent-api _shared/solo-operator-evidence-profile.ts for the full field set per kind). Used both by a solo-operator-attest step (to record the evidence) and the later evaluate step (to derive the SAME hash the attestation is compared against). No effect unless solo-operator-context is also "true" and the action class actually requires independent approval.'
+    required: false
+  solo-operator-context:
+    description: 'Set "true" to add context.solo_operator_compensating_control:{} to this evaluate call — the trigger the runtime''s solo-operator compensating control (atlasent-api _shared/solo-operator-compensating-control.ts) checks for. Grants no authority by itself: a no-op unless the action class requires independent approval, the ordinary approving_reviewers path is unprovable, AND a prior solo-operator-attest step already recorded matching evidence (fresh, same change_plan/evidence-profile). Equivalent to passing context: ''{"solo_operator_compensating_control":{}}'' by hand.'
+    required: false
+    default: 'false'
   execution-hash:
     description: 'Opaque runtime-derived execution binding from a prior evaluate-only gate. Required for a separate production.deploy verify-permit step; pass steps.<gate>.outputs.execution-hash unchanged. Do not compute or substitute this value in the workflow.'
     required: false
@@ -70,6 +77,21 @@ inputs:
       which denies a count-gated deploy (the fail-closed direction).
     required: false
     default: 'pr-reviews'
+  approval-artifact-mint:
+    description: |
+      When `approvals-from: pr-reviews` and the evaluate() call denies with
+      INSUFFICIENT_APPROVALS asking for a real signed approval_artifact.v1
+      (atlasent-api#2830), automatically mint one FROM the PR's actual
+      GitHub reviews (via v1-github-approval-mint, independently
+      re-verified server-side through the org's GitHub App installation —
+      never a self-reported count) and retry once. Set "false" to disable
+      this and let the original deny stand unretried — e.g. if the API key
+      does not carry the `approval_artifact:mint` scope. Requires
+      GITHUB_TOKEN (same as approvals-from: pr-reviews). A minting failure
+      (no qualifying reviewer, endpoint unreachable) never escalates beyond
+      the original deny.
+    required: false
+    default: 'true'
   evaluations:
     description: 'JSON array of evaluation requests for batch mode, e.g. [{"action":"production.deploy","actor":"ignored","environment":"production"}]. Each production.deploy item requires environment and uses its own runtime-minted GitHub OIDC workload actor; caller actor and actor_identity values cannot authorize it. When set, single-eval inputs (action, actor, context) are ignored.'
     required: false
@@ -300,6 +322,28 @@ inputs:
       workflows that run change-brief mode on every commit.
     required: false
     default: 'false'
+  # ── Solo-operator compensating-control attestation ────────────────────────────────────
+  solo-operator-attest:
+    description: |
+      Set "true" to run solo-operator ATTEST mode instead of evaluate — mints a
+      GitHub-OIDC-verified actor identity bound to solo_operator.attest and
+      POSTs it plus this change''s evidence to /v1-solo-operator-attest,
+      recording (never authorizing) evidence a LATER `action:` evaluate step
+      can rely on. Requires `id-token: write`. Run as its own step, before the
+      real evaluate step; pass solo-operator-context: "true" (and, for a
+      non-production.deploy action, the SAME evidence-profile) to that later
+      step. See atlasent-api _shared/solo-operator-compensating-control.ts.
+    required: false
+    default: 'false'
+  solo-operator-action-class-id:
+    description: 'UUID of this org''s action_classes row for `action` (required when solo-operator-attest is "true"). Find it via the AtlaSent console or API — not derivable from the action_type string alone.'
+    required: false
+  solo-operator-attestation-reason:
+    description: 'Contemporaneous, human-written justification for this attestation (required when solo-operator-attest is "true"; minimum 20 characters, enforced server-side).'
+    required: false
+  commit-sha:
+    description: 'Commit SHA the solo-operator attestation is FOR (CI-status/cooling-off/staging-acceptance lookup key). Defaults to GITHUB_SHA.'
+    required: false
   # ── Post-deploy compliance evidence bundle ────────────────────────────────────────────
   evidence-bundle:
     description: |
@@ -366,6 +410,10 @@ inputs:
     required: false
     default: 'true'
 outputs:
+  solo-attestation-id:
+    description: 'UUID of the recorded solo_operator_attestations row. Set only by solo-operator-attest mode. Empty on failure (fail-closed — no partial attestation is ever recorded).'
+  solo-attested-by:
+    description: 'The verified solo-operator identity the attestation is recorded under (server-derived from the action class''s solo_operator_attested_identity, never a caller-supplied value). Set only by solo-operator-attest mode.'
   decision:
     description: 'The evaluation decision (allow/deny/hold/escalate). Set for single-eval path only.'
   permit-token:

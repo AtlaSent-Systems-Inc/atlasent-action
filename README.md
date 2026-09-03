@@ -167,6 +167,55 @@ Set `approvals-from: none` only when the selected policy does not depend on
 GitHub-review-derived approval evidence or when a different, explicitly trusted
 authority source is being used.
 
+### Real signed approval artifacts (atlasent-api#2830)
+
+`context.approvals`/`context.approving_reviewers` above are a plain number and
+a name list — enough for a policy template that counts, but not a
+cryptographic proof a reviewer actually approved. `production.deploy`'s Canon
+floor requires a real `requires_human_approval` gate, which only accepts a
+signed `approval_artifact.v1` / `approval_quorum.v1` — not a self-reported
+count.
+
+By default (`approval-artifact-mint: true`), when an evaluate() call denies
+with `INSUFFICIENT_APPROVALS` and asks for one of these artifacts, the action
+automatically:
+
+1. Calls `v1-github-approval-mint`, which independently re-reads the PR's
+   reviews via the org's own GitHub App installation (never trusting what
+   this action already reported) and mints one signed `approval_artifact.v1`
+   per distinct reviewer whose latest review is `APPROVED`.
+2. Packages them into an `approval_quorum.v1` bound to the server's exact
+   `action_hash` for this request.
+3. Retries the evaluate() call once with that quorum attached.
+
+This requires the API key to also carry the `approval_artifact:mint` scope
+(alongside `evaluate:write`/`verify:execute`) and `GITHUB_TOKEN` — the same
+requirements `approvals-from: pr-reviews` already has, plus the one scope. A
+minting failure (no qualifying reviewer, wrong scope, endpoint unreachable)
+never escalates into a harder failure; it just leaves the original deny
+standing. Set `approval-artifact-mint: "false"` to disable the retry entirely
+and always see the original deny.
+
+```yaml
+- name: Authorization gate
+  id: gate
+  uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
+  env:
+    ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+    ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+    GITHUB_TOKEN: ${{ github.token }}
+  with:
+    action: production.deploy
+    environment: live
+```
+
+This is a different mechanism from the solo-operator compensating control
+below: that one is for a single-accountable-human org with no second
+reviewer to derive an artifact from at all (e.g. a manually-dispatched
+workflow with no associated pull request). This one is for the ordinary case
+where a real second human DID leave an approving PR review — it turns that
+fact into cryptographic evidence instead of working around its absence.
+
 ## Stronger execution-boundary pattern
 
 The default one-step mode performs evaluate → permit → verify in the gate step.
@@ -491,6 +540,96 @@ than `pull_request`/`push`), `change-request`, `rollback-previous-sha` /
 `rollback-workflow` / `rollback-reference`, `console-base-url`,
 `pr-comment-on-change-brief` (default `"false"` — opt in, since a comment on
 every push would be noisy). Full reference in [`action.yml`](./action.yml).
+
+## Solo-operator compensating control (attest mode)
+
+Independent-approval action classes (`requires_independent_approval: true`)
+normally need a distinct second human's review before an `allow` — the
+`approving_reviewers` derived from `approvals-from: pr-reviews` above. A
+single-accountable-human org has no second reviewer to derive that from, so
+this branch would deny unconditionally without a different evidence path.
+
+The AtlaSent runtime's solo-operator compensating control substitutes a
+server-verified evidence chain (a fresh attestation from the org's own
+`solo_operator_attested_identity`, green CI on the commit, the PR's real
+merge timestamp past a cooling-off window, and a passing staging-acceptance
+run) for the missing second reviewer — see
+`atlasent-api` `_shared/solo-operator-compensating-control.ts`. This action's
+`solo-operator-attest: "true"` mode records the ONE fact only the real solo
+operator can supply: mint a verified actor identity from THIS job's GitHub
+OIDC token (bound to `solo_operator.attest`, distinct from the identity
+minted for the protected action itself) and POST it plus this change's
+evidence to `/v1-solo-operator-attest`. It authorizes nothing by itself —
+the later evaluate step still independently re-verifies everything else.
+
+```yaml
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # GitHub workload identity for the solo_operator.attest mint
+    steps:
+      - uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        id: attest
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+        with:
+          solo-operator-attest: "true"
+          action: production.deploy
+          solo-operator-action-class-id: ${{ vars.PRODUCTION_DEPLOY_ACTION_CLASS_ID }}
+          solo-operator-attestation-reason: "Solo founder deploy; CI green and staging accepted before promoting."
+          target-id: api-service
+          environment: live
+          artifact-digest: ${{ needs.build.outputs.digest }}
+
+  deploy:
+    needs: [build, attest]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      pull-requests: write
+    steps:
+      - uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+        with:
+          action: production.deploy
+          target-id: api-service
+          environment: live
+          artifact-digest: ${{ needs.build.outputs.digest }}
+          solo-operator-context: "true"
+      - run: ./scripts/deploy.sh
+```
+
+`solo-operator-action-class-id` is a UUID — find it via the AtlaSent console
+or API, not derivable from the action_type string alone; store it as a repo
+or org variable. `solo-operator-context: "true"` on the `deploy` job's gate
+step is what tells the evaluate call to try the compensating control if the
+ordinary `approving_reviewers` path is unprovable (as it always is for a
+true solo operator) — it grants no authority by itself, and still requires a
+fresh, matching attestation to have been recorded.
+
+For a **non-`production.deploy`** action type (e.g. `control.override`,
+`access.grant`), the runtime has no generic "change plan" concept — pass a
+typed `evidence-profile` JSON object to BOTH steps instead (the SAME object
+each time, or the attestation and the evaluate call derive different hashes
+and the control denies):
+
+```yaml
+      - uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        with:
+          solo-operator-attest: "true"
+          action: control.override
+          solo-operator-action-class-id: ${{ vars.CONTROL_OVERRIDE_ACTION_CLASS_ID }}
+          solo-operator-attestation-reason: "Solo founder disabling a WAF rule during an active incident."
+          evidence-profile: |
+            {"kind":"control_override","control_id":"waf-rule-442","override_scope":"inbound traffic only, api.example.com","reason":"Active incident INC-1029.","expires_at":"2026-08-30T13:00:00Z"}
+```
+
+See `atlasent-api` `_shared/solo-operator-evidence-profile.ts` for the full
+field set per `kind` (`control_override`, `access_grant`).
 
 ## Other modes
 

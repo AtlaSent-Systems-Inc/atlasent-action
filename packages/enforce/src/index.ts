@@ -129,17 +129,27 @@ export interface EnforceConfig {
   /**
    * ADR-055 two-call acceptance lane. When the FIRST evaluate() response is
    * `deny` with `deny_code === "INSUFFICIENT_APPROVALS"` and carries a
-   * `signing_hint`, `evaluate()` calls this callback with that hint. A
-   * non-undefined return value is sent as `quorum` on ONE automatic retry
-   * evaluate() call (never more than one — see the recursion guard in
-   * evaluate() below); an undefined/thrown result returns the original
-   * deny unchanged. This lets a caller (e.g. atlasent-action's
-   * githubApprovalMint wiring) mint real evidence bound to the
-   * server-computed action_hash without restructuring its own call sites —
-   * both `evaluate(config)` directly and the composed `enforce(config, fn)`
-   * get the retry transparently, since both funnel through evaluate() here.
+   * `signing_hint`, `evaluate()` calls this callback with that hint AND the
+   * denied response's own `evaluationId` (request_id/evaluation_id — see
+   * mapDecision below) — a caller minting real evidence from that hint
+   * needs to name WHICH evaluate() call it is evidence for (e.g.
+   * atlasent-api's v1-github-approval-mint requires `evaluation_id` in its
+   * body precisely so it can independently bind the minted artifact to
+   * that original call's own persisted context, rather than trusting a
+   * bare caller-supplied action_hash). A non-undefined return value is sent
+   * as `quorum` on ONE automatic retry evaluate() call (never more than
+   * one — see the recursion guard in evaluate() below); an
+   * undefined/thrown result returns the original deny unchanged. This lets
+   * a caller (e.g. atlasent-action's githubApprovalMint wiring) mint real
+   * evidence bound to the server-computed action_hash without
+   * restructuring its own call sites — both `evaluate(config)` directly
+   * and the composed `enforce(config, fn)` get the retry transparently,
+   * since both funnel through evaluate() here.
    */
-  onInsufficientApprovals?: (hint: ApprovalSigningHint) => Promise<Record<string, unknown> | undefined>;
+  onInsufficientApprovals?: (
+    hint: ApprovalSigningHint,
+    evaluationId: string | undefined,
+  ) => Promise<Record<string, unknown> | undefined>;
 }
 
 export interface Decision {
@@ -316,7 +326,7 @@ export async function evaluate(config: EnforceConfig): Promise<Decision> {
     const hint = raw["signing_hint"] as ApprovalSigningHint;
     let quorum: Record<string, unknown> | undefined;
     try {
-      quorum = await config.onInsufficientApprovals(hint);
+      quorum = await config.onInsufficientApprovals(hint, decision.evaluationId);
     } catch {
       // The callback failing to produce evidence is not itself a new
       // failure mode — fall through and return the original deny, same as

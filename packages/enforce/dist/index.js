@@ -130,7 +130,7 @@ async function evaluate(config) {
         const hint = raw["signing_hint"];
         let quorum;
         try {
-            quorum = await config.onInsufficientApprovals(hint);
+            quorum = await config.onInsufficientApprovals(hint, decision.evaluationId);
         }
         catch {
             // The callback failing to produce evidence is not itself a new

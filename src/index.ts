@@ -1688,7 +1688,23 @@ export async function run(): Promise<void> {
     (gh.pr_number && /^\d+$/.test(gh.pr_number) ? parseInt(gh.pr_number, 10) : null);
   const onInsufficientApprovals =
     approvalsFrom === "pr-reviews" && approvalArtifactMintEnabled && mintPrNumber
-      ? async (hint: ApprovalSigningHint): Promise<Record<string, unknown> | undefined> => {
+      ? async (
+          hint: ApprovalSigningHint,
+          evaluationId: string | undefined,
+        ): Promise<Record<string, unknown> | undefined> => {
+          // v1-github-approval-mint requires evaluation_id to independently
+          // bind the mint to the exact evaluate() call it is evidence for
+          // (Codex review on atlasent-api#2832, P1). Without it there is
+          // nothing safe to mint against — decline, same as any other
+          // minting precondition failure, rather than calling an endpoint
+          // that will refuse the request anyway.
+          if (!evaluationId) {
+            warning(
+              "AtlaSent Gate: the evaluate() deny carried no evaluation_id — cannot mint a bound " +
+                "GitHub approval artifact for it",
+            );
+            return undefined;
+          }
           try {
             const minted = await mintGithubApprovalArtifacts({
               apiUrl,
@@ -1697,6 +1713,7 @@ export async function run(): Promise<void> {
               pullRequestNumber: mintPrNumber,
               actionType,
               hint,
+              evaluationId,
               resourceId: targetId,
             });
             info(

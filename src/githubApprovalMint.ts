@@ -42,6 +42,13 @@ export interface GithubApprovalMintArgs {
   pullRequestNumber: number;
   actionType: string;
   hint: ApprovalSigningHint;
+  /** The evaluate() call this approval is FOR (Decision.evaluationId) —
+   *  required by v1-github-approval-mint so it can independently bind the
+   *  minted artifact to that call's own persisted repository/revision
+   *  rather than trusting the action_hash alone (Codex review on
+   *  atlasent-api#2832, P1: an unbound action_hash could otherwise be
+   *  paired with an approved PR for an unrelated deployment). */
+  evaluationId: string;
   resourceId?: string;
 }
 
@@ -62,6 +69,7 @@ export async function mintGithubApprovalArtifacts(
   const apiUrl = args.apiUrl.replace(/\/+$/, "");
 
   const body: Record<string, unknown> = {
+    evaluation_id: args.evaluationId,
     repository: args.repository,
     pull_request_number: args.pullRequestNumber,
     action_type: args.actionType,

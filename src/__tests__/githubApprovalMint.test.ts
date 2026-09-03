@@ -18,6 +18,7 @@ const BASE_ARGS = {
   pullRequestNumber: 7,
   actionType: "production.deploy",
   hint: HINT,
+  evaluationId: "eval-123",
 };
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -30,6 +31,7 @@ describe("mintGithubApprovalArtifacts", () => {
       expect(String(input)).toBe("https://runtime.example/functions/v1/v1-github-approval-mint");
       expect((init?.headers as Record<string, string>)["Authorization"]).toBe("Bearer ask_test_key");
       expect(JSON.parse(String(init?.body))).toEqual({
+        evaluation_id: "eval-123",
         repository: "acme/widgets",
         pull_request_number: 7,
         action_type: "production.deploy",

@@ -1108,6 +1108,7 @@ describe("GitHub-approval-artifact minting wiring", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toMatch(/\/v1-github-approval-mint$/);
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body["evaluation_id"]).toBe("ev-1");
       expect(body["repository"]).toBe("acme/widgets");
       expect(body["pull_request_number"]).toBe(42);
       expect(body["action_type"]).toBe("production.deploy");
@@ -1127,8 +1128,9 @@ describe("GitHub-approval-artifact minting wiring", () => {
 
     const callback = getConfig()["onInsufficientApprovals"] as (
       hint: typeof HINT,
+      evaluationId: string | undefined,
     ) => Promise<Record<string, unknown> | undefined>;
-    const quorum = await callback(HINT);
+    const quorum = await callback(HINT, "ev-1");
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(quorum).toBeDefined();
@@ -1158,7 +1160,33 @@ describe("GitHub-approval-artifact minting wiring", () => {
 
     const callback = getConfig()["onInsufficientApprovals"] as (
       hint: typeof HINT,
+      evaluationId: string | undefined,
     ) => Promise<Record<string, unknown> | undefined>;
-    await expect(callback(HINT)).resolves.toBeUndefined();
+    await expect(callback(HINT, "ev-1")).resolves.toBeUndefined();
+  });
+
+  it("the wired callback declines (never calls fetch) when the deny carried no evaluationId", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setGitHubContext();
+    mockResolveApprovals.mockResolvedValueOnce({
+      approvals: 1,
+      approving_reviewers: ["alice"],
+      pr_number: 42,
+      source: "pr-reviews",
+    });
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await run();
+
+    const callback = getConfig()["onInsufficientApprovals"] as (
+      hint: typeof HINT,
+      evaluationId: string | undefined,
+    ) => Promise<Record<string, unknown> | undefined>;
+    await expect(callback(HINT, undefined)).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

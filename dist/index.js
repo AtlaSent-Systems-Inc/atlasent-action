@@ -209,7 +209,7 @@ var require_dist = __commonJS({
         const hint = raw["signing_hint"];
         let quorum;
         try {
-          quorum = await config.onInsufficientApprovals(hint);
+          quorum = await config.onInsufficientApprovals(hint, decision.evaluationId);
         } catch {
           quorum = void 0;
         }
@@ -2648,6 +2648,7 @@ async function mintGithubApprovalArtifacts(args, deps = {}) {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const apiUrl = args.apiUrl.replace(/\/+$/, "");
   const body = {
+    evaluation_id: args.evaluationId,
     repository: args.repository,
     pull_request_number: args.pullRequestNumber,
     action_type: args.actionType,
@@ -3843,7 +3844,13 @@ async function run() {
   }
   const approvalArtifactMintEnabled = (getInput("approval-artifact-mint") || "true").trim().toLowerCase() !== "false";
   const mintPrNumber = approvalEvidence?.pr_number ?? (gh.pr_number && /^\d+$/.test(gh.pr_number) ? parseInt(gh.pr_number, 10) : null);
-  const onInsufficientApprovals = approvalsFrom === "pr-reviews" && approvalArtifactMintEnabled && mintPrNumber ? async (hint) => {
+  const onInsufficientApprovals = approvalsFrom === "pr-reviews" && approvalArtifactMintEnabled && mintPrNumber ? async (hint, evaluationId) => {
+    if (!evaluationId) {
+      warning(
+        "AtlaSent Gate: the evaluate() deny carried no evaluation_id \u2014 cannot mint a bound GitHub approval artifact for it"
+      );
+      return void 0;
+    }
     try {
       const minted = await mintGithubApprovalArtifacts({
         apiUrl,
@@ -3852,6 +3859,7 @@ async function run() {
         pullRequestNumber: mintPrNumber,
         actionType,
         hint,
+        evaluationId,
         resourceId: targetId
       });
       info(

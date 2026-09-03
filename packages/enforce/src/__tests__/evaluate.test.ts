@@ -319,11 +319,12 @@ describe("evaluate", () => {
     bind: { action_hash: "hash-abc", tenant_id: "org-1", environment: "production" },
   };
 
-  it("retries once with the callback's quorum on an INSUFFICIENT_APPROVALS deny carrying a signing_hint", async () => {
+  it("retries once with the callback's quorum on an INSUFFICIENT_APPROVALS deny carrying a signing_hint, passing the deny's own evaluationId", async () => {
     mockResponse(200, {
       decision: "deny",
       deny_code: "INSUFFICIENT_APPROVALS",
       signing_hint: SIGNING_HINT,
+      request_id: "ev-1",
     });
     mockResponse(200, { decision: "allow", permit_token: "pt-retry" });
 
@@ -335,11 +336,24 @@ describe("evaluate", () => {
     const d = await evaluate({ ...BASE_CONFIG, onInsufficientApprovals });
 
     expect(mockPost).toHaveBeenCalledTimes(2);
-    expect(onInsufficientApprovals).toHaveBeenCalledWith(SIGNING_HINT);
+    expect(onInsufficientApprovals).toHaveBeenCalledWith(SIGNING_HINT, "ev-1");
     expect(d.decision).toBe("allow");
     expect(d.permitToken).toBe("pt-retry");
     const secondBody = JSON.parse(mockPost.mock.calls[1][1] as string) as Record<string, unknown>;
     expect((secondBody["quorum"] as Record<string, unknown>)["version"]).toBe("approval_quorum.v1");
+  });
+
+  it("passes evaluationId as undefined to the callback when the deny response carries no request_id/evaluation_id", async () => {
+    mockResponse(200, {
+      decision: "deny",
+      deny_code: "INSUFFICIENT_APPROVALS",
+      signing_hint: SIGNING_HINT,
+    });
+    const onInsufficientApprovals = vi.fn().mockResolvedValue(undefined);
+
+    await evaluate({ ...BASE_CONFIG, onInsufficientApprovals });
+
+    expect(onInsufficientApprovals).toHaveBeenCalledWith(SIGNING_HINT, undefined);
   });
 
   it("returns the original deny, unretried, when the callback resolves to undefined", async () => {

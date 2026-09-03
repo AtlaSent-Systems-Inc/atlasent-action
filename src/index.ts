@@ -48,6 +48,7 @@ import {
 import {
   GATE_PERMITTED_ACTIONS,
   LEGACY_PRODUCTION_DEPLOY_ALIAS,
+  MANDATORY_CHANGE_CONTROL_ACTIONS,
   PRODUCTION_DEPLOY_ACTION,
   normalizeProtectedAction,
 } from "./canonicalAction";
@@ -435,11 +436,12 @@ interface ProtectedActorResolution {
 }
 
 /**
- * production.deploy is classified by the runtime as requiring a verified
- * workload actor. Resolve that actor through GitHub OIDC + the runtime broker;
- * never fall back to the workflow's caller-supplied `actor` input. Other
- * protected actions retain their existing actor behavior until their Canon
- * contract requires the same workload credential.
+ * The four MANDATORY_CHANGE_CONTROL_ACTIONS are classified by the runtime as
+ * requiring a verified workload actor. Resolve that actor through GitHub
+ * OIDC + the runtime broker; never fall back to the workflow's caller-
+ * supplied `actor` input. Every other protected action retains its existing
+ * actor behavior until its own Canon contract requires the same workload
+ * credential.
  */
 async function resolveProtectedActor(args: {
   apiKey: string;
@@ -449,7 +451,7 @@ async function resolveProtectedActor(args: {
   triggeringActor: string;
 }): Promise<ProtectedActorResolution> {
   const triggeringActorId = `github:${args.triggeringActor}`;
-  if (args.actionType !== PRODUCTION_DEPLOY_ACTION) {
+  if (!MANDATORY_CHANGE_CONTROL_ACTIONS.has(args.actionType)) {
     return { actorId: triggeringActorId, triggeringActorId };
   }
 
@@ -653,13 +655,13 @@ async function runVerifyPermitStep(apiKey: string, apiUrl: string): Promise<void
   }
   const actorId = actorResolution.actorId;
 
-  if (actionType === PRODUCTION_DEPLOY_ACTION && !runtimeExecutionHash) {
+  if (MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) && !runtimeExecutionHash) {
     setOutput("decision", "deny");
     setOutput("verified", "false");
     setOutput("verify-outcome", "invalid");
     setOutput("verify-error-code", "MISSING_BINDING");
     setFailed(
-      "Deploy blocked at execution boundary: production.deploy requires the opaque " +
+      `Deploy blocked at execution boundary: "${actionType}" requires the opaque ` +
         "execution-hash output from its evaluate-only gate. The raw artifact-digest is " +
         "not the runtime-derived change-plan binding.",
     );
@@ -667,7 +669,7 @@ async function runVerifyPermitStep(apiKey: string, apiUrl: string): Promise<void
   }
 
   const verificationPayloadHash =
-    actionType === PRODUCTION_DEPLOY_ACTION ? runtimeExecutionHash : artifactDigest;
+    MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) ? runtimeExecutionHash : artifactDigest;
 
   maskValue(permitToken);
 
@@ -1563,9 +1565,15 @@ export async function run(): Promise<void> {
   }
 
   const artifactDigest = getInput("artifact-digest") || undefined;
-  const productionChangePlan = actionType === PRODUCTION_DEPLOY_ACTION
+  // "operation" just needs to be a non-empty string identifying what kind of
+  // mutation this is (_shared/mandatory-execution-binding.ts's
+  // isCompleteChangePlan has no fixed vocabulary) -- derived from the action
+  // type's own trailing segment so each of the four mandatory-change-control
+  // action types gets an accurate label instead of a hardcoded "deploy".
+  const changePlanOperation = actionType.split(".").pop() || actionType;
+  const productionChangePlan = MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType)
     ? {
-        operation: "deploy",
+        operation: changePlanOperation,
         revision: actorResolution.workloadIdentity?.source.sha ?? "",
         ...(artifactDigest ? { artifact_ref: artifactDigest } : {}),
       }
@@ -1578,8 +1586,8 @@ export async function run(): Promise<void> {
     setOutput("verify-outcome", "invalid");
     setOutput("verify-error-code", "MISSING_BINDING");
     setFailed(
-      "AtlaSent Gate: the verified GitHub workload identity did not carry a commit SHA, " +
-        "so a complete production.deploy change_plan cannot be derived. Deploy blocked " +
+      `AtlaSent Gate: the verified GitHub workload identity did not carry a commit SHA, ` +
+        `so a complete "${actionType}" change_plan cannot be derived. Deploy blocked ` +
         "(fail-closed).",
     );
     return;
@@ -1589,7 +1597,7 @@ export async function run(): Promise<void> {
   // The runtime derives the execution hash from this verified revision plus
   // the optional artifact identity and echoes that opaque binding for verify.
   const directExecutionPayloadHash =
-    actionType === PRODUCTION_DEPLOY_ACTION ? undefined : artifactDigest;
+    MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) ? undefined : artifactDigest;
 
   // evaluate-only (issue-permit) mode: ISSUE a permit without verifying or
   // consuming it, so a workflow can express the two-step EXECUTION-BOUNDARY
@@ -2071,7 +2079,7 @@ export async function run(): Promise<void> {
       return;
     }
 
-    const boundaryBindingGuidance = actionType === PRODUCTION_DEPLOY_ACTION
+    const boundaryBindingGuidance = MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType)
       ? "this step's `execution-hash` output"
       : "the SAME `artifact-digest` (when one was evaluated)";
 

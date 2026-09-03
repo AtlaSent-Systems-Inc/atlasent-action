@@ -322,6 +322,38 @@ describe("allow response", () => {
     expect(config.context["triggering_actor"]).toBe("github:tester");
   });
 
+  it.each([
+    ["infrastructure.change", "change"],
+    ["production.rollback", "rollback"],
+    ["secret.configuration.change", "change"],
+  ])(
+    "also uses the broker-minted workload actor for %s (extended beyond production.deploy)",
+    async (actionType, expectedOperation) => {
+      setApiKey();
+      setInput("action", actionType);
+      setInput("actor", "human-dispatcher");
+      setInput("environment", "production");
+      mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+      await run();
+
+      expect(mockMintWorkloadIdentity).toHaveBeenCalledWith(
+        expect.objectContaining({ actionType, environment: "production" }),
+        expect.objectContaining({ mask: expect.any(Function) }),
+      );
+      const config = mockEnforce.mock.calls[0][0] as {
+        actor: string;
+        actorIdentity: Record<string, unknown>;
+        changePlan: Record<string, unknown>;
+        executionPayloadHash?: string;
+      };
+      expect(config.actor).toBe("github-actions:repo:123:workflow:deploy");
+      expect(config.actorIdentity).toMatchObject({ version: "actor_identity.v1" });
+      expect(config.changePlan).toEqual({ operation: expectedOperation, revision: "abc123" });
+      expect(config.executionPayloadHash).toBeUndefined();
+    },
+  );
+
   it("fails closed before evaluate when workload identity cannot be established", async () => {
     setApiKey();
     setInput("action", "production.deploy");

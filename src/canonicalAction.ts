@@ -17,6 +17,12 @@
 // ---------------------------------------------------------------------------
 
 export const PRODUCTION_DEPLOY_ACTION = "production.deploy";
+/** Applying infrastructure changes (Terraform/Helm/etc.) outside an app deploy. */
+export const INFRASTRUCTURE_CHANGE_ACTION = "infrastructure.change";
+/** Rolling a production change back to a prior known-good state. */
+export const PRODUCTION_ROLLBACK_ACTION = "production.rollback";
+/** Changing a secret's configuration (rotation policy, access scope, etc.) — distinct from secret.rotate. */
+export const SECRET_CONFIGURATION_CHANGE_ACTION = "secret.configuration.change";
 /**
  * Package/artifact publishing to a public registry (PyPI, npm, crates, …).
  * Distinct from production.deploy: governed by a release policy that does NOT
@@ -61,11 +67,34 @@ export const LEGACY_PRODUCTION_DEPLOY_ALIAS = "deployment.production";
  */
 export const GATE_PERMITTED_ACTIONS: ReadonlySet<string> = new Set([
   PRODUCTION_DEPLOY_ACTION,
+  INFRASTRUCTURE_CHANGE_ACTION,
+  PRODUCTION_ROLLBACK_ACTION,
+  SECRET_CONFIGURATION_CHANGE_ACTION,
   PACKAGE_RELEASE_ACTION,
   TRIAL_BLINDING_SETUP_ACTION,
   TRIAL_UNBLINDING_EXECUTE_ACTION,
   TRIAL_UNBLINDING_EMERGENCY_ACTION,
   TRUST_ROOT_PUBLISH_ACTION,
+]);
+
+/**
+ * The four action types atlasent-api mandatorily requires a verified
+ * workload/actor identity AND a structured, server-derived change_plan for
+ * (_shared/mandatory-execution-binding.ts's MANDATORY_CHANGE_CONTROL_ACTION_TYPES
+ * — not org-configurable, code-level, in that repo). Mirrored here (not
+ * imported — this package has no dependency on atlasent-api's source) so
+ * this action's own actor-resolution and change-plan construction stay in
+ * lockstep with what the runtime will actually require. Keep in sync by
+ * hand; a mismatch fails safe either way (the runtime is the authority —
+ * an action type missing here just means this action won't pre-construct
+ * a change_plan/mint a workload identity for it, not that the runtime's
+ * own requirement goes away).
+ */
+export const MANDATORY_CHANGE_CONTROL_ACTIONS: ReadonlySet<string> = new Set([
+  PRODUCTION_DEPLOY_ACTION,
+  INFRASTRUCTURE_CHANGE_ACTION,
+  PRODUCTION_ROLLBACK_ACTION,
+  SECRET_CONFIGURATION_CHANGE_ACTION,
 ]);
 
 // ---------------------------------------------------------------------------

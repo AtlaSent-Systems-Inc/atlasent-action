@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { evaluateMany } from "../batch";
+import { evaluateMany, bindTrustedStateSnapshot } from "../batch";
 
 // Mock @atlasent/enforce so verifyPermit uses a test double rather than the
 // real HTTP transport. fetch is still needed for the evaluate calls.
@@ -201,5 +201,290 @@ describe("evaluateMany", () => {
     await expect(
       evaluateMany("https://api.test", "k", items),
     ).rejects.toThrow(/PAYLOAD_MISMATCH/);
+  });
+
+  // ── Issue #148 — evaluateMany returns the BOUND items, not the raw ones ──
+  it("returns the bound items on BatchResult (not the raw pre-bind items) for downstream evidence emission", async () => {
+    fetchMock.mockResolvedValueOnce(evalResp("allow", "tok1"));
+    mockVerifyPermit.mockResolvedValueOnce({ verified: true, outcome: "ok" });
+
+    const out = await evaluateMany("https://api.test", "k", [
+      {
+        action: "production.deploy",
+        actor: "alice",
+        context: { repository: "attacker-org/evil" },
+      },
+    ]);
+
+    expect(out.items).toHaveLength(1);
+    expect((out.items[0].context as Record<string, unknown>)["repository"]).not.toBe(
+      "attacker-org/evil",
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Issue #148 — batch production evaluations must require the same
+// GitHub-derived state_snapshot the single-eval path already requires.
+//
+// A post-merge audit of #138 found the batch path posted `evaluations:`
+// items to /v1-evaluate completely unmodified, so a caller could
+// self-assert (or omit) `state_snapshot` / `context.repository` /
+// `context.ref` / `context.sha` for a production.deploy batch item —
+// silently bypassing the trusted-GitHub-state binding the single path
+// enforces (src/index.ts's `config.state_snapshot` +
+// `context: { ...extraContext, repository: gh.repository, ... }`).
+//
+// These tests cover both layers:
+//   - bindTrustedStateSnapshot() directly (the pure transform), and
+//   - evaluateMany() end-to-end, asserting the actual HTTP request body
+//     sent to the server carries the trusted values — not whatever a
+//     caller supplied.
+// ─────────────────────────────────────────────────────────────────────────
+describe("bindTrustedStateSnapshot (issue #148)", () => {
+  const TRUSTED_ENV = {
+    GITHUB_REPOSITORY: "AtlaSent-Systems-Inc/atlasent-action",
+    GITHUB_REF: "refs/heads/main",
+    GITHUB_SHA: "cafef00dcafef00dcafef00dcafef00dcafef00d".slice(0, 40),
+    GITHUB_WORKFLOW: "Deploy",
+    GITHUB_RUN_ID: "999888777",
+    GITHUB_RUN_NUMBER: "42",
+    GITHUB_EVENT_NAME: "push",
+  };
+
+  beforeEach(() => {
+    vi.stubEnv("GITHUB_REPOSITORY", TRUSTED_ENV.GITHUB_REPOSITORY);
+    vi.stubEnv("GITHUB_REF", TRUSTED_ENV.GITHUB_REF);
+    vi.stubEnv("GITHUB_SHA", TRUSTED_ENV.GITHUB_SHA);
+    vi.stubEnv("GITHUB_WORKFLOW", TRUSTED_ENV.GITHUB_WORKFLOW);
+    vi.stubEnv("GITHUB_RUN_ID", TRUSTED_ENV.GITHUB_RUN_ID);
+    vi.stubEnv("GITHUB_RUN_NUMBER", TRUSTED_ENV.GITHUB_RUN_NUMBER);
+    vi.stubEnv("GITHUB_EVENT_NAME", TRUSTED_ENV.GITHUB_EVENT_NAME);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  // ── Missing ────────────────────────────────────────────────────────────
+  it("MISSING: a production.deploy item with no context/state_snapshot at all gets a real, trusted one attached", () => {
+    const [bound] = bindTrustedStateSnapshot([
+      { action: "production.deploy", actor: "alice" },
+    ]);
+
+    expect(bound.state_snapshot).toEqual({
+      source: "github-actions",
+      complete: true,
+      run_id: TRUSTED_ENV.GITHUB_RUN_ID,
+    });
+    expect(bound.context).toMatchObject({
+      repository: TRUSTED_ENV.GITHUB_REPOSITORY,
+      ref: TRUSTED_ENV.GITHUB_REF,
+      sha: TRUSTED_ENV.GITHUB_SHA,
+    });
+  });
+
+  // ── Malformed ──────────────────────────────────────────────────────────
+  it("MALFORMED: a caller-asserted top-level state_snapshot is discarded, never forwarded", () => {
+    const [bound] = bindTrustedStateSnapshot([
+      {
+        action: "production.deploy",
+        actor: "alice",
+        // A caller-authored, self-reported snapshot — not a real GitHub Actions one.
+        state_snapshot: { source: "self-reported", complete: false } as never,
+      },
+    ]);
+
+    expect(bound.state_snapshot).toEqual({
+      source: "github-actions",
+      complete: true,
+      run_id: TRUSTED_ENV.GITHUB_RUN_ID,
+    });
+  });
+
+  it("MALFORMED: a caller-asserted state_snapshot nested inside context is discarded, never forwarded", () => {
+    const [bound] = bindTrustedStateSnapshot([
+      {
+        action: "production.deploy",
+        actor: "alice",
+        context: {
+          // Wrong shape (a bare string) nested where the wire actually
+          // expects state_snapshot to live at the top level — must not
+          // survive into the outgoing context OR be treated as evidence.
+          state_snapshot: "not-a-real-snapshot",
+        },
+      },
+    ]);
+
+    expect((bound.context as Record<string, unknown>)["state_snapshot"]).toBeUndefined();
+    expect(bound.state_snapshot).toEqual({
+      source: "github-actions",
+      complete: true,
+      run_id: TRUSTED_ENV.GITHUB_RUN_ID,
+    });
+  });
+
+  // ── Wrong repository ──────────────────────────────────────────────────
+  it("WRONG-REPOSITORY: a caller-asserted context.repository is overridden with the trusted repository", () => {
+    const [bound] = bindTrustedStateSnapshot([
+      {
+        action: "production.deploy",
+        actor: "alice",
+        context: { repository: "attacker-org/definitely-not-this-repo" },
+      },
+    ]);
+
+    expect((bound.context as Record<string, unknown>)["repository"]).toBe(
+      TRUSTED_ENV.GITHUB_REPOSITORY,
+    );
+  });
+
+  // ── Wrong ref ─────────────────────────────────────────────────────────
+  it("WRONG-REF: a caller-asserted context.ref (and sha) is overridden with the trusted ref/sha", () => {
+    const [bound] = bindTrustedStateSnapshot([
+      {
+        action: "production.deploy",
+        actor: "alice",
+        context: {
+          ref: "refs/heads/malicious-unreviewed-branch",
+          sha: "0000000000000000000000000000000000000000",
+        },
+      },
+    ]);
+
+    expect((bound.context as Record<string, unknown>)["ref"]).toBe(TRUSTED_ENV.GITHUB_REF);
+    expect((bound.context as Record<string, unknown>)["sha"]).toBe(TRUSTED_ENV.GITHUB_SHA);
+  });
+
+  // ── Scope + preservation checks ──────────────────────────────────────
+  it("does not touch non-production.deploy items at all", () => {
+    const item = {
+      action: "package.release",
+      actor: "release-bot",
+      context: { repository: "whatever/i-want", ref: "refs/heads/anything" },
+    };
+    const [bound] = bindTrustedStateSnapshot([item]);
+    expect(bound).toEqual(item);
+    expect(bound.state_snapshot).toBeUndefined();
+  });
+
+  it("only overrides the trusted keys — other caller-supplied context survives untouched", () => {
+    const [bound] = bindTrustedStateSnapshot([
+      {
+        action: "production.deploy",
+        actor: "alice",
+        context: { financial_action_value: 500, custom_note: "keep me" },
+      },
+    ]);
+    expect((bound.context as Record<string, unknown>)["financial_action_value"]).toBe(500);
+    expect((bound.context as Record<string, unknown>)["custom_note"]).toBe("keep me");
+    expect((bound.context as Record<string, unknown>)["repository"]).toBe(
+      TRUSTED_ENV.GITHUB_REPOSITORY,
+    );
+  });
+
+  it("in a mixed batch, only the production.deploy item is bound", () => {
+    const bound = bindTrustedStateSnapshot([
+      { action: "package.release", actor: "bot", context: { repository: "forged/repo" } },
+      { action: "production.deploy", actor: "alice" },
+    ]);
+    expect((bound[0].context as Record<string, unknown>)["repository"]).toBe("forged/repo");
+    expect(bound[0].state_snapshot).toBeUndefined();
+    expect((bound[1].context as Record<string, unknown>)["repository"]).toBe(
+      TRUSTED_ENV.GITHUB_REPOSITORY,
+    );
+    expect(bound[1].state_snapshot).toEqual({
+      source: "github-actions",
+      complete: true,
+      run_id: TRUSTED_ENV.GITHUB_RUN_ID,
+    });
+  });
+});
+
+describe("evaluateMany sends the trusted state_snapshot on the wire (issue #148)", () => {
+  const fetchMock = vi.fn();
+  const TRUSTED_ENV = {
+    GITHUB_REPOSITORY: "AtlaSent-Systems-Inc/atlasent-action",
+    GITHUB_REF: "refs/heads/main",
+    GITHUB_SHA: "1111111111111111111111111111111111111111",
+    GITHUB_RUN_ID: "555",
+  };
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    mockVerifyPermit.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubEnv("GITHUB_REPOSITORY", TRUSTED_ENV.GITHUB_REPOSITORY);
+    vi.stubEnv("GITHUB_REF", TRUSTED_ENV.GITHUB_REF);
+    vi.stubEnv("GITHUB_SHA", TRUSTED_ENV.GITHUB_SHA);
+    vi.stubEnv("GITHUB_RUN_ID", TRUSTED_ENV.GITHUB_RUN_ID);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  function evalResp(decision = "allow", permitToken = "tok1") {
+    return new Response(
+      JSON.stringify({ decision, evaluatedAt: "2026-04-25T00:00:00Z", permitToken }),
+    );
+  }
+
+  it("the request body sent to /v1-evaluate carries the trusted snapshot/context, not the caller's forged values", async () => {
+    fetchMock.mockResolvedValueOnce(evalResp("allow", "tok1"));
+    mockVerifyPermit.mockResolvedValue({ verified: true, outcome: "ok" });
+
+    await evaluateMany("https://api.test", "k", [
+      {
+        action: "production.deploy",
+        actor: "alice",
+        context: {
+          repository: "attacker-org/evil",
+          ref: "refs/heads/evil",
+          state_snapshot: "forged",
+        },
+        state_snapshot: { source: "self-reported", complete: true } as never,
+      },
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const sentBody = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(sentBody.state_snapshot).toEqual({
+      source: "github-actions",
+      complete: true,
+      run_id: TRUSTED_ENV.GITHUB_RUN_ID,
+    });
+    expect(sentBody.context.repository).toBe(TRUSTED_ENV.GITHUB_REPOSITORY);
+    expect(sentBody.context.ref).toBe(TRUSTED_ENV.GITHUB_REF);
+    expect(sentBody.context.state_snapshot).toBeUndefined();
+  });
+
+  it("every item in a multi-item loop batch carries the trusted snapshot/context", async () => {
+    fetchMock
+      .mockResolvedValueOnce(evalResp("allow", "tokA"))
+      .mockResolvedValueOnce(evalResp("allow", "tokB"));
+    mockVerifyPermit.mockResolvedValue({ verified: true, outcome: "ok" });
+
+    await evaluateMany("https://api.test", "k", [
+      {
+        action: "production.deploy",
+        actor: "alice",
+        context: { repository: "attacker-org/evil" },
+      },
+      { action: "production.deploy", actor: "bob", context: { ref: "refs/heads/evil" } },
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const call of fetchMock.mock.calls) {
+      const sentItem = JSON.parse((call[1] as RequestInit).body as string);
+      expect(sentItem.state_snapshot).toEqual({
+        source: "github-actions",
+        complete: true,
+        run_id: TRUSTED_ENV.GITHUB_RUN_ID,
+      });
+      expect(sentItem.context.repository).toBe(TRUSTED_ENV.GITHUB_REPOSITORY);
+      expect(sentItem.context.ref).toBe(TRUSTED_ENV.GITHUB_REF);
+    }
   });
 });

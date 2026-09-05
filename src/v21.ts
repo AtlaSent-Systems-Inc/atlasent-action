@@ -178,6 +178,17 @@ export async function runV21(
 
   const batch = await evaluateMany(inputs.apiUrl, inputs.apiKey, items);
 
+  // Use the items evaluateMany ACTUALLY evaluated (post-bindTrustedStateSnapshot
+  // for production.deploy items), not the pre-bind `items` above, for
+  // everything downstream — the wait-for-id verify lookup and, critically,
+  // emitBatchEvidence(). Threading the pre-bind copy through to evidence
+  // emission would let a caller-forged context.repository/ref/sha survive
+  // into the authenticated execution_started audit record even though the
+  // evaluate call itself was correctly bound (Codex finding on #148/#161).
+  // Falls back to the pre-bind `items` only if a caller-supplied
+  // evaluateMany mock omits `items` (see this file's own test mocks).
+  const boundItems = batch.items ?? items;
+
   let decisions = batch.decisions;
 
   if (inputs.waitForId) {
@@ -205,7 +216,7 @@ export async function runV21(
       if (terminal.decision === "allow") {
         // Terminal allow must be verified — same fail-closed contract as evaluateMany.
         // Uses @atlasent/enforce's canonical verifyPermit() implementation.
-        const item = items[idx];
+        const item = boundItems[idx];
         const runtimeExecutionHash =
           terminal.executionHashExpected ??
           terminal.execution_hash_expected ??
@@ -247,7 +258,7 @@ export async function runV21(
   // Runs only after the wait-for-id reconciliation, so terminal allows that
   // started life as hold/escalate are still emitted. Best-effort; failures
   // don't change the RunOutput.
-  await emitBatchEvidence(decisions, items, {
+  await emitBatchEvidence(decisions, boundItems, {
     apiKey: inputs.apiKey,
     apiUrl: inputs.apiUrl,
   });

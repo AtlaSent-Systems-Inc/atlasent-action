@@ -23,6 +23,19 @@ export interface EvaluateRequest {
    */
   execution_payload_hash?: string;
   context?: Record<string, unknown>;
+  /**
+   * Top-level body field required when the action class has
+   * requires_state_snapshot=true (wire: `state_snapshot`). Any caller-
+   * supplied value is discarded and replaced with a GitHub-derived one for
+   * production.deploy items — see `bindTrustedStateSnapshot` in ./batch.
+   */
+  state_snapshot?: {
+    source?: string;
+    source_kind?: string;
+    complete?: boolean;
+    run_id?: string;
+    payload?: unknown;
+  };
 }
 
 export interface Decision {

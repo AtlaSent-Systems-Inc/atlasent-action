@@ -460,59 +460,6 @@ var import_enforce3 = __toESM(require_dist());
 
 // src/batch.ts
 var import_enforce = __toESM(require_dist());
-async function evaluateMany(apiUrl, apiKey, items) {
-  const headers = {
-    "content-type": "application/json",
-    authorization: `Bearer ${apiKey}`
-  };
-  const { decisions, batchId } = await loopEvaluate(apiUrl, headers, items);
-  const verified = await Promise.all(
-    decisions.map(async (d, i) => {
-      if (d.decision !== "allow" || !d.permitToken) {
-        return { ...d, verified: d.decision === "allow" ? false : void 0 };
-      }
-      const item = items[i];
-      const runtimeExecutionHash = d.executionHashExpected ?? d.execution_hash_expected;
-      const enforceConfig = {
-        apiKey,
-        apiUrl,
-        action: item.action,
-        actor: item.actor,
-        environment: item.environment,
-        targetId: item.target_id,
-        executionPayloadHash: runtimeExecutionHash ?? item.execution_payload_hash,
-        requiredBindings: (0, import_enforce.requiredBindingsFor)({
-          environment: item.environment,
-          targetId: item.target_id,
-          executionPayloadHash: runtimeExecutionHash ?? item.execution_payload_hash
-        })
-      };
-      const enforceDecision = {
-        decision: "allow",
-        permitToken: d.permitToken,
-        executionHashExpected: runtimeExecutionHash
-      };
-      const result = await (0, import_enforce.verifyPermit)(enforceConfig, enforceDecision);
-      return { ...d, verified: result.verified, verifyOutcome: result.outcome };
-    })
-  );
-  return { decisions: verified, batchId };
-}
-async function loopEvaluate(apiUrl, headers, items) {
-  const decisions = [];
-  for (const item of items) {
-    const r = await fetch(`${apiUrl}/v1-evaluate`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(item)
-    });
-    if (!r.ok) {
-      throw new Error(`atlasent /v1-evaluate ${r.status}`);
-    }
-    decisions.push(await r.json());
-  }
-  return { decisions, batchId: `loop-${Date.now()}` };
-}
 
 // src/canonicalAction.ts
 var PRODUCTION_DEPLOY_ACTION = "production.deploy";
@@ -559,6 +506,108 @@ function assertValidActionType(raw) {
       `Invalid action type "${raw}". Expected dot-separated lowercase identifiers, 2\u20134 segments (e.g. "production.deploy", "database.migration.apply").`
     );
   }
+}
+
+// src/batch.ts
+function readTrustedGithubState() {
+  return {
+    repository: process.env["GITHUB_REPOSITORY"] ?? "",
+    ref: process.env["GITHUB_REF"] ?? "",
+    sha: process.env["GITHUB_SHA"] ?? "",
+    workflow: process.env["GITHUB_WORKFLOW"] ?? "",
+    run_id: process.env["GITHUB_RUN_ID"] ?? "",
+    run_number: process.env["GITHUB_RUN_NUMBER"] ?? "",
+    event_name: process.env["GITHUB_EVENT_NAME"] ?? ""
+  };
+}
+function bindTrustedStateSnapshot(items) {
+  if (!items.some((item) => item.action === PRODUCTION_DEPLOY_ACTION)) {
+    return items;
+  }
+  const state = readTrustedGithubState();
+  return items.map((item) => {
+    if (item.action !== PRODUCTION_DEPLOY_ACTION) {
+      return item;
+    }
+    const { state_snapshot: _discardedTopLevelSnapshot, context, ...rest } = item;
+    const safeContext = { ...context ?? {} };
+    delete safeContext["state_snapshot"];
+    return {
+      ...rest,
+      context: {
+        ...safeContext,
+        // Trusted fields always win over whatever the caller's `context`
+        // claimed for these keys — a batch item asserting a wrong
+        // repository or wrong ref must never survive past this point.
+        repository: state.repository,
+        ref: state.ref,
+        sha: state.sha,
+        workflow: state.workflow,
+        run_id: state.run_id,
+        run_number: state.run_number,
+        event_name: state.event_name
+      },
+      state_snapshot: {
+        source: "github-actions",
+        complete: true,
+        run_id: state.run_id
+      }
+    };
+  });
+}
+async function evaluateMany(apiUrl, apiKey, rawItems) {
+  const items = bindTrustedStateSnapshot(rawItems);
+  const headers = {
+    "content-type": "application/json",
+    authorization: `Bearer ${apiKey}`
+  };
+  const { decisions, batchId } = await loopEvaluate(apiUrl, headers, items);
+  const verified = await Promise.all(
+    decisions.map(async (d, i) => {
+      if (d.decision !== "allow" || !d.permitToken) {
+        return { ...d, verified: d.decision === "allow" ? false : void 0 };
+      }
+      const item = items[i];
+      const runtimeExecutionHash = d.executionHashExpected ?? d.execution_hash_expected;
+      const enforceConfig = {
+        apiKey,
+        apiUrl,
+        action: item.action,
+        actor: item.actor,
+        environment: item.environment,
+        targetId: item.target_id,
+        executionPayloadHash: runtimeExecutionHash ?? item.execution_payload_hash,
+        requiredBindings: (0, import_enforce.requiredBindingsFor)({
+          environment: item.environment,
+          targetId: item.target_id,
+          executionPayloadHash: runtimeExecutionHash ?? item.execution_payload_hash
+        })
+      };
+      const enforceDecision = {
+        decision: "allow",
+        permitToken: d.permitToken,
+        executionHashExpected: runtimeExecutionHash
+      };
+      const result = await (0, import_enforce.verifyPermit)(enforceConfig, enforceDecision);
+      return { ...d, verified: result.verified, verifyOutcome: result.outcome };
+    })
+  );
+  return { decisions: verified, batchId, items };
+}
+async function loopEvaluate(apiUrl, headers, items) {
+  const decisions = [];
+  for (const item of items) {
+    const r = await fetch(`${apiUrl}/v1-evaluate`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(item)
+    });
+    if (!r.ok) {
+      throw new Error(`atlasent /v1-evaluate ${r.status}`);
+    }
+    decisions.push(await r.json());
+  }
+  return { decisions, batchId: `loop-${Date.now()}` };
 }
 
 // src/inputs.ts
@@ -933,6 +982,7 @@ async function runV21(env, flags, deps = {}) {
     deps
   ) : parsedItems;
   const batch = await evaluateMany(inputs.apiUrl, inputs.apiKey, items);
+  const boundItems = batch.items ?? items;
   let decisions = batch.decisions;
   if (inputs.waitForId) {
     const idx = decisions.findIndex(
@@ -949,7 +999,7 @@ async function runV21(env, flags, deps = {}) {
       });
       decisions = [...decisions];
       if (terminal.decision === "allow") {
-        const item = items[idx];
+        const item = boundItems[idx];
         const runtimeExecutionHash = terminal.executionHashExpected ?? terminal.execution_hash_expected ?? originalExecutionHash;
         const vr = terminal.permitToken ? await (0, import_enforce3.verifyPermit)(
           {
@@ -981,7 +1031,7 @@ async function runV21(env, flags, deps = {}) {
       }
     }
   }
-  await emitBatchEvidence(decisions, items, {
+  await emitBatchEvidence(decisions, boundItems, {
     apiKey: inputs.apiKey,
     apiUrl: inputs.apiUrl
   });

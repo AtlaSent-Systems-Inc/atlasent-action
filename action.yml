@@ -102,10 +102,6 @@ inputs:
     description: 'Maximum milliseconds to wait for a terminal decision when wait-for-id is set (default: 600000 = 10 min; maximum: 3600000 = 60 min).'
     required: false
     default: '600000'
-  v2-batch:
-    description: 'Enable the /v1-evaluate/batch endpoint for batch evaluations (default: false, falls back to sequential /v1-evaluate loop).'
-    required: false
-    default: 'false'
   v2-streaming:
     description: 'No effect — there is no Server-Sent Events endpoint on the runtime API to stream from. Kept only so existing workflow YAML setting this input does not hard-fail; wait-for-id always polls.'
     required: false

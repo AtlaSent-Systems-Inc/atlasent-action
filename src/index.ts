@@ -1483,7 +1483,6 @@ export async function run(): Promise<void> {
   if (evaluationsRaw) {
     const waitForId = getInput("wait-for-id") || undefined;
     const waitTimeoutMs = parseInt(getInput("wait-timeout-ms") || "600000", 10);
-    const v2Batch = getInput("v2-batch") === "true";
     const v2Streaming = getInput("v2-streaming") === "true";
 
     let result;
@@ -1497,7 +1496,7 @@ export async function run(): Promise<void> {
           "INPUT_WAIT-FOR-ID": waitForId,
           "INPUT_WAIT-TIMEOUT-MS": String(waitTimeoutMs),
         },
-        { v2Batch, v2Streaming },
+        { v2Streaming },
         { mask: maskValue },
       );
     } catch (err) {

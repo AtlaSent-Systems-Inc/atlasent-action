@@ -460,9 +460,105 @@ var import_enforce3 = __toESM(require_dist());
 
 // src/batch.ts
 var import_enforce = __toESM(require_dist());
+
+// src/canonicalAction.ts
+var PRODUCTION_DEPLOY_ACTION = "production.deploy";
+var INFRASTRUCTURE_CHANGE_ACTION = "infrastructure.change";
+var PRODUCTION_ROLLBACK_ACTION = "production.rollback";
+var SECRET_CONFIGURATION_CHANGE_ACTION = "secret.configuration.change";
+var PACKAGE_RELEASE_ACTION = "package.release";
+var TRIAL_BLINDING_SETUP_ACTION = "trial.blinding.setup";
+var TRIAL_UNBLINDING_EXECUTE_ACTION = "trial.unblinding.execute";
+var TRIAL_UNBLINDING_EMERGENCY_ACTION = "trial.unblinding.emergency";
+var TRUST_ROOT_PUBLISH_ACTION = "trust_root.publish";
+var LEGACY_PRODUCTION_DEPLOY_ALIAS = "deployment.production";
+var GATE_PERMITTED_ACTIONS = /* @__PURE__ */ new Set([
+  PRODUCTION_DEPLOY_ACTION,
+  INFRASTRUCTURE_CHANGE_ACTION,
+  PRODUCTION_ROLLBACK_ACTION,
+  SECRET_CONFIGURATION_CHANGE_ACTION,
+  PACKAGE_RELEASE_ACTION,
+  TRIAL_BLINDING_SETUP_ACTION,
+  TRIAL_UNBLINDING_EXECUTE_ACTION,
+  TRIAL_UNBLINDING_EMERGENCY_ACTION,
+  TRUST_ROOT_PUBLISH_ACTION
+]);
+var MANDATORY_CHANGE_CONTROL_ACTIONS = /* @__PURE__ */ new Set([
+  PRODUCTION_DEPLOY_ACTION,
+  INFRASTRUCTURE_CHANGE_ACTION,
+  PRODUCTION_ROLLBACK_ACTION,
+  SECRET_CONFIGURATION_CHANGE_ACTION
+]);
+function normalizeProtectedAction(raw) {
+  if (raw === LEGACY_PRODUCTION_DEPLOY_ALIAS) {
+    return { canonical: PRODUCTION_DEPLOY_ACTION, wasLegacyAlias: true };
+  }
+  return { canonical: raw, wasLegacyAlias: false };
+}
+var ACTION_TYPE_PATTERN = /^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*){1,3}$/;
+function isValidActionType(raw) {
+  return ACTION_TYPE_PATTERN.test(raw);
+}
+function assertValidActionType(raw) {
+  const { canonical } = normalizeProtectedAction(raw);
+  if (!isValidActionType(canonical)) {
+    throw new Error(
+      `Invalid action type "${raw}". Expected dot-separated lowercase identifiers, 2\u20134 segments (e.g. "production.deploy", "database.migration.apply").`
+    );
+  }
+}
+
+// src/batch.ts
 var BATCH_MAX_ITEMS = 100;
+function readTrustedGithubState() {
+  return {
+    repository: process.env["GITHUB_REPOSITORY"] ?? "",
+    ref: process.env["GITHUB_REF"] ?? "",
+    sha: process.env["GITHUB_SHA"] ?? "",
+    workflow: process.env["GITHUB_WORKFLOW"] ?? "",
+    run_id: process.env["GITHUB_RUN_ID"] ?? "",
+    run_number: process.env["GITHUB_RUN_NUMBER"] ?? "",
+    event_name: process.env["GITHUB_EVENT_NAME"] ?? ""
+  };
+}
+function bindTrustedStateSnapshot(items) {
+  if (!items.some((item) => item.action === PRODUCTION_DEPLOY_ACTION)) {
+    return items;
+  }
+  const state = readTrustedGithubState();
+  return items.map((item) => {
+    if (item.action !== PRODUCTION_DEPLOY_ACTION) {
+      return item;
+    }
+    const { state_snapshot: _discardedTopLevelSnapshot, context, ...rest } = item;
+    const safeContext = { ...context ?? {} };
+    delete safeContext["state_snapshot"];
+    return {
+      ...rest,
+      context: {
+        ...safeContext,
+        // Trusted fields always win over whatever the caller's `context`
+        // claimed for these keys — a batch item asserting a wrong
+        // repository or wrong ref must never survive past this point.
+        repository: state.repository,
+        ref: state.ref,
+        sha: state.sha,
+        workflow: state.workflow,
+        run_id: state.run_id,
+        run_number: state.run_number,
+        event_name: state.event_name
+      },
+      state_snapshot: {
+        source: "github-actions",
+        complete: true,
+        run_id: state.run_id
+      }
+    };
+  });
+}
 var BATCH_MIN_ITEMS = 2;
-async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
+async function evaluateMany(apiUrl, apiKey, rawItems, v2Batch) {
+  const items = bindTrustedStateSnapshot(rawItems);
   const headers = {
     "content-type": "application/json",
     authorization: `Bearer ${apiKey}`
@@ -568,53 +664,6 @@ async function loopEvaluate(apiUrl, headers, items) {
     decisions.push(await r.json());
   }
   return { decisions, batchId: `loop-${Date.now()}` };
-}
-
-// src/canonicalAction.ts
-var PRODUCTION_DEPLOY_ACTION = "production.deploy";
-var INFRASTRUCTURE_CHANGE_ACTION = "infrastructure.change";
-var PRODUCTION_ROLLBACK_ACTION = "production.rollback";
-var SECRET_CONFIGURATION_CHANGE_ACTION = "secret.configuration.change";
-var PACKAGE_RELEASE_ACTION = "package.release";
-var TRIAL_BLINDING_SETUP_ACTION = "trial.blinding.setup";
-var TRIAL_UNBLINDING_EXECUTE_ACTION = "trial.unblinding.execute";
-var TRIAL_UNBLINDING_EMERGENCY_ACTION = "trial.unblinding.emergency";
-var TRUST_ROOT_PUBLISH_ACTION = "trust_root.publish";
-var LEGACY_PRODUCTION_DEPLOY_ALIAS = "deployment.production";
-var GATE_PERMITTED_ACTIONS = /* @__PURE__ */ new Set([
-  PRODUCTION_DEPLOY_ACTION,
-  INFRASTRUCTURE_CHANGE_ACTION,
-  PRODUCTION_ROLLBACK_ACTION,
-  SECRET_CONFIGURATION_CHANGE_ACTION,
-  PACKAGE_RELEASE_ACTION,
-  TRIAL_BLINDING_SETUP_ACTION,
-  TRIAL_UNBLINDING_EXECUTE_ACTION,
-  TRIAL_UNBLINDING_EMERGENCY_ACTION,
-  TRUST_ROOT_PUBLISH_ACTION
-]);
-var MANDATORY_CHANGE_CONTROL_ACTIONS = /* @__PURE__ */ new Set([
-  PRODUCTION_DEPLOY_ACTION,
-  INFRASTRUCTURE_CHANGE_ACTION,
-  PRODUCTION_ROLLBACK_ACTION,
-  SECRET_CONFIGURATION_CHANGE_ACTION
-]);
-function normalizeProtectedAction(raw) {
-  if (raw === LEGACY_PRODUCTION_DEPLOY_ALIAS) {
-    return { canonical: PRODUCTION_DEPLOY_ACTION, wasLegacyAlias: true };
-  }
-  return { canonical: raw, wasLegacyAlias: false };
-}
-var ACTION_TYPE_PATTERN = /^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*){1,3}$/;
-function isValidActionType(raw) {
-  return ACTION_TYPE_PATTERN.test(raw);
-}
-function assertValidActionType(raw) {
-  const { canonical } = normalizeProtectedAction(raw);
-  if (!isValidActionType(canonical)) {
-    throw new Error(
-      `Invalid action type "${raw}". Expected dot-separated lowercase identifiers, 2\u20134 segments (e.g. "production.deploy", "database.migration.apply").`
-    );
-  }
 }
 
 // src/inputs.ts

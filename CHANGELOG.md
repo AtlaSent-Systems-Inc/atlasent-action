@@ -4,6 +4,26 @@ All notable changes to `atlasent-action` are documented here.
 
 ## [Unreleased]
 
+### Removed: `v2-batch` input (#131)
+
+`v2-batch: "true"` routed the `evaluations:` batch-eval path at a
+`/v1-evaluate/batch` endpoint that never existed on the runtime API —
+atlasent-api's `v1-evaluate` entry dispatcher only recognizes a
+`/close-ops` suffix, no `/batch` sub-route. Every real call with
+`v2-batch: "true"` set failed. Fixing the endpoint requires a
+server-side change in atlasent-api that is out of scope for this repo, so
+the input (and the client-side `/v1-evaluate/batch` POST, 404-fallback,
+and >100-item chunking logic it drove) was removed entirely rather than
+left as a documented-but-broken opt-in.
+
+**Compatibility:** this only affects callers who explicitly set
+`v2-batch: "true"` — an input GitHub Actions silently ignores if you keep
+passing it. Because that opt-in could never have worked in production
+(every real call 404'd against a nonexistent route), removing it is not a
+behavior regression for any working caller. The default `evaluations:`
+path — one sequential `/v1-evaluate` POST per item, unaffected by this
+change — remains the only batch-eval behavior.
+
 ### SDK bump: `@atlasent/sdk` → `2.16.0` (pilot client-surface alignment)
 
 Bumps the bundled `@atlasent/sdk` from `2.10.0` to `2.16.0` — the current

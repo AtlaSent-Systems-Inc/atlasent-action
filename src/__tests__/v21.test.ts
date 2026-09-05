@@ -37,7 +37,7 @@ const BASE_ENV = {
   "INPUT_WAIT-TIMEOUT-MS": "30000",
 };
 
-const FLAGS = { v2Batch: false, v2Streaming: false };
+const FLAGS = { v2Streaming: false };
 
 function decision(
   d: "allow" | "deny" | "hold" | "escalate",
@@ -75,9 +75,9 @@ afterEach(() => { vi.restoreAllMocks(); });
 
 // ── Basic routing ─────────────────────────────────────────────────────────────
 
-it("passes items and flags through to evaluateMany", async () => {
+it("passes items through to evaluateMany", async () => {
   mockEvaluateMany.mockResolvedValueOnce({ decisions: [decision("allow")], batchId: "b1" });
-  await runV21(BASE_ENV, { v2Batch: true, v2Streaming: false });
+  await runV21(BASE_ENV, FLAGS);
   expect(mockEvaluateMany).toHaveBeenCalledWith(
     "https://api.test",
     "ask_test_key",
@@ -91,7 +91,6 @@ it("passes items and flags through to evaluateMany", async () => {
         context: { triggering_actor: "github:octocat" },
       }),
     ],
-    true,
   );
 });
 
@@ -221,7 +220,6 @@ it("wraps single action/actor into a 1-item batch", async () => {
     "https://api.atlasent.io/functions/v1",
     "ask_test_key",
     [expect.objectContaining({ action: "production.deploy", actor: "bob" })],
-    false,
   );
 });
 

@@ -163,7 +163,7 @@ export async function emitBatchEvidence(
 
 export async function runV21(
   env: Record<string, string | undefined>,
-  flags: { v2Batch: boolean; v2Streaming: boolean },
+  flags: { v2Streaming: boolean },
   deps: RunV21Deps = {},
 ): Promise<RunOutput> {
   const inputs = parseInputs(env);
@@ -176,12 +176,7 @@ export async function runV21(
       )
     : parsedItems;
 
-  const batch = await evaluateMany(
-    inputs.apiUrl,
-    inputs.apiKey,
-    items,
-    flags.v2Batch,
-  );
+  const batch = await evaluateMany(inputs.apiUrl, inputs.apiKey, items);
 
   let decisions = batch.decisions;
 

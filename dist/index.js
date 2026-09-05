@@ -460,35 +460,12 @@ var import_enforce3 = __toESM(require_dist());
 
 // src/batch.ts
 var import_enforce = __toESM(require_dist());
-var BATCH_MAX_ITEMS = 100;
-var BATCH_MIN_ITEMS = 2;
-async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
+async function evaluateMany(apiUrl, apiKey, items) {
   const headers = {
     "content-type": "application/json",
     authorization: `Bearer ${apiKey}`
   };
-  let decisions;
-  let batchId;
-  const shouldUseBatch = v2Batch && items.length >= BATCH_MIN_ITEMS;
-  if (shouldUseBatch) {
-    try {
-      const out = await postBatchChunked(apiUrl, headers, items);
-      decisions = out.decisions;
-      batchId = out.batchId;
-    } catch (err) {
-      if (err instanceof BatchEndpointDisabled) {
-        const out = await loopEvaluate(apiUrl, headers, items);
-        decisions = out.decisions;
-        batchId = out.batchId;
-      } else {
-        throw err;
-      }
-    }
-  } else {
-    const out = await loopEvaluate(apiUrl, headers, items);
-    decisions = out.decisions;
-    batchId = out.batchId;
-  }
+  const { decisions, batchId } = await loopEvaluate(apiUrl, headers, items);
   const verified = await Promise.all(
     decisions.map(async (d, i) => {
       if (d.decision !== "allow" || !d.permitToken) {
@@ -520,39 +497,6 @@ async function evaluateMany(apiUrl, apiKey, items, v2Batch) {
     })
   );
   return { decisions: verified, batchId };
-}
-var BatchEndpointDisabled = class extends Error {
-  constructor() {
-    super("v1-evaluate/batch disabled for this tenant (404)");
-    this.name = "BatchEndpointDisabled";
-  }
-};
-async function postBatchChunked(apiUrl, headers, items) {
-  const chunks = [];
-  for (let i = 0; i < items.length; i += BATCH_MAX_ITEMS) {
-    chunks.push(items.slice(i, i + BATCH_MAX_ITEMS));
-  }
-  const all = [];
-  let firstBatchId = "";
-  for (let c = 0; c < chunks.length; c++) {
-    const r = await fetch(`${apiUrl}/v1-evaluate/batch`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ items: chunks[c] })
-    });
-    if (r.status === 404) {
-      throw new BatchEndpointDisabled();
-    }
-    if (!r.ok) {
-      throw new Error(`atlasent /v1-evaluate/batch ${r.status}`);
-    }
-    const data = await r.json();
-    all.push(...data.results);
-    if (c === 0)
-      firstBatchId = data.batchId;
-  }
-  const batchId = chunks.length > 1 ? `chunked-${Date.now()}` : firstBatchId;
-  return { decisions: all, batchId };
 }
 async function loopEvaluate(apiUrl, headers, items) {
   const decisions = [];
@@ -988,12 +932,7 @@ async function runV21(env, flags, deps = {}) {
     { apiKey: inputs.apiKey, apiUrl: inputs.apiUrl },
     deps
   ) : parsedItems;
-  const batch = await evaluateMany(
-    inputs.apiUrl,
-    inputs.apiKey,
-    items,
-    flags.v2Batch
-  );
+  const batch = await evaluateMany(inputs.apiUrl, inputs.apiKey, items);
   let decisions = batch.decisions;
   if (inputs.waitForId) {
     const idx = decisions.findIndex(
@@ -3709,7 +3648,6 @@ async function run() {
   if (evaluationsRaw) {
     const waitForId = getInput("wait-for-id") || void 0;
     const waitTimeoutMs = parseInt(getInput("wait-timeout-ms") || "600000", 10);
-    const v2Batch = getInput("v2-batch") === "true";
     const v2Streaming = getInput("v2-streaming") === "true";
     let result;
     try {
@@ -3722,7 +3660,7 @@ async function run() {
           "INPUT_WAIT-FOR-ID": waitForId,
           "INPUT_WAIT-TIMEOUT-MS": String(waitTimeoutMs)
         },
-        { v2Batch, v2Streaming },
+        { v2Streaming },
         { mask: maskValue }
       );
     } catch (err) {

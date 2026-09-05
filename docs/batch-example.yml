@@ -1,21 +1,15 @@
 # AtlaSent Batch Gate — example GitHub Actions workflow
 #
 # Demonstrates evaluating MULTIPLE protected actions in a single step
-# using the `evaluations:` input. The action posts the list to
-# /v1-evaluate/batch when `v2-batch: 'true'` is set, and verifies each
-# allow decision's permit before returning. The deploy job is gated on
-# `outputs.verified == 'true'` — which is only set when EVERY allow
-# decision passed permit verification.
+# using the `evaluations:` input. The action runs one /v1-evaluate call
+# per item (in order) and verifies each allow decision's permit before
+# returning. The deploy job is gated on `outputs.verified == 'true'` —
+# which is only set when EVERY allow decision passed permit verification.
 #
-# Auto-fallback behaviour (Wave B):
-#   • items.length < 2 → action skips the batch endpoint and uses the
-#     per-item /v1-evaluate loop directly (no batch benefit for 1 item).
-#   • /v1-evaluate/batch returns 404 → the action falls back to the
-#     per-item loop automatically (V2-D3: v2_batch is closed-by-default;
-#     a tenant without the flag flipped on gets a 404 and the workflow
-#     still succeeds via the loop transport).
-#   • items.length > 100 → the action chunks the batch client-side into
-#     ≤100-item POSTs (server hard-cap is 100 per request).
+# There is no server-side batch endpoint to opt into: an earlier
+# `v2-batch: 'true'` input targeted a `/v1-evaluate/batch` route that
+# never existed on the runtime API, so it was removed (#131). The
+# per-item loop above is the only — and always-working — batch behavior.
 #
 # Prerequisites:
 #   - Store your AtlaSent API key as a repository secret named
@@ -68,10 +62,6 @@ jobs:
                 "context": { "service": "web", "ref": "${{ github.ref }}" }
               }
             ]
-          # Opt in to the /v1-evaluate/batch endpoint. The action falls
-          # back to the per-item /v1-evaluate loop automatically if the
-          # endpoint returns 404 (tenant's v2_batch flag is off).
-          v2-batch: 'true'
           # fail-on-deny=true (default) fails this step if ANY of the
           # evaluations comes back deny/hold/escalate. The deploy job
           # below is additionally gated on `verified == 'true'`.

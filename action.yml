@@ -405,6 +405,40 @@ inputs:
       dry-run or advisory monitoring pipelines.
     required: false
     default: 'true'
+  # ── Posture Scan ─────────────────────────────────────────────────────────────────────────
+  posture-scan:
+    description: |
+      When "true", run in posture-scan mode instead of evaluate: an advisory
+      report on the CALLING repo's own GitHub security posture (branch
+      protection, CODEOWNERS, Dependabot, CodeQL, secret scanning, org 2FA
+      enforcement). Uses only the GITHUB_TOKEN + checked-out working tree —
+      calls no AtlaSent API, requires no ATLASENT_API_KEY, and NEVER fails
+      the step or gates anything. Every signal is either a directly observed
+      present/absent result or an honest "unknown" with a specific reason
+      (no_token | insufficient_permission | not_observable_by_repo_token |
+      workspace_not_checked_out | not_applicable | check_failed) — never a
+      guess, never a synthetic score. Mutually exclusive with evaluate,
+      policy-sync, evaluations, release-mode, governance-agents,
+      vqp-snapshot-id, and trajectory-verify.
+    required: false
+    default: 'false'
+  posture-scan-token:
+    description: |
+      Optional token to use for posture-scan's GitHub API calls instead of
+      GITHUB_TOKEN — e.g. a differently-scoped PAT or GitHub App
+      installation token if you want to observe signals a default
+      GITHUB_TOKEN cannot see. Branch protection and secret-scanning status
+      need Administration-level repository access, which the default
+      Actions GITHUB_TOKEN can NEVER hold (verified against GitHub's
+      workflow-permissions schema: "administration" is not a grantable
+      `permissions:` key at all — editing the workflow's `permissions:`
+      block does not help here; a genuinely different credential is
+      required). Org-level 2FA enforcement needs an org-admin-scoped
+      credential. Org-level SSO/SAML enforcement has no REST representation
+      at all — it is unobservable through this input no matter what
+      credential is supplied. Falls back to `env: GITHUB_TOKEN` when unset.
+    required: false
+    default: ''
 outputs:
   solo-attestation-id:
     description: 'UUID of the recorded solo_operator_attestations row. Set only by solo-operator-attest mode. Empty on failure (fail-closed — no partial attestation is ever recorded).'
@@ -508,6 +542,27 @@ outputs:
     description: 'JSON array of evaluation summaries per agent.'
   governance-findings:
     description: 'JSON array of all findings across all invoked agents.'
+  # ── Posture Scan outputs ─────────────────────────────────────────────────────────────────
+  posture-findings:
+    description: |
+      JSON array of posture findings, one per signal checked (posture-scan
+      mode only). Each entry carries {id, label, observable, status, reason,
+      detail, evidence?} — status is "present" | "absent" | "unknown" |
+      "not_applicable"; "unknown" always carries a specific reason
+      (no_token | insufficient_permission | not_observable_by_repo_token |
+      workspace_not_checked_out | check_failed) rather than being silently
+      omitted. "not_applicable" (reason "not_applicable") means the concept
+      doesn't apply here at all (e.g. an org-only setting on a user-owned
+      repo) — a distinct bucket from "unknown", never counted as "not
+      observable".
+  posture-observed-count:
+    description: 'Count of signals that were directly observed (present or absent), posture-scan mode only.'
+  posture-not-observable-count:
+    description: 'Count of signals with status "unknown" specifically — genuinely not observable with the current token. Excludes "not_applicable" findings (see posture-not-applicable-count). Posture-scan mode only.'
+  posture-not-applicable-count:
+    description: 'Count of signals with status "not_applicable" — the underlying concept does not apply (e.g. org-only settings on a user-owned repo). A distinct bucket from posture-not-observable-count. Posture-scan mode only.'
+  posture-summary:
+    description: 'One-line human summary, e.g. "4 present / 2 absent / 3 not observable / 1 not applicable (of 9 signals)" (posture-scan mode only).'
   # ── Evidence bundle outputs ──────────────────────────────────────────────────────────────
   evidence-bundle-sha256:
     description: 'SHA-256 hex digest of the generated compliance evidence bundle.'

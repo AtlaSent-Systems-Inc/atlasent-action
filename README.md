@@ -651,25 +651,32 @@ never-authorizes-anything spirit as governance-agent findings (see below).
 **Every signal is either genuinely observed or an honest `unknown` — never a
 guess, never a synthetic risk score.** Three of the signals (CODEOWNERS
 presence, a `.github/dependabot.yml` file, a CodeQL workflow) are plain
-file-existence checks against the checked-out tree and are always
-observable. The rest call the GitHub REST API and depend on what the token
-can actually see — **empirically verified**, not assumed:
+file-existence checks against the checked-out tree — they need a preceding
+`actions/checkout` step (detected via a `.git` directory; without one they
+report `unknown`/`workspace_not_checked_out` rather than guessing "absent").
+The rest call the GitHub REST API and depend on what the token can actually
+see — **empirically verified against the live API and GitHub's own
+published schemas**, not assumed:
 
 | Signal | Needs beyond default `GITHUB_TOKEN`? |
 |---|---|
 | CODEOWNERS file presence | No — checked-out tree only |
 | Dependabot config file presence | No — checked-out tree only |
-| CodeQL workflow presence | No — checked-out tree only |
-| Branch protection rules | Yes — `permissions: administration: read` in the calling job. Without it, GitHub returns `403 Resource not accessible by integration`, reported as `status: "unknown", reason: "insufficient_permission"` — never guessed as "unprotected" |
+| CodeQL workflow presence (an actual `uses: github/codeql-action/...` step, not a bare "codeql" text match) | No — checked-out tree only |
+| Branch protection rules | **Yes, and not fixable by editing the workflow's `permissions:` block.** Verified against GitHub's own workflow-syntax JSON schema: `administration` is not a grantable `permissions:` key at all, so the default GITHUB_TOKEN can never hold repository Administration rights no matter what a workflow requests. Without it, GitHub returns `403 Resource not accessible by integration`, reported as `status: "unknown", reason: "insufficient_permission"` — never guessed as "unprotected". Pass a fine-grained PAT or GitHub App installation token with Administration access via `posture-scan-token` to observe this |
 | Required status checks | Same as branch protection (read from the same response) |
-| Secret scanning / push protection / Dependabot security updates | Yes — same permission. Note: GitHub does not even error here; it returns `200` with the `security_and_analysis` field **silently omitted**. This mode treats that omission as `unknown`, never as "disabled" |
-| Dependabot alerts enabled | Yes — same permission (distinct from the config-file check above, which only checks that a file exists) |
-| Org-level 2FA/SSO enforcement | **Cannot ever be seen by a repository-scoped token**, no matter what permission the workflow grants — this is a GitHub platform limitation, reported as `reason: "not_observable_by_repo_token"`. Reported as `not_applicable` for a user-owned repo instead, since the setting doesn't exist there |
+| Secret scanning / push protection / Dependabot security updates | Same credential requirement as branch protection. Note: GitHub does not even error here; it returns `200` with the `security_and_analysis` field **silently omitted**. This mode treats that omission as `unknown`, never as "disabled" |
+| Dependabot alerts enabled | Same credential requirement (distinct from the config-file check above, which only checks that a file exists). A `404` here is only read as "disabled" once this mode has independently confirmed via `GET /repos/{owner}/{repo}` that the same credential can see the repository at all — GitHub also 404s this endpoint for an invisible/inaccessible repo, so an unconfirmed 404 is reported `unknown`, never guessed "disabled" |
+| Org-level 2FA enforcement | **Cannot ever be seen by a repository-scoped token**, no matter what credential is supplied — this is a GitHub platform limitation, reported as `reason: "not_observable_by_repo_token"`. Reported as `not_applicable` for a user-owned repo instead, since the setting doesn't exist there |
+| Org-level SSO/SAML enforcement | Reported as its **own, independent** finding — an org can require 2FA without enforcing SSO, or vice versa, so this is never inferred from the 2FA result. Confirmed against GitHub's published REST OpenAPI spec: there is no SSO/SAML field anywhere in the public REST API at all (it exists only in the Enterprise GraphQL API, gated on enterprise-owner credentials), so this always reports `not_observable_by_repo_token` |
 
 Outputs: `posture-findings` (JSON array, one entry per signal — see
 `src/postureScan.ts` for the full `PostureFinding` shape), `posture-summary`
 (one-line human summary), `posture-observed-count`,
-`posture-not-observable-count`. A job summary table is also written.
+`posture-not-observable-count` (findings with status `unknown` specifically),
+`posture-not-applicable-count` (findings with status `not_applicable` — a
+distinct bucket, never folded into "not observable"). A job summary table is
+also written.
 
 ## Other modes
 

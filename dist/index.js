@@ -2729,10 +2729,26 @@ function ghHeaders3(token) {
     "X-GitHub-Api-Version": "2022-11-28"
   };
 }
+function isWorkspaceCheckedOut(workspace, fs_) {
+  return fs_.existsSync(path3.resolve(workspace, ".git"));
+}
+function notCheckedOutFinding(id, label) {
+  return {
+    id,
+    label,
+    observable: false,
+    status: "unknown",
+    reason: "workspace_not_checked_out",
+    detail: "No .git directory found under the workspace \u2014 this step likely ran without a preceding `actions/checkout`, so a file genuinely being absent from the real repository cannot be distinguished from there being no checkout to look at. Add an `actions/checkout` step before posture-scan to make this observable."
+  };
+}
 var CODEOWNERS_PATHS = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
 var DEPENDABOT_CONFIG_PATHS = [".github/dependabot.yml", ".github/dependabot.yaml"];
 function checkCodeowners(workspace, fs_) {
   const found = CODEOWNERS_PATHS.find((p) => fs_.existsSync(path3.resolve(workspace, p)));
+  if (!found && !isWorkspaceCheckedOut(workspace, fs_)) {
+    return notCheckedOutFinding("codeowners", "CODEOWNERS file");
+  }
   return {
     id: "codeowners",
     label: "CODEOWNERS file",
@@ -2745,6 +2761,9 @@ function checkCodeowners(workspace, fs_) {
 }
 function checkDependabotConfig(workspace, fs_) {
   const found = DEPENDABOT_CONFIG_PATHS.find((p) => fs_.existsSync(path3.resolve(workspace, p)));
+  if (!found && !isWorkspaceCheckedOut(workspace, fs_)) {
+    return notCheckedOutFinding("dependabot_config", "Dependabot config file");
+  }
   return {
     id: "dependabot_config",
     label: "Dependabot config file",
@@ -2755,10 +2774,14 @@ function checkDependabotConfig(workspace, fs_) {
     evidence: { checked_paths: DEPENDABOT_CONFIG_PATHS, found_path: found ?? null }
   };
 }
-var CODEQL_MARKERS = [/github\/codeql-action\//i, /\bcodeql\b/i];
+var CODEQL_USES_MARKER = /\buses:\s*["']?github\/codeql-action\//i;
 function checkCodeqlWorkflow(workspace, fs_) {
+  const checkedOut = isWorkspaceCheckedOut(workspace, fs_);
   const workflowsDir = path3.resolve(workspace, ".github/workflows");
   if (!fs_.existsSync(workflowsDir)) {
+    if (!checkedOut) {
+      return notCheckedOutFinding("codeql_workflow", "CodeQL / code-scanning workflow");
+    }
     return {
       id: "codeql_workflow",
       label: "CodeQL / code-scanning workflow",
@@ -2784,7 +2807,7 @@ function checkCodeqlWorkflow(workspace, fs_) {
     } catch {
       continue;
     }
-    if (CODEQL_MARKERS.some((re) => re.test(content))) {
+    if (CODEQL_USES_MARKER.test(content)) {
       matches.push(file);
     }
   }
@@ -2794,7 +2817,7 @@ function checkCodeqlWorkflow(workspace, fs_) {
     observable: true,
     status: matches.length > 0 ? "present" : "absent",
     reason: "observed",
-    detail: matches.length > 0 ? `CodeQL Action referenced in: ${matches.join(", ")}.` : `Scanned ${workflowFiles.length} workflow file(s) in .github/workflows \u2014 none reference github/codeql-action.`,
+    detail: matches.length > 0 ? `A "uses: github/codeql-action/..." step found in: ${matches.join(", ")}.` : `Scanned ${workflowFiles.length} workflow file(s) in .github/workflows \u2014 none reference a github/codeql-action step.`,
     evidence: { workflow_files_scanned: workflowFiles, matched_files: matches }
   };
 }
@@ -2895,8 +2918,7 @@ function branchProtectionFindings(branch, outcome) {
     ];
   }
   if (outcome.kind === "insufficient_permission") {
-    const detail2 = `Reading branch protection for "${branch}" requires the "Administration" repository permission (read) on the GITHUB_TOKEN \u2014 not part of the default token grant. Add \`permissions:
-  administration: read\` to this job in the calling workflow to make this observable. GitHub responded: ${outcome.message}`;
+    const detail2 = `Reading branch protection for "${branch}" requires the "Administration" repository permission on the credential used \u2014 the default Actions GITHUB_TOKEN can NEVER hold this permission (verified against GitHub's own workflow permissions schema: "administration" is not a grantable \`permissions:\` key at all, so adding it to the workflow YAML would not help and would in fact make the workflow invalid). To observe this signal, pass a fine-grained PAT or GitHub App installation token that actually has Administration: Read access via the \`posture-scan-token\` input. GitHub responded: ${outcome.message}`;
     return [
       {
         id: "branch_protection",
@@ -2964,7 +2986,7 @@ function secretScanningFindings(repoInfoResult) {
       observable: false,
       status: "unknown",
       reason: "insufficient_permission",
-      detail: "GET /repos/{owner}/{repo} succeeded, but the `security_and_analysis` field was not present in the response. GitHub only includes this field for callers with admin-level access to the repository; a default-permission GITHUB_TOKEN cannot see it under any `permissions:` grant available to a workflow. Its absence is NOT evidence that these features are disabled."
+      detail: "GET /repos/{owner}/{repo} succeeded, but the `security_and_analysis` field was not present in the response. GitHub only includes this field for callers with admin-level access to the repository; a default-permission GITHUB_TOKEN cannot see it under any `permissions:` grant available to a workflow (there is no such grant for repository administration access). Its absence is NOT evidence that these features are disabled. Pass a token with admin-level repo access via the `posture-scan-token` input to observe this signal."
     }));
   }
   return ids.map(({ id, label, key }) => {
@@ -3001,7 +3023,24 @@ async function fetchDependabotAlertsFinding(args) {
     return { id, label, observable: true, status: "present", reason: "observed", detail: "Dependabot alerts are enabled for this repository." };
   }
   if (res.status === 404) {
-    return { id, label, observable: true, status: "absent", reason: "observed", detail: "Dependabot alerts are disabled for this repository." };
+    if (!args.repoAccessible) {
+      return {
+        id,
+        label,
+        observable: false,
+        status: "unknown",
+        reason: "check_failed",
+        detail: `GET /repos/{owner}/{repo}/vulnerability-alerts returned 404, but this same credential's GET /repos/{owner}/{repo} call did not succeed either \u2014 GitHub also returns 404 here when the repository itself is not visible to the credential (expired, misscoped, or wrong token), so this cannot be safely read as "alerts disabled" without independently confirmed repository access.`
+      };
+    }
+    return {
+      id,
+      label,
+      observable: true,
+      status: "absent",
+      reason: "observed",
+      detail: "Dependabot alerts are disabled for this repository (repository visibility with this credential was independently confirmed via GET /repos/{owner}/{repo})."
+    };
   }
   if (res.status === 403) {
     const text2 = await res.text().catch(() => "");
@@ -3024,33 +3063,49 @@ async function fetchDependabotAlertsFinding(args) {
     detail: `Unexpected HTTP ${res.status} checking vulnerability-alerts: ${text.slice(0, 200)}`
   };
 }
-async function fetchOrg2faFinding(args) {
-  const id = "org_2fa_sso_enforcement";
-  const label = "Org-level 2FA/SSO enforcement";
+async function fetchOrg2faAndSsoFindings(args) {
+  const twoFaId = "org_2fa_enforcement";
+  const twoFaLabel = "Org-level 2FA enforcement";
+  const ssoId = "org_sso_enforcement";
+  const ssoLabel = "Org-level SSO enforcement";
   const owner = args.repository.split("/")[0] ?? "";
+  const ssoFinding = {
+    id: ssoId,
+    label: ssoLabel,
+    observable: false,
+    status: args.ownerType === "User" ? "not_applicable" : "unknown",
+    reason: args.ownerType === "User" ? "not_applicable" : "not_observable_by_repo_token",
+    detail: args.ownerType === "User" ? `"${owner}" is a user account, not an organization \u2014 org-level SSO enforcement does not apply.` : "GitHub does not expose organization SAML SSO enforcement anywhere in the REST API (confirmed against GitHub's own published REST OpenAPI spec). It is only queryable via the Enterprise GraphQL API's samlIdentityProvider field with enterprise-owner-level credentials \u2014 independent of, and never inferred from, the org_2fa_enforcement finding above."
+  };
   if (args.ownerType === "User") {
-    return {
-      id,
-      label,
-      observable: false,
-      status: "not_applicable",
-      reason: "not_applicable",
-      detail: `"${owner}" is a user account, not an organization \u2014 org-level 2FA/SSO enforcement does not apply.`
-    };
+    return [
+      {
+        id: twoFaId,
+        label: twoFaLabel,
+        observable: false,
+        status: "not_applicable",
+        reason: "not_applicable",
+        detail: `"${owner}" is a user account, not an organization \u2014 org-level 2FA enforcement does not apply.`
+      },
+      ssoFinding
+    ];
   }
   const url = `${args.apiBase}/orgs/${encodeURIComponent(owner)}`;
   let res;
   try {
     res = await args.fetchImpl(url, { headers: ghHeaders3(args.token) });
   } catch (err) {
-    return {
-      id,
-      label,
-      observable: false,
-      status: "unknown",
-      reason: "check_failed",
-      detail: `Network error checking org settings: ${err instanceof Error ? err.message : String(err)}`
-    };
+    return [
+      {
+        id: twoFaId,
+        label: twoFaLabel,
+        observable: false,
+        status: "unknown",
+        reason: "check_failed",
+        detail: `Network error checking org settings: ${err instanceof Error ? err.message : String(err)}`
+      },
+      ssoFinding
+    ];
   }
   if (res.ok) {
     let data = {};
@@ -3059,33 +3114,42 @@ async function fetchOrg2faFinding(args) {
     } catch {
     }
     if (typeof data.two_factor_requirement_enabled === "boolean") {
-      return {
-        id,
-        label,
-        observable: true,
-        status: data.two_factor_requirement_enabled ? "present" : "absent",
-        reason: "observed",
-        detail: `Org 2FA requirement is ${data.two_factor_requirement_enabled ? "enabled" : "not enabled"}.`
-      };
+      return [
+        {
+          id: twoFaId,
+          label: twoFaLabel,
+          observable: true,
+          status: data.two_factor_requirement_enabled ? "present" : "absent",
+          reason: "observed",
+          detail: `Org 2FA requirement is ${data.two_factor_requirement_enabled ? "enabled" : "not enabled"}.`
+        },
+        ssoFinding
+      ];
     }
-    return {
-      id,
-      label,
+    return [
+      {
+        id: twoFaId,
+        label: twoFaLabel,
+        observable: false,
+        status: "unknown",
+        reason: "not_observable_by_repo_token",
+        detail: "GET /orgs/{org} succeeded but did not include `two_factor_requirement_enabled` \u2014 this field is only returned to an org-admin-scoped credential, which a repository-scoped GITHUB_TOKEN can never be, regardless of workflow `permissions:` settings."
+      },
+      ssoFinding
+    ];
+  }
+  const text = await res.text().catch(() => "");
+  return [
+    {
+      id: twoFaId,
+      label: twoFaLabel,
       observable: false,
       status: "unknown",
       reason: "not_observable_by_repo_token",
-      detail: "GET /orgs/{org} succeeded but did not include `two_factor_requirement_enabled` \u2014 this field is only returned to an org-admin-scoped credential, which a repository-scoped GITHUB_TOKEN can never be, regardless of workflow `permissions:` settings."
-    };
-  }
-  const text = await res.text().catch(() => "");
-  return {
-    id,
-    label,
-    observable: false,
-    status: "unknown",
-    reason: "not_observable_by_repo_token",
-    detail: `Org-level settings are not observable by a repository-scoped GITHUB_TOKEN under any \`permissions:\` grant a workflow can request \u2014 this is a GitHub platform limitation, not a configuration gap this workflow can close. GitHub responded HTTP ${res.status}: ${text.slice(0, 200)}`
-  };
+      detail: `Org-level settings are not observable by a repository-scoped GITHUB_TOKEN under any \`permissions:\` grant a workflow can request \u2014 this is a GitHub platform limitation, not a configuration gap this workflow can close. GitHub responded HTTP ${res.status}: ${text.slice(0, 200)}`
+    },
+    ssoFinding
+  ];
 }
 async function runPostureScan(opts) {
   const fs_ = opts.fileSystem ?? defaultFs2();
@@ -3107,7 +3171,8 @@ async function runPostureScan(opts) {
     "secret_scanning_push_protection",
     "dependabot_security_updates",
     "dependabot_alerts_enabled",
-    "org_2fa_sso_enforcement"
+    "org_2fa_enforcement",
+    "org_sso_enforcement"
   ];
   if (!repository) {
     warn("AtlaSent Posture Scan: GITHUB_REPOSITORY not set \u2014 API-based signals cannot be checked.");
@@ -3150,9 +3215,17 @@ async function runPostureScan(opts) {
   });
   findings.push(...branchProtectionFindings(defaultBranch, protectionOutcome));
   findings.push(...secretScanningFindings(repoInfoResult));
-  findings.push(await fetchDependabotAlertsFinding({ repository, token, apiBase, fetchImpl }));
   findings.push(
-    await fetchOrg2faFinding({
+    await fetchDependabotAlertsFinding({
+      repository,
+      token,
+      apiBase,
+      fetchImpl,
+      repoAccessible: repoInfoResult.ok
+    })
+  );
+  findings.push(
+    ...await fetchOrg2faAndSsoFindings({
       repository,
       ownerType: repoInfoResult.ok ? repoInfoResult.data.owner?.type : void 0,
       token,
@@ -3167,11 +3240,14 @@ function summarize(findings) {
   let notObservable = 0;
   let present = 0;
   let absent = 0;
+  let notApplicable = 0;
   for (const f of findings) {
-    if (f.observable)
+    if (f.status === "present" || f.status === "absent")
       observed++;
-    else
+    else if (f.status === "unknown")
       notObservable++;
+    else if (f.status === "not_applicable")
+      notApplicable++;
     if (f.status === "present")
       present++;
     if (f.status === "absent")
@@ -3181,6 +3257,7 @@ function summarize(findings) {
     findings,
     observed_count: observed,
     not_observable_count: notObservable,
+    not_applicable_count: notApplicable,
     present_count: present,
     absent_count: absent
   };
@@ -3207,7 +3284,7 @@ function renderPostureStepSummary(result) {
   }
   lines.push("");
   lines.push(
-    `**${result.observed_count} of ${result.findings.length} signals observed** (${result.present_count} present, ${result.absent_count} absent, ${result.not_observable_count} not observable with the current token).`
+    `**${result.observed_count} of ${result.findings.length} signals observed** (${result.present_count} present, ${result.absent_count} absent, ${result.not_observable_count} not observable with the current token` + (result.not_applicable_count > 0 ? `, ${result.not_applicable_count} not applicable` : "") + `).`
   );
   return lines.join("\n") + "\n";
 }
@@ -3651,16 +3728,15 @@ async function runPostureScanStep() {
   setOutput("posture-findings", JSON.stringify(result.findings));
   setOutput("posture-observed-count", String(result.observed_count));
   setOutput("posture-not-observable-count", String(result.not_observable_count));
+  setOutput("posture-not-applicable-count", String(result.not_applicable_count));
   setOutput(
     "posture-summary",
-    `${result.present_count} present / ${result.absent_count} absent / ${result.not_observable_count} not observable (of ${result.findings.length} signals)`
+    `${result.present_count} present / ${result.absent_count} absent / ${result.not_observable_count} not observable` + (result.not_applicable_count > 0 ? ` / ${result.not_applicable_count} not applicable` : "") + ` (of ${result.findings.length} signals)`
   );
   appendToStepSummary(renderPostureStepSummary(result));
   for (const f of result.findings) {
-    if (!f.observable) {
+    if (f.status === "unknown") {
       info(`Posture Scan: ${f.label} \u2014 unknown (${f.reason}): ${f.detail}`);
-    } else if (f.status === "absent") {
-      info(`Posture Scan: ${f.label} \u2014 absent: ${f.detail}`);
     } else {
       info(`Posture Scan: ${f.label} \u2014 ${f.status}: ${f.detail}`);
     }

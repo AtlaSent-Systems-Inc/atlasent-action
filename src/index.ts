@@ -767,19 +767,20 @@ async function runPostureScanStep(): Promise<void> {
   setOutput("posture-findings", JSON.stringify(result.findings));
   setOutput("posture-observed-count", String(result.observed_count));
   setOutput("posture-not-observable-count", String(result.not_observable_count));
+  setOutput("posture-not-applicable-count", String(result.not_applicable_count));
   setOutput(
     "posture-summary",
     `${result.present_count} present / ${result.absent_count} absent / ` +
-      `${result.not_observable_count} not observable (of ${result.findings.length} signals)`,
+      `${result.not_observable_count} not observable` +
+      (result.not_applicable_count > 0 ? ` / ${result.not_applicable_count} not applicable` : "") +
+      ` (of ${result.findings.length} signals)`,
   );
 
   appendToStepSummary(renderPostureStepSummary(result));
 
   for (const f of result.findings) {
-    if (!f.observable) {
+    if (f.status === "unknown") {
       info(`Posture Scan: ${f.label} — unknown (${f.reason}): ${f.detail}`);
-    } else if (f.status === "absent") {
-      info(`Posture Scan: ${f.label} — absent: ${f.detail}`);
     } else {
       info(`Posture Scan: ${f.label} — ${f.status}: ${f.detail}`);
     }

@@ -43,7 +43,7 @@ var require_transport = __commonJS({
     var node_https_1 = __importDefault(require("node:https"));
     var node_http_1 = __importDefault(require("node:http"));
     function post(url, body, headers) {
-      return new Promise((resolve3, reject) => {
+      return new Promise((resolve4, reject) => {
         const parsed = new URL(url);
         const transport = parsed.protocol === "https:" ? node_https_1.default : node_http_1.default;
         const req = transport.request({
@@ -60,7 +60,7 @@ var require_transport = __commonJS({
         }, (res) => {
           const chunks = [];
           res.on("data", (chunk) => chunks.push(chunk));
-          res.on("end", () => resolve3({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf-8") }));
+          res.on("end", () => resolve4({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf-8") }));
           res.on("error", reject);
         });
         req.on("error", reject);
@@ -73,7 +73,7 @@ var require_transport = __commonJS({
       });
     }
     function get(url, headers) {
-      return new Promise((resolve3, reject) => {
+      return new Promise((resolve4, reject) => {
         const parsed = new URL(url);
         const transport = parsed.protocol === "https:" ? node_https_1.default : node_http_1.default;
         const req = transport.request({
@@ -86,7 +86,7 @@ var require_transport = __commonJS({
         }, (res) => {
           const chunks = [];
           res.on("data", (chunk) => chunks.push(chunk));
-          res.on("end", () => resolve3({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf-8") }));
+          res.on("end", () => resolve4({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf-8") }));
           res.on("error", reject);
         });
         req.on("error", reject);
@@ -235,7 +235,7 @@ var require_dist = __commonJS({
     }
     var APPROVAL_POLL_INTERVAL_MS = 5e3;
     function sleep(ms) {
-      return new Promise((resolve3) => setTimeout(resolve3, ms));
+      return new Promise((resolve4) => setTimeout(resolve4, ms));
     }
     async function claimApprovalPermit(config, apiUrl) {
       const url = `${apiUrl}/v1/approvals/${encodeURIComponent(config.approvalId)}/claim-permit`;
@@ -2712,6 +2712,506 @@ function buildApprovalQuorum(hint, artifacts) {
   };
 }
 
+// src/postureScan.ts
+var fs4 = __toESM(require("node:fs"));
+var path3 = __toESM(require("node:path"));
+function defaultFs2() {
+  return {
+    existsSync: (p) => fs4.existsSync(p),
+    readFileSync: (p, enc) => fs4.readFileSync(p, enc),
+    readdirSync: (p) => fs4.readdirSync(p)
+  };
+}
+function ghHeaders3(token) {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
+}
+var CODEOWNERS_PATHS = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
+var DEPENDABOT_CONFIG_PATHS = [".github/dependabot.yml", ".github/dependabot.yaml"];
+function checkCodeowners(workspace, fs_) {
+  const found = CODEOWNERS_PATHS.find((p) => fs_.existsSync(path3.resolve(workspace, p)));
+  return {
+    id: "codeowners",
+    label: "CODEOWNERS file",
+    observable: true,
+    status: found ? "present" : "absent",
+    reason: "observed",
+    detail: found ? `Found at ${found}.` : `None of the standard locations exist: ${CODEOWNERS_PATHS.join(", ")}.`,
+    evidence: { checked_paths: CODEOWNERS_PATHS, found_path: found ?? null }
+  };
+}
+function checkDependabotConfig(workspace, fs_) {
+  const found = DEPENDABOT_CONFIG_PATHS.find((p) => fs_.existsSync(path3.resolve(workspace, p)));
+  return {
+    id: "dependabot_config",
+    label: "Dependabot config file",
+    observable: true,
+    status: found ? "present" : "absent",
+    reason: "observed",
+    detail: found ? `Found at ${found}.` : `Neither ${DEPENDABOT_CONFIG_PATHS.join(" nor ")} exists in the checked-out tree.`,
+    evidence: { checked_paths: DEPENDABOT_CONFIG_PATHS, found_path: found ?? null }
+  };
+}
+var CODEQL_MARKERS = [/github\/codeql-action\//i, /\bcodeql\b/i];
+function checkCodeqlWorkflow(workspace, fs_) {
+  const workflowsDir = path3.resolve(workspace, ".github/workflows");
+  if (!fs_.existsSync(workflowsDir)) {
+    return {
+      id: "codeql_workflow",
+      label: "CodeQL / code-scanning workflow",
+      observable: true,
+      status: "absent",
+      reason: "observed",
+      detail: "No .github/workflows directory in the checked-out tree.",
+      evidence: { workflows_dir_exists: false }
+    };
+  }
+  let entries;
+  try {
+    entries = fs_.readdirSync(workflowsDir);
+  } catch {
+    entries = [];
+  }
+  const workflowFiles = entries.filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"));
+  const matches = [];
+  for (const file of workflowFiles) {
+    let content;
+    try {
+      content = fs_.readFileSync(path3.join(workflowsDir, file), "utf-8");
+    } catch {
+      continue;
+    }
+    if (CODEQL_MARKERS.some((re) => re.test(content))) {
+      matches.push(file);
+    }
+  }
+  return {
+    id: "codeql_workflow",
+    label: "CodeQL / code-scanning workflow",
+    observable: true,
+    status: matches.length > 0 ? "present" : "absent",
+    reason: "observed",
+    detail: matches.length > 0 ? `CodeQL Action referenced in: ${matches.join(", ")}.` : `Scanned ${workflowFiles.length} workflow file(s) in .github/workflows \u2014 none reference github/codeql-action.`,
+    evidence: { workflow_files_scanned: workflowFiles, matched_files: matches }
+  };
+}
+async function fetchRepoInfo(args) {
+  const url = `${args.apiBase}/repos/${args.repository}`;
+  try {
+    const res = await args.fetchImpl(url, { headers: ghHeaders3(args.token) });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return { ok: false, status: res.status, message: text.slice(0, 300) };
+    }
+    return { ok: true, data: await res.json() };
+  } catch (err) {
+    return { ok: false, status: 0, message: err instanceof Error ? err.message : String(err) };
+  }
+}
+async function fetchBranchProtection(args) {
+  const url = `${args.apiBase}/repos/${args.repository}/branches/${encodeURIComponent(args.branch)}/protection`;
+  let res;
+  try {
+    res = await args.fetchImpl(url, { headers: ghHeaders3(args.token) });
+  } catch (err) {
+    return { kind: "check_failed", message: err instanceof Error ? err.message : String(err) };
+  }
+  if (res.status === 200) {
+    try {
+      return { kind: "protected", data: await res.json() };
+    } catch (err) {
+      return { kind: "check_failed", message: `malformed protection body: ${String(err)}` };
+    }
+  }
+  if (res.status === 403) {
+    const text2 = await res.text().catch(() => "");
+    return { kind: "insufficient_permission", message: text2.slice(0, 300) };
+  }
+  if (res.status === 404) {
+    const text2 = await res.text().catch(() => "");
+    if (/not protected/i.test(text2)) {
+      return { kind: "unprotected" };
+    }
+    return { kind: "check_failed", message: text2.slice(0, 300) || "404 (ambiguous \u2014 branch not found?)" };
+  }
+  const text = await res.text().catch(() => "");
+  return { kind: "check_failed", message: `HTTP ${res.status}: ${text.slice(0, 300)}` };
+}
+function branchProtectionFindings(branch, outcome) {
+  if (outcome.kind === "protected") {
+    const rsc = outcome.data.required_status_checks ?? null;
+    const prr = outcome.data.required_pull_request_reviews ?? null;
+    const branchProtection = {
+      id: "branch_protection",
+      label: `Branch protection (${branch})`,
+      observable: true,
+      status: "present",
+      reason: "observed",
+      detail: `Branch protection is enabled on "${branch}".`,
+      evidence: {
+        branch,
+        enforce_admins: outcome.data.enforce_admins?.enabled ?? null,
+        required_approving_review_count: prr?.required_approving_review_count ?? null,
+        require_code_owner_reviews: prr?.require_code_owner_reviews ?? null,
+        dismiss_stale_reviews: prr?.dismiss_stale_reviews ?? null,
+        allow_force_pushes: outcome.data.allow_force_pushes?.enabled ?? null
+      }
+    };
+    const requiredChecks = {
+      id: "required_status_checks",
+      label: `Required status checks (${branch})`,
+      observable: true,
+      status: rsc ? "present" : "absent",
+      reason: "observed",
+      detail: rsc ? `Required status checks configured (strict=${rsc.strict ?? false}, contexts=${(rsc.contexts ?? []).length}).` : `Branch protection is enabled on "${branch}" but no required status checks are configured.`,
+      evidence: rsc ? { branch, strict: rsc.strict ?? null, contexts: rsc.contexts ?? [] } : { branch }
+    };
+    return [branchProtection, requiredChecks];
+  }
+  if (outcome.kind === "unprotected") {
+    const detail2 = `Branch "${branch}" has no protection rules configured.`;
+    return [
+      {
+        id: "branch_protection",
+        label: `Branch protection (${branch})`,
+        observable: true,
+        status: "absent",
+        reason: "observed",
+        detail: detail2,
+        evidence: { branch }
+      },
+      {
+        id: "required_status_checks",
+        label: `Required status checks (${branch})`,
+        observable: true,
+        status: "absent",
+        reason: "observed",
+        detail: `No branch protection on "${branch}", so no required status checks either.`,
+        evidence: { branch }
+      }
+    ];
+  }
+  if (outcome.kind === "insufficient_permission") {
+    const detail2 = `Reading branch protection for "${branch}" requires the "Administration" repository permission (read) on the GITHUB_TOKEN \u2014 not part of the default token grant. Add \`permissions:
+  administration: read\` to this job in the calling workflow to make this observable. GitHub responded: ${outcome.message}`;
+    return [
+      {
+        id: "branch_protection",
+        label: `Branch protection (${branch})`,
+        observable: false,
+        status: "unknown",
+        reason: "insufficient_permission",
+        detail: detail2,
+        evidence: { branch }
+      },
+      {
+        id: "required_status_checks",
+        label: `Required status checks (${branch})`,
+        observable: false,
+        status: "unknown",
+        reason: "insufficient_permission",
+        detail: `Same "Administration" permission gap as branch_protection blocks this signal too.`,
+        evidence: { branch }
+      }
+    ];
+  }
+  const detail = `Could not determine branch protection for "${branch}": ${outcome.message}`;
+  return [
+    {
+      id: "branch_protection",
+      label: `Branch protection (${branch})`,
+      observable: false,
+      status: "unknown",
+      reason: "check_failed",
+      detail,
+      evidence: { branch }
+    },
+    {
+      id: "required_status_checks",
+      label: `Required status checks (${branch})`,
+      observable: false,
+      status: "unknown",
+      reason: "check_failed",
+      detail: "Branch protection check failed, so required-status-checks could not be derived either.",
+      evidence: { branch }
+    }
+  ];
+}
+function secretScanningFindings(repoInfoResult) {
+  const ids = [
+    { id: "secret_scanning", label: "Secret scanning", key: "secret_scanning" },
+    { id: "secret_scanning_push_protection", label: "Secret scanning push protection", key: "secret_scanning_push_protection" },
+    { id: "dependabot_security_updates", label: "Dependabot security updates", key: "dependabot_security_updates" }
+  ];
+  if (!repoInfoResult.ok) {
+    return ids.map(({ id, label }) => ({
+      id,
+      label,
+      observable: false,
+      status: "unknown",
+      reason: repoInfoResult.status === 403 ? "insufficient_permission" : "check_failed",
+      detail: `GET /repos/{owner}/{repo} failed (HTTP ${repoInfoResult.status || "network error"}): ${repoInfoResult.message}`
+    }));
+  }
+  const sa = repoInfoResult.data.security_and_analysis;
+  if (sa === void 0) {
+    return ids.map(({ id, label }) => ({
+      id,
+      label,
+      observable: false,
+      status: "unknown",
+      reason: "insufficient_permission",
+      detail: "GET /repos/{owner}/{repo} succeeded, but the `security_and_analysis` field was not present in the response. GitHub only includes this field for callers with admin-level access to the repository; a default-permission GITHUB_TOKEN cannot see it under any `permissions:` grant available to a workflow. Its absence is NOT evidence that these features are disabled."
+    }));
+  }
+  return ids.map(({ id, label, key }) => {
+    const status = sa[key]?.status;
+    return {
+      id,
+      label,
+      observable: status !== void 0,
+      status: status === "enabled" ? "present" : status === "disabled" ? "absent" : "unknown",
+      reason: status !== void 0 ? "observed" : "check_failed",
+      detail: status !== void 0 ? `Reported status: "${status}".` : `\`security_and_analysis.${key}\` was present but carried no recognizable status.`,
+      evidence: { raw_status: status ?? null }
+    };
+  });
+}
+async function fetchDependabotAlertsFinding(args) {
+  const url = `${args.apiBase}/repos/${args.repository}/vulnerability-alerts`;
+  const id = "dependabot_alerts_enabled";
+  const label = "Dependabot alerts enabled";
+  let res;
+  try {
+    res = await args.fetchImpl(url, { headers: ghHeaders3(args.token) });
+  } catch (err) {
+    return {
+      id,
+      label,
+      observable: false,
+      status: "unknown",
+      reason: "check_failed",
+      detail: `Network error checking vulnerability-alerts: ${err instanceof Error ? err.message : String(err)}`
+    };
+  }
+  if (res.status === 204) {
+    return { id, label, observable: true, status: "present", reason: "observed", detail: "Dependabot alerts are enabled for this repository." };
+  }
+  if (res.status === 404) {
+    return { id, label, observable: true, status: "absent", reason: "observed", detail: "Dependabot alerts are disabled for this repository." };
+  }
+  if (res.status === 403) {
+    const text2 = await res.text().catch(() => "");
+    return {
+      id,
+      label,
+      observable: false,
+      status: "unknown",
+      reason: "insufficient_permission",
+      detail: `Checking whether Dependabot alerts are enabled requires elevated read access this token does not have (GitHub responded 403: ${text2.slice(0, 200)}). Distinct from the dependabot_config signal, which only checks for a config FILE, not this setting.`
+    };
+  }
+  const text = await res.text().catch(() => "");
+  return {
+    id,
+    label,
+    observable: false,
+    status: "unknown",
+    reason: "check_failed",
+    detail: `Unexpected HTTP ${res.status} checking vulnerability-alerts: ${text.slice(0, 200)}`
+  };
+}
+async function fetchOrg2faFinding(args) {
+  const id = "org_2fa_sso_enforcement";
+  const label = "Org-level 2FA/SSO enforcement";
+  const owner = args.repository.split("/")[0] ?? "";
+  if (args.ownerType === "User") {
+    return {
+      id,
+      label,
+      observable: false,
+      status: "not_applicable",
+      reason: "not_applicable",
+      detail: `"${owner}" is a user account, not an organization \u2014 org-level 2FA/SSO enforcement does not apply.`
+    };
+  }
+  const url = `${args.apiBase}/orgs/${encodeURIComponent(owner)}`;
+  let res;
+  try {
+    res = await args.fetchImpl(url, { headers: ghHeaders3(args.token) });
+  } catch (err) {
+    return {
+      id,
+      label,
+      observable: false,
+      status: "unknown",
+      reason: "check_failed",
+      detail: `Network error checking org settings: ${err instanceof Error ? err.message : String(err)}`
+    };
+  }
+  if (res.ok) {
+    let data = {};
+    try {
+      data = await res.json();
+    } catch {
+    }
+    if (typeof data.two_factor_requirement_enabled === "boolean") {
+      return {
+        id,
+        label,
+        observable: true,
+        status: data.two_factor_requirement_enabled ? "present" : "absent",
+        reason: "observed",
+        detail: `Org 2FA requirement is ${data.two_factor_requirement_enabled ? "enabled" : "not enabled"}.`
+      };
+    }
+    return {
+      id,
+      label,
+      observable: false,
+      status: "unknown",
+      reason: "not_observable_by_repo_token",
+      detail: "GET /orgs/{org} succeeded but did not include `two_factor_requirement_enabled` \u2014 this field is only returned to an org-admin-scoped credential, which a repository-scoped GITHUB_TOKEN can never be, regardless of workflow `permissions:` settings."
+    };
+  }
+  const text = await res.text().catch(() => "");
+  return {
+    id,
+    label,
+    observable: false,
+    status: "unknown",
+    reason: "not_observable_by_repo_token",
+    detail: `Org-level settings are not observable by a repository-scoped GITHUB_TOKEN under any \`permissions:\` grant a workflow can request \u2014 this is a GitHub platform limitation, not a configuration gap this workflow can close. GitHub responded HTTP ${res.status}: ${text.slice(0, 200)}`
+  };
+}
+async function runPostureScan(opts) {
+  const fs_ = opts.fileSystem ?? defaultFs2();
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const warn = opts.warn ?? (() => {
+  });
+  const workspace = opts.workspace ?? process.env["GITHUB_WORKSPACE"] ?? process.cwd();
+  const apiBase = (opts.apiBase ?? "https://api.github.com").replace(/\/+$/, "");
+  const repository = opts.repository?.trim();
+  const token = opts.token?.trim();
+  const findings = [];
+  findings.push(checkCodeowners(workspace, fs_));
+  findings.push(checkDependabotConfig(workspace, fs_));
+  findings.push(checkCodeqlWorkflow(workspace, fs_));
+  const apiSignalIds = [
+    "branch_protection",
+    "required_status_checks",
+    "secret_scanning",
+    "secret_scanning_push_protection",
+    "dependabot_security_updates",
+    "dependabot_alerts_enabled",
+    "org_2fa_sso_enforcement"
+  ];
+  if (!repository) {
+    warn("AtlaSent Posture Scan: GITHUB_REPOSITORY not set \u2014 API-based signals cannot be checked.");
+    for (const id of apiSignalIds) {
+      findings.push({
+        id,
+        label: id,
+        observable: false,
+        status: "unknown",
+        reason: "check_failed",
+        detail: "GITHUB_REPOSITORY was not set \u2014 no repository to query."
+      });
+    }
+    return summarize(findings);
+  }
+  if (!token) {
+    warn(
+      "AtlaSent Posture Scan: no GITHUB_TOKEN supplied \u2014 API-based signals cannot be checked. Pass `env: GITHUB_TOKEN: ${{ github.token }}` to observe them."
+    );
+    for (const id of apiSignalIds) {
+      findings.push({
+        id,
+        label: id,
+        observable: false,
+        status: "unknown",
+        reason: "no_token",
+        detail: "No GITHUB_TOKEN was supplied to this step."
+      });
+    }
+    return summarize(findings);
+  }
+  const repoInfoResult = await fetchRepoInfo({ repository, token, apiBase, fetchImpl });
+  const defaultBranch = repoInfoResult.ok ? repoInfoResult.data.default_branch ?? "main" : "main";
+  const protectionOutcome = await fetchBranchProtection({
+    repository,
+    branch: defaultBranch,
+    token,
+    apiBase,
+    fetchImpl
+  });
+  findings.push(...branchProtectionFindings(defaultBranch, protectionOutcome));
+  findings.push(...secretScanningFindings(repoInfoResult));
+  findings.push(await fetchDependabotAlertsFinding({ repository, token, apiBase, fetchImpl }));
+  findings.push(
+    await fetchOrg2faFinding({
+      repository,
+      ownerType: repoInfoResult.ok ? repoInfoResult.data.owner?.type : void 0,
+      token,
+      apiBase,
+      fetchImpl
+    })
+  );
+  return summarize(findings);
+}
+function summarize(findings) {
+  let observed = 0;
+  let notObservable = 0;
+  let present = 0;
+  let absent = 0;
+  for (const f of findings) {
+    if (f.observable)
+      observed++;
+    else
+      notObservable++;
+    if (f.status === "present")
+      present++;
+    if (f.status === "absent")
+      absent++;
+  }
+  return {
+    findings,
+    observed_count: observed,
+    not_observable_count: notObservable,
+    present_count: present,
+    absent_count: absent
+  };
+}
+var STATUS_ICON = {
+  present: "\u2705",
+  absent: "\u26A0\uFE0F",
+  unknown: "\u2753",
+  not_applicable: "\u2796"
+};
+function renderPostureStepSummary(result) {
+  const lines = [];
+  lines.push("## AtlaSent Posture Scan \u2014 GitHub security posture");
+  lines.push("");
+  lines.push(
+    "> Advisory only. Every row is either a directly observed signal or an honestly reported `unknown` \u2014 never a guess, never a synthetic score. This mode gates nothing."
+  );
+  lines.push("");
+  lines.push("| Signal | Status | Reason | Detail |");
+  lines.push("|---|---|---|---|");
+  for (const f of result.findings) {
+    const detail = f.detail.replace(/\|/g, "\\|").replace(/\n+/g, " ");
+    lines.push(`| ${f.label} | ${STATUS_ICON[f.status]} ${f.status} | \`${f.reason}\` | ${detail} |`);
+  }
+  lines.push("");
+  lines.push(
+    `**${result.observed_count} of ${result.findings.length} signals observed** (${result.present_count} present, ${result.absent_count} absent, ${result.not_observable_count} not observable with the current token).`
+  );
+  return lines.join("\n") + "\n";
+}
+
 // src/index.ts
 function getApiKey() {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -2742,8 +3242,8 @@ function getInput(name, required2 = false) {
 function setOutput(name, value) {
   const outputFile = process.env["GITHUB_OUTPUT"];
   if (outputFile) {
-    const fs4 = require("node:fs");
-    fs4.appendFileSync(outputFile, `${name}=${value}
+    const fs5 = require("node:fs");
+    fs5.appendFileSync(outputFile, `${name}=${value}
 `);
   }
 }
@@ -2975,8 +3475,8 @@ function appendToStepSummary(content) {
   const summaryFile = process.env["GITHUB_STEP_SUMMARY"];
   if (summaryFile) {
     try {
-      const fs4 = require("node:fs");
-      fs4.appendFileSync(summaryFile, content);
+      const fs5 = require("node:fs");
+      fs5.appendFileSync(summaryFile, content);
     } catch {
     }
   }
@@ -3135,6 +3635,39 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
       `Deploy blocked at execution boundary: ${err instanceof Error ? err.message : String(err)}`
     );
   }
+}
+async function runPostureScanStep() {
+  const gh = getGitHubContext();
+  const token = getInput("posture-scan-token") || process.env["GITHUB_TOKEN"] || "";
+  const apiBase = process.env["GITHUB_API_URL"] ?? "https://api.github.com";
+  info(`AtlaSent Posture Scan: scanning ${gh.repository || "(repository unknown)"}`);
+  const result = await runPostureScan({
+    repository: gh.repository,
+    token,
+    apiBase,
+    log: info,
+    warn: warning
+  });
+  setOutput("posture-findings", JSON.stringify(result.findings));
+  setOutput("posture-observed-count", String(result.observed_count));
+  setOutput("posture-not-observable-count", String(result.not_observable_count));
+  setOutput(
+    "posture-summary",
+    `${result.present_count} present / ${result.absent_count} absent / ${result.not_observable_count} not observable (of ${result.findings.length} signals)`
+  );
+  appendToStepSummary(renderPostureStepSummary(result));
+  for (const f of result.findings) {
+    if (!f.observable) {
+      info(`Posture Scan: ${f.label} \u2014 unknown (${f.reason}): ${f.detail}`);
+    } else if (f.status === "absent") {
+      info(`Posture Scan: ${f.label} \u2014 absent: ${f.detail}`);
+    } else {
+      info(`Posture Scan: ${f.label} \u2014 ${f.status}: ${f.detail}`);
+    }
+  }
+  info(
+    `AtlaSent Posture Scan complete: ${result.observed_count}/${result.findings.length} signals observed. Advisory only \u2014 this step never fails the run.`
+  );
 }
 async function runGovernanceAgentsStep(apiKey, apiUrl) {
   const slugsRaw = getInput("governance-agents", true);
@@ -3657,6 +4190,10 @@ async function run() {
   }
   if (getInput("vqp-snapshot-id")) {
     await runVqpVerifyStep();
+    return;
+  }
+  if (getInput("posture-scan").toLowerCase() === "true") {
+    await runPostureScanStep();
     return;
   }
   const apiKey = getApiKey();

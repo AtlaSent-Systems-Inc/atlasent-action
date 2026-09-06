@@ -5,6 +5,10 @@
 //                           against atlasent-control-plane /v1/release/*
 //   vqp-snapshot-id set   → VQP re-derivation audit (hash check + optional
 //                           AI rerun drift detection) via v1-verify-vqp
+//   posture-scan=true     → advisory GitHub security-posture report
+//                           (branch protection, CODEOWNERS, Dependabot,
+//                           CodeQL, secret scanning, org 2FA) via postureScan.ts.
+//                           Never gates; calls no AtlaSent API.
 //   policy-sync=true      → v1-policy-sync (post bundle, fail CI on rejection)
 //   evaluations input set → v2.1 batch path via runV21()
 //   single action input   → @atlasent/enforce (canonical enforcement wrapper)
@@ -73,6 +77,7 @@ import {
   buildApprovalQuorum,
   mintGithubApprovalArtifacts,
 } from "./githubApprovalMint";
+import { renderPostureStepSummary, runPostureScan } from "./postureScan";
 
 function getApiKey(): string {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -732,6 +737,58 @@ async function runVerifyPermitStep(apiKey: string, apiUrl: string): Promise<void
       `Deploy blocked at execution boundary: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Posture Scan step — advisory GitHub security-posture report
+// ---------------------------------------------------------------------------
+//
+// Reports on the CALLING repo's own GitHub security hygiene using only the
+// GITHUB_TOKEN + checked-out working tree already available in this run.
+// Never gates, never calls the AtlaSent API, never fabricates a signal:
+// every finding is either a directly observed present/absent result or an
+// honest `unknown` with a specific, evidence-backed reason. See
+// postureScan.ts's header for exactly what is/isn't observable and why.
+async function runPostureScanStep(): Promise<void> {
+  const gh = getGitHubContext();
+  const token = getInput("posture-scan-token") || process.env["GITHUB_TOKEN"] || "";
+  const apiBase = process.env["GITHUB_API_URL"] ?? "https://api.github.com";
+
+  info(`AtlaSent Posture Scan: scanning ${gh.repository || "(repository unknown)"}`);
+
+  const result = await runPostureScan({
+    repository: gh.repository,
+    token,
+    apiBase,
+    log: info,
+    warn: warning,
+  });
+
+  setOutput("posture-findings", JSON.stringify(result.findings));
+  setOutput("posture-observed-count", String(result.observed_count));
+  setOutput("posture-not-observable-count", String(result.not_observable_count));
+  setOutput(
+    "posture-summary",
+    `${result.present_count} present / ${result.absent_count} absent / ` +
+      `${result.not_observable_count} not observable (of ${result.findings.length} signals)`,
+  );
+
+  appendToStepSummary(renderPostureStepSummary(result));
+
+  for (const f of result.findings) {
+    if (!f.observable) {
+      info(`Posture Scan: ${f.label} — unknown (${f.reason}): ${f.detail}`);
+    } else if (f.status === "absent") {
+      info(`Posture Scan: ${f.label} — absent: ${f.detail}`);
+    } else {
+      info(`Posture Scan: ${f.label} — ${f.status}: ${f.detail}`);
+    }
+  }
+
+  info(
+    `AtlaSent Posture Scan complete: ${result.observed_count}/${result.findings.length} signals ` +
+      `observed. Advisory only — this step never fails the run.`,
+  );
 }
 
 async function runGovernanceAgentsStep(apiKey: string, apiUrl: string): Promise<void> {
@@ -1401,6 +1458,17 @@ export async function run(): Promise<void> {
   // Does NOT require ATLASENT_API_KEY.
   if (getInput("vqp-snapshot-id")) {
     await runVqpVerifyStep();
+    return;
+  }
+
+  // ── Posture scan path ────────────────────────────────────────────────────
+  // Advisory GitHub security-posture report for the CALLING repo. Reads
+  // only the GITHUB_TOKEN/checked-out tree already available to the run —
+  // does NOT call the AtlaSent API at all, so it does NOT require
+  // ATLASENT_API_KEY. Routed here (before getApiKey()) so it works even
+  // when no AtlaSent key is configured yet.
+  if (getInput("posture-scan").toLowerCase() === "true") {
+    await runPostureScanStep();
     return;
   }
 

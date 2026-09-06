@@ -28,6 +28,7 @@ The action supports several mutually exclusive modes, checked in this priority o
 | **Change Brief** | `change-brief: "true"` | Gathers this run's real GitHub/CI facts, calls `v1-change-brief`, and renders an evidence-bound `management_decision_brief.v1` projection. Source-read gaps are disclosed as `evidence_incomplete`; the projection remains advisory and never authorizes execution. |
 | **VQP verify** | `vqp-snapshot-id:` set | Re-derives a VQP snapshot and audits hash/verdict drift |
 | **Trajectory verify** | `trajectory-verify: "true"` | Calls `v1/trajectory-verify` to check the current CI step against an authorized trajectory |
+| **Posture scan** | `posture-scan: "true"` | Advisory report on the CALLING repo's own GitHub security posture (branch protection, CODEOWNERS, Dependabot, CodeQL, secret scanning, org 2FA), using only `GITHUB_TOKEN` + the checked-out tree. Calls no AtlaSent API, never gates, never fabricates a signal — see `src/postureScan.ts`'s header for exactly what is/isn't observable with default token permissions and why |
 
 ## Project structure
 
@@ -44,6 +45,7 @@ src/                  TypeScript source
   releaseCandidate.ts Release-candidate mode
   vqpVerify.ts        VQP re-derivation mode
   stateTransition.ts  Trajectory-verify mode
+  postureScan.ts      Posture-scan mode — advisory GitHub security-posture report
   evidenceBundle.ts   Post-deploy compliance evidence bundle
   stepSummary.ts      GitHub Actions job summary writer
   stream.ts           SSE poll for hold/escalate decisions
@@ -85,6 +87,7 @@ Key action inputs (see `action.yml` for the full machine-readable input/output s
 | `slack-webhook` | — | Slack Incoming Webhook URL for deny/hold/escalate notifications |
 | `pr-comment-on-deny` | `"true"` | Post a PR comment on deny/hold/escalate |
 | `governance-agents` | — | Comma-separated advisory governance-agent slugs |
+| `posture-scan` | `"false"` | Set `"true"` to run posture-scan mode — advisory GitHub security-posture report, no AtlaSent API call, never gates |
 | `change-brief` | `"false"` | Set `"true"` to run change-brief mode instead of evaluate — gathers real GitHub/CI facts and calls `v1-change-brief` |
 | `release-mode` | — | Set `"register-and-verify"` for post-deploy release verification |
 | `trajectory-verify` | `"false"` | Set `"true"` to verify a trajectory step |
@@ -105,6 +108,8 @@ Key action inputs (see `action.yml` for the full machine-readable input/output s
 | `chain-entry` | v1.1 immutable audit chain entry (JSON) |
 | `snapshot` | Decision snapshot (JSON) |
 | `decisions` | JSON array of per-item results (batch mode) |
+| `posture-findings` | JSON array of `{id, label, observable, status, reason, detail, evidence?}` per GitHub posture signal (posture-scan mode only) |
+| `posture-summary` | One-line human summary, e.g. `"4 present / 2 absent / 3 not observable (of 9 signals)"` (posture-scan mode only) |
 
 ## Usage examples
 

@@ -3675,7 +3675,7 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
   const runtimeExecutionHash = getInput("execution-hash") || void 0;
   const gh = getGitHubContext();
   const environment = resolveEnvironment(getInput("environment"), gh.ref, apiKey);
-  const carriedActor = getInput("resolved-actor") || void 0;
+  const carriedActor = OPTIONAL_VERIFIED_ACTOR_ACTIONS.has(actionType) ? getInput("resolved-actor") || void 0 : void 0;
   let actorId;
   if (carriedActor) {
     actorId = carriedActor;

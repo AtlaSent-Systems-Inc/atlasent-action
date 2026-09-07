@@ -54,6 +54,15 @@ export const TRIAL_UNBLINDING_EMERGENCY_ACTION = "trial.unblinding.emergency";
  */
 export const TRUST_ROOT_PUBLISH_ACTION = "trust_root.publish";
 
+/**
+ * SOX-control reconciliation certification — an org-provisioned action type
+ * (e.g. `sox_reconciliation_certify_hold_for_review`) used to demonstrate
+ * the runtime's hold/human-approval decision path, distinct from the
+ * allow/deny-only `production.deploy` bundle. Not a mandatory-change-control
+ * action type (no change_plan/workload-identity minting needed for it).
+ */
+export const RECONCILIATION_CERTIFY_ACTION = "reconciliation.certify";
+
 /** Legacy alias — accepted during the V1 alias window, normalized on input. */
 export const LEGACY_PRODUCTION_DEPLOY_ALIAS = "deployment.production";
 
@@ -75,6 +84,7 @@ export const GATE_PERMITTED_ACTIONS: ReadonlySet<string> = new Set([
   TRIAL_UNBLINDING_EXECUTE_ACTION,
   TRIAL_UNBLINDING_EMERGENCY_ACTION,
   TRUST_ROOT_PUBLISH_ACTION,
+  RECONCILIATION_CERTIFY_ACTION,
 ]);
 
 /**

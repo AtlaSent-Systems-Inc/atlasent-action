@@ -94,7 +94,7 @@ it("passes items through to evaluateMany", async () => {
   );
 });
 
-it("mints a separate workload identity for every production item in a mixed batch", async () => {
+it("mints a separate workload identity for every production item and opportunistically for package.release items in a mixed batch", async () => {
   mockMintIdentity
     .mockResolvedValueOnce({
       actorId: "workload:one",
@@ -114,6 +114,24 @@ it("mints a separate workload identity for every production item in a mixed batc
       },
     })
     .mockResolvedValueOnce({
+      actorId: "workload:release-verified",
+      assertion: { version: "actor_identity.v1", token: "signed-release" },
+      source: {
+        issuer: "https://token.actions.githubusercontent.com",
+        repository: "acme/app",
+        repository_id: "repo-1",
+        ref: "refs/heads/main",
+        sha: "release-sha",
+        workflow_ref: "acme/app/.github/workflows/release.yml@refs/heads/main",
+        actor: "carol",
+        actor_id: "3",
+        run_id: "run-3",
+        run_attempt: "1",
+        environment: "production",
+      },
+    })
+    .mockRejectedValueOnce(new Error("GitHub OIDC is unavailable"))
+    .mockResolvedValueOnce({
       actorId: "workload:two",
       assertion: { version: "actor_identity.v1", token: "signed-2" },
       source: {
@@ -131,7 +149,7 @@ it("mints a separate workload identity for every production item in a mixed batc
       },
     });
   mockEvaluateMany.mockResolvedValueOnce({
-    decisions: [decision("allow"), decision("allow", "ev-2"), decision("allow", "ev-3")],
+    decisions: [decision("allow"), decision("allow", "ev-2"), decision("allow", "ev-3"), decision("allow", "ev-4")],
     batchId: "mixed",
   });
 
@@ -148,7 +166,13 @@ it("mints a separate workload identity for every production item in a mixed batc
         },
         {
           action: "package.release",
-          actor: "release-bot",
+          actor: "release-manager-one",
+          actor_identity: { version: "forged" },
+        },
+        {
+          // Same action, mint fails this time — must fall back, not throw.
+          action: "package.release",
+          actor: "release-manager-two",
           actor_identity: { version: "forged" },
         },
         { action: "production.deploy", actor: "caller-two", environment: "staging" },
@@ -157,7 +181,7 @@ it("mints a separate workload identity for every production item in a mixed batc
     FLAGS,
   );
 
-  expect(mockMintIdentity).toHaveBeenCalledTimes(2);
+  expect(mockMintIdentity).toHaveBeenCalledTimes(4);
   expect(mockMintIdentity).toHaveBeenNthCalledWith(
     1,
     expect.objectContaining({ actionType: "production.deploy", environment: "production" }),
@@ -165,6 +189,16 @@ it("mints a separate workload identity for every production item in a mixed batc
   );
   expect(mockMintIdentity).toHaveBeenNthCalledWith(
     2,
+    expect.objectContaining({ actionType: "package.release" }),
+    { mask: undefined },
+  );
+  expect(mockMintIdentity).toHaveBeenNthCalledWith(
+    3,
+    expect.objectContaining({ actionType: "package.release" }),
+    { mask: undefined },
+  );
+  expect(mockMintIdentity).toHaveBeenNthCalledWith(
+    4,
     expect.objectContaining({ actionType: "production.deploy", environment: "staging" }),
     { mask: undefined },
   );
@@ -176,8 +210,18 @@ it("mints a separate workload identity for every production item in a mixed batc
       context: { change: "one", triggering_actor: "github:alice" },
     }),
   );
-  expect(sent[1]).toEqual({ action: "package.release", actor: "release-bot" });
-  expect(sent[2]).toEqual(
+  // Mint succeeded: gets the verified workload actor.
+  expect(sent[1]).toEqual(
+    expect.objectContaining({
+      actor: "workload:release-verified",
+      actor_identity: { version: "actor_identity.v1", token: "signed-release" },
+      context: { triggering_actor: "github:carol" },
+    }),
+  );
+  // Mint failed: falls back to the caller-supplied actor unchanged — no
+  // change_plan/context injection, no error propagated to the batch.
+  expect(sent[2]).toEqual({ action: "package.release", actor: "release-manager-two" });
+  expect(sent[3]).toEqual(
     expect.objectContaining({
       actor: "workload:two",
       actor_identity: { version: "actor_identity.v1", token: "signed-2" },

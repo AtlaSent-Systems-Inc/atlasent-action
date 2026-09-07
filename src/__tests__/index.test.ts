@@ -911,6 +911,44 @@ describe("verify-only execution boundary", () => {
       "verify-outcome": "verified",
     });
   });
+
+  it("uses the carried resolved-actor input for package.release instead of independently re-resolving one", async () => {
+    setApiKey();
+    setInput("verify-permit", "true");
+    setInput("permit-token", "pt-unconsumed");
+    setInput("action", "package.release");
+    setInput("actor", "release-manager");
+    setInput("resolved-actor", "github-actions:repo:123:workflow:release");
+    mockReverifyPermit.mockResolvedValueOnce({ verified: true, outcome: "verified" });
+
+    await run();
+
+    // The carried value is authoritative — no second, independent mint
+    // attempt (which could disagree with the evaluate step's own result).
+    expect(mockMintWorkloadIdentity).not.toHaveBeenCalled();
+    const config = mockReverifyPermit.mock.calls[0][0] as { actor: string };
+    expect(config.actor).toBe("github-actions:repo:123:workflow:release");
+  });
+
+  it("falls back to independent resolution for package.release when no resolved-actor input is carried", async () => {
+    setApiKey();
+    setInput("verify-permit", "true");
+    setInput("permit-token", "pt-unconsumed");
+    setInput("action", "package.release");
+    setInput("actor", "release-manager");
+    // No resolved-actor input set — existing (pre-#166) behavior.
+    mockMintWorkloadIdentity.mockRejectedValueOnce(new Error("GitHub OIDC is unavailable"));
+    mockReverifyPermit.mockResolvedValueOnce({ verified: true, outcome: "verified" });
+
+    await run();
+
+    expect(mockMintWorkloadIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({ actionType: "package.release" }),
+      expect.objectContaining({ mask: expect.any(Function) }),
+    );
+    const config = mockReverifyPermit.mock.calls[0][0] as { actor: string };
+    expect(config.actor).toBe("github:release-manager");
+  });
 });
 
 // ---------------------------------------------------------------------------

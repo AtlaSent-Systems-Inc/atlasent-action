@@ -22,7 +22,7 @@ import { parseInputs } from "./inputs";
 import { waitForTerminalDecision } from "./stream";
 import type { Decision, EvaluateRequest } from "./types";
 import { emitEvidenceEvent } from "./evidenceClient";
-import { PRODUCTION_DEPLOY_ACTION } from "./canonicalAction";
+import { OPTIONAL_VERIFIED_ACTOR_ACTIONS, PRODUCTION_DEPLOY_ACTION } from "./canonicalAction";
 import {
   WorkloadIdentityError,
   mintGithubActionsActorIdentity,
@@ -45,6 +45,15 @@ interface RunV21Deps {
  * runtime-verified GitHub workload identity. A distinct mint per item keeps
  * the source OIDC credential and the resulting assertion single-use. Caller
  * supplied actor_identity fields are stripped from every item.
+ *
+ * OPTIONAL_VERIFIED_ACTOR_ACTIONS items (currently just package.release) get
+ * the same opportunistic minting attempt as the single-eval path
+ * (resolveProtectedActor in index.ts) — but a failure here falls back to the
+ * item's own caller-supplied actor instead of throwing, since the runtime
+ * does not (yet) require a verified actor for these. No change_plan is
+ * constructed for them (that shape is mandatory-change-control-specific and
+ * would be wrong for a release policy — see PACKAGE_RELEASE_ACTION's own
+ * comment in canonicalAction.ts). See atlasent-action#166.
  */
 async function bindBatchWorkloadIdentities(
   items: EvaluateRequest[],
@@ -58,49 +67,77 @@ async function bindBatchWorkloadIdentities(
     const sanitized = { ...item };
     delete sanitized.actor_identity;
 
-    if (item.action !== PRODUCTION_DEPLOY_ACTION) {
-      bound.push(sanitized);
+    if (item.action === PRODUCTION_DEPLOY_ACTION) {
+      const environment = item.environment?.trim();
+      if (!environment) {
+        throw new WorkloadIdentityError(
+          "Every production.deploy batch evaluation requires its own non-empty `environment` binding",
+        );
+      }
+
+      const identity: MintedGithubActionsIdentity = await mint(
+        {
+          apiUrl: cfg.apiUrl,
+          apiKey: cfg.apiKey,
+          actionType: item.action,
+          environment,
+        },
+        { mask: deps.mask },
+      );
+
+      // Mandatory production-change controls reject a caller-supplied raw
+      // execution_payload_hash. Treat it as the artifact identity inside the
+      // structured plan and bind the plan to the broker-verified GitHub SHA.
+      const artifactRef = sanitized.execution_payload_hash;
+      delete sanitized.execution_payload_hash;
+
+      bound.push({
+        ...sanitized,
+        actor: identity.actorId,
+        environment,
+        actor_identity: identity.assertion,
+        change_plan: {
+          operation: "deploy",
+          revision: identity.source.sha,
+          ...(artifactRef ? { artifact_ref: artifactRef } : {}),
+        },
+        context: {
+          ...(item.context ?? {}),
+          triggering_actor: `github:${identity.source.actor}`,
+        },
+      });
       continue;
     }
 
-    const environment = item.environment?.trim();
-    if (!environment) {
-      throw new WorkloadIdentityError(
-        "Every production.deploy batch evaluation requires its own non-empty `environment` binding",
-      );
+    if (OPTIONAL_VERIFIED_ACTOR_ACTIONS.has(item.action)) {
+      try {
+        const identity: MintedGithubActionsIdentity = await mint(
+          {
+            apiUrl: cfg.apiUrl,
+            apiKey: cfg.apiKey,
+            actionType: item.action,
+            environment: item.environment?.trim() || "production",
+          },
+          { mask: deps.mask },
+        );
+        bound.push({
+          ...sanitized,
+          actor: identity.actorId,
+          actor_identity: identity.assertion,
+          context: {
+            ...(item.context ?? {}),
+            triggering_actor: `github:${identity.source.actor}`,
+          },
+        });
+      } catch {
+        // Opportunistic only — fall back to the caller-supplied actor
+        // exactly as before this minting attempt was added.
+        bound.push(sanitized);
+      }
+      continue;
     }
 
-    const identity: MintedGithubActionsIdentity = await mint(
-      {
-        apiUrl: cfg.apiUrl,
-        apiKey: cfg.apiKey,
-        actionType: item.action,
-        environment,
-      },
-      { mask: deps.mask },
-    );
-
-    // Mandatory production-change controls reject a caller-supplied raw
-    // execution_payload_hash. Treat it as the artifact identity inside the
-    // structured plan and bind the plan to the broker-verified GitHub SHA.
-    const artifactRef = sanitized.execution_payload_hash;
-    delete sanitized.execution_payload_hash;
-
-    bound.push({
-      ...sanitized,
-      actor: identity.actorId,
-      environment,
-      actor_identity: identity.assertion,
-      change_plan: {
-        operation: "deploy",
-        revision: identity.source.sha,
-        ...(artifactRef ? { artifact_ref: artifactRef } : {}),
-      },
-      context: {
-        ...(item.context ?? {}),
-        triggering_actor: `github:${identity.source.actor}`,
-      },
-    });
+    bound.push(sanitized);
   }
 
   return bound;

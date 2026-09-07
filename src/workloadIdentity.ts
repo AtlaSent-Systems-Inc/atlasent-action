@@ -10,6 +10,7 @@
 import { createHash } from "node:crypto";
 
 export const GITHUB_ACTIONS_OIDC_AUDIENCE = "atlasent:actor_identity.v1";
+export const WORKLOAD_IDENTITY_REQUEST_TIMEOUT_MS = 30_000;
 
 export interface GithubActionsIdentitySource {
   issuer: "https://token.actions.githubusercontent.com";
@@ -102,6 +103,7 @@ async function requestGithubOidcToken(
         Authorization: `Bearer ${requestToken}`,
         Accept: "application/json",
       },
+      signal: AbortSignal.timeout(WORKLOAD_IDENTITY_REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
     throw new WorkloadIdentityError(
@@ -185,6 +187,7 @@ export async function mintGithubActionsActorIdentity(
         action_type: args.actionType,
         environment: args.environment,
       }),
+      signal: AbortSignal.timeout(WORKLOAD_IDENTITY_REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
     throw new WorkloadIdentityError(

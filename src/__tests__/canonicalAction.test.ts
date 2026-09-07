@@ -9,6 +9,7 @@ import {
   PRODUCTION_DEPLOY_ACTION,
   PRODUCTION_ROLLBACK_ACTION,
   PROTECTED_ACTIONS_CATALOG,
+  RECONCILIATION_CERTIFY_ACTION,
   SECRET_CONFIGURATION_CHANGE_ACTION,
   TRIAL_BLINDING_SETUP_ACTION,
   TRIAL_UNBLINDING_EMERGENCY_ACTION,
@@ -105,8 +106,17 @@ describe("canonicalAction", () => {
       expect(GATE_PERMITTED_ACTIONS.has(SECRET_CONFIGURATION_CHANGE_ACTION)).toBe(true);
     });
 
+    it("permits reconciliation.certify (SOX hold/human-approval demonstration path)", () => {
+      // Added 2026-09-07: found via a real dispatch of
+      // AtlaSent-Reference/pilot-deploy-gate's hold-approval-demo.yml, which
+      // failed with "unsupported protected action" before this type was
+      // added to the allow-list — the gate rejected the request before it
+      // ever reached the AtlaSent API.
+      expect(GATE_PERMITTED_ACTIONS.has(RECONCILIATION_CERTIFY_ACTION)).toBe(true);
+    });
+
     it("is a conservative explicit allow-list (not open to arbitrary types)", () => {
-      expect(GATE_PERMITTED_ACTIONS.size).toBe(9);
+      expect(GATE_PERMITTED_ACTIONS.size).toBe(10);
       // A well-formed but unlisted action is NOT gate-permitted, even though
       // its format is valid — the runtime policy is the authority, but the
       // gate's client-side guard stays explicit.

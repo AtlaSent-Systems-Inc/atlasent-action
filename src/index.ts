@@ -53,6 +53,7 @@ import {
   GATE_PERMITTED_ACTIONS,
   LEGACY_PRODUCTION_DEPLOY_ALIAS,
   MANDATORY_CHANGE_CONTROL_ACTIONS,
+  OPTIONAL_VERIFIED_ACTOR_ACTIONS,
   PRODUCTION_DEPLOY_ACTION,
   assertValidActionType,
   normalizeProtectedAction,
@@ -451,9 +452,20 @@ interface ProtectedActorResolution {
  * The four MANDATORY_CHANGE_CONTROL_ACTIONS are classified by the runtime as
  * requiring a verified workload actor. Resolve that actor through GitHub
  * OIDC + the runtime broker; never fall back to the workflow's caller-
- * supplied `actor` input. Every other protected action retains its existing
- * actor behavior until its own Canon contract requires the same workload
- * credential.
+ * supplied `actor` input — a minting failure here fails the step closed.
+ *
+ * OPTIONAL_VERIFIED_ACTOR_ACTIONS (currently just `package.release`, see its
+ * own doc comment in canonicalAction.ts) get the SAME opportunistic minting
+ * attempt, but a failure falls back to the existing self-asserted actor
+ * instead of failing closed — the runtime does not (yet) require a verified
+ * actor for these, so a broker/OIDC failure here is a missing enhancement,
+ * not a security failure. This is what lets a repo/workflow start getting a
+ * verified `package.release` actor the moment it's enrolled with the broker
+ * and grants `id-token: write`, with zero behavior change for every caller
+ * that hasn't done either yet. See atlasent-api#1942.
+ *
+ * Every other protected action retains its existing actor behavior until its
+ * own Canon contract requires the same workload credential.
  */
 async function resolveProtectedActor(args: {
   apiKey: string;
@@ -463,24 +475,36 @@ async function resolveProtectedActor(args: {
   triggeringActor: string;
 }): Promise<ProtectedActorResolution> {
   const triggeringActorId = `github:${args.triggeringActor}`;
-  if (!MANDATORY_CHANGE_CONTROL_ACTIONS.has(args.actionType)) {
+  const isMandatory = MANDATORY_CHANGE_CONTROL_ACTIONS.has(args.actionType);
+  const isOptional = OPTIONAL_VERIFIED_ACTOR_ACTIONS.has(args.actionType);
+  if (!isMandatory && !isOptional) {
     return { actorId: triggeringActorId, triggeringActorId };
   }
 
-  const workloadIdentity = await mintGithubActionsActorIdentity(
-    {
-      apiUrl: args.apiUrl,
-      apiKey: args.apiKey,
-      actionType: args.actionType,
-      environment: args.environment,
-    },
-    { mask: maskValue },
-  );
-  return {
-    actorId: workloadIdentity.actorId,
-    triggeringActorId: `github:${workloadIdentity.source.actor}`,
-    workloadIdentity,
-  };
+  try {
+    const workloadIdentity = await mintGithubActionsActorIdentity(
+      {
+        apiUrl: args.apiUrl,
+        apiKey: args.apiKey,
+        actionType: args.actionType,
+        environment: args.environment,
+      },
+      { mask: maskValue },
+    );
+    return {
+      actorId: workloadIdentity.actorId,
+      triggeringActorId: `github:${workloadIdentity.source.actor}`,
+      workloadIdentity,
+    };
+  } catch (error) {
+    if (isMandatory) throw error;
+    warning(
+      `AtlaSent gate: could not obtain a verified workload actor for "${args.actionType}" — ` +
+        `falling back to the caller-supplied actor "${triggeringActorId}": ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
+    return { actorId: triggeringActorId, triggeringActorId };
+  }
 }
 
 // ---------------------------------------------------------------------------

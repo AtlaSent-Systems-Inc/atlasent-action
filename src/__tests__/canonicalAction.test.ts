@@ -4,6 +4,7 @@ import {
   INFRASTRUCTURE_CHANGE_ACTION,
   LEGACY_PRODUCTION_DEPLOY_ALIAS,
   MANDATORY_CHANGE_CONTROL_ACTIONS,
+  OPTIONAL_VERIFIED_ACTOR_ACTIONS,
   PACKAGE_RELEASE_ACTION,
   PRODUCTION_DEPLOY_ACTION,
   PRODUCTION_ROLLBACK_ACTION,
@@ -136,6 +137,19 @@ describe("canonicalAction", () => {
     it("package.release is distinct from production.deploy", () => {
       expect(PACKAGE_RELEASE_ACTION).toBe("package.release");
       expect(PACKAGE_RELEASE_ACTION).not.toBe(PRODUCTION_DEPLOY_ACTION);
+    });
+  });
+
+  describe("OPTIONAL_VERIFIED_ACTOR_ACTIONS", () => {
+    it("contains exactly package.release", () => {
+      expect(OPTIONAL_VERIFIED_ACTOR_ACTIONS.size).toBe(1);
+      expect(OPTIONAL_VERIFIED_ACTOR_ACTIONS.has(PACKAGE_RELEASE_ACTION)).toBe(true);
+    });
+
+    it("is disjoint from MANDATORY_CHANGE_CONTROL_ACTIONS (opportunistic-vs-required identity resolution are mutually exclusive)", () => {
+      for (const action of OPTIONAL_VERIFIED_ACTOR_ACTIONS) {
+        expect(MANDATORY_CHANGE_CONTROL_ACTIONS.has(action)).toBe(false);
+      }
     });
 
     it("trust_root.publish is well-formed and distinct from production.deploy", () => {

@@ -489,6 +489,9 @@ var MANDATORY_CHANGE_CONTROL_ACTIONS = /* @__PURE__ */ new Set([
   PRODUCTION_ROLLBACK_ACTION,
   SECRET_CONFIGURATION_CHANGE_ACTION
 ]);
+var OPTIONAL_VERIFIED_ACTOR_ACTIONS = /* @__PURE__ */ new Set([
+  PACKAGE_RELEASE_ACTION
+]);
 function normalizeProtectedAction(raw) {
   if (raw === LEGACY_PRODUCTION_DEPLOY_ALIAS) {
     return { canonical: PRODUCTION_DEPLOY_ACTION, wasLegacyAlias: true };
@@ -3515,23 +3518,34 @@ function resolveEnvironment(explicit, ref, apiKey) {
 }
 async function resolveProtectedActor(args) {
   const triggeringActorId = `github:${args.triggeringActor}`;
-  if (!MANDATORY_CHANGE_CONTROL_ACTIONS.has(args.actionType)) {
+  const isMandatory = MANDATORY_CHANGE_CONTROL_ACTIONS.has(args.actionType);
+  const isOptional = OPTIONAL_VERIFIED_ACTOR_ACTIONS.has(args.actionType);
+  if (!isMandatory && !isOptional) {
     return { actorId: triggeringActorId, triggeringActorId };
   }
-  const workloadIdentity = await mintGithubActionsActorIdentity(
-    {
-      apiUrl: args.apiUrl,
-      apiKey: args.apiKey,
-      actionType: args.actionType,
-      environment: args.environment
-    },
-    { mask: maskValue }
-  );
-  return {
-    actorId: workloadIdentity.actorId,
-    triggeringActorId: `github:${workloadIdentity.source.actor}`,
-    workloadIdentity
-  };
+  try {
+    const workloadIdentity = await mintGithubActionsActorIdentity(
+      {
+        apiUrl: args.apiUrl,
+        apiKey: args.apiKey,
+        actionType: args.actionType,
+        environment: args.environment
+      },
+      { mask: maskValue }
+    );
+    return {
+      actorId: workloadIdentity.actorId,
+      triggeringActorId: `github:${workloadIdentity.source.actor}`,
+      workloadIdentity
+    };
+  } catch (error) {
+    if (isMandatory)
+      throw error;
+    warning(
+      `AtlaSent gate: could not obtain a verified workload actor for "${args.actionType}" \u2014 falling back to the caller-supplied actor "${triggeringActorId}": ${error instanceof Error ? error.message : String(error)}`
+    );
+    return { actorId: triggeringActorId, triggeringActorId };
+  }
 }
 function setDecisionOutputs(d) {
   if (d.permitToken)

@@ -97,6 +97,33 @@ export const MANDATORY_CHANGE_CONTROL_ACTIONS: ReadonlySet<string> = new Set([
   SECRET_CONFIGURATION_CHANGE_ACTION,
 ]);
 
+/**
+ * Action types for which this action OPPORTUNISTICALLY attempts to mint a
+ * verified GitHub Actions workload actor, but — unlike
+ * MANDATORY_CHANGE_CONTROL_ACTIONS — falls back to the existing self-asserted
+ * `github:<actor>` identity if minting is unavailable (no `id-token: write`
+ * permission, the org/repo/workflow has no broker admission binding yet, the
+ * broker is unreachable, etc.) rather than failing the step closed.
+ *
+ * `package.release` is deliberately NOT in MANDATORY_CHANGE_CONTROL_ACTIONS
+ * (see PACKAGE_RELEASE_ACTION's own comment: different governance model, no
+ * structured change_plan / PR-approval requirement) and atlasent-api does
+ * not (yet) set `requires_verified_actor` on it for any org — see
+ * atlasent-api#1942. This set exists so a caller who HAS enrolled their
+ * repo/workflow with the broker gets a verified actor for free the moment
+ * they add `permissions: id-token: write`, without atlasent-api's flag
+ * flipping first and without atlasent-action ever hard-requiring OIDC for an
+ * action type the runtime doesn't yet require it for. Flipping
+ * `requires_verified_actor` on `package.release` for a real org is a
+ * separate, later step (needs broker admission enrollment for every calling
+ * repo/workflow first, staging-soaked, per #1942) — this set alone changes
+ * no enforcement, only what identity gets asserted when minting happens to
+ * succeed.
+ */
+export const OPTIONAL_VERIFIED_ACTOR_ACTIONS: ReadonlySet<string> = new Set([
+  PACKAGE_RELEASE_ACTION,
+]);
+
 // ---------------------------------------------------------------------------
 // Phase 1–6 catalog (informational — not an enforcement whitelist)
 //

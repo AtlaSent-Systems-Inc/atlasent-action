@@ -370,7 +370,7 @@ describe("allow response", () => {
     expect(getConsoleLogs().some((line) => line.includes("wrong repository binding"))).toBe(true);
   });
 
-  it("keeps the existing human actor path for actions that do not require workload OIDC", async () => {
+  it("opportunistically uses the broker-minted workload actor for package.release when minting succeeds", async () => {
     setApiKey();
     setInput("action", "package.release");
     setInput("actor", "release-manager");
@@ -378,10 +378,41 @@ describe("allow response", () => {
 
     await run();
 
-    expect(mockMintWorkloadIdentity).not.toHaveBeenCalled();
+    expect(mockMintWorkloadIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({ actionType: "package.release" }),
+      expect.objectContaining({ mask: expect.any(Function) }),
+    );
+    const config = mockEnforce.mock.calls[0][0] as { actor: string; actorIdentity?: unknown };
+    expect(config.actor).toBe("github-actions:repo:123:workflow:deploy");
+    expect(config.actorIdentity).toMatchObject({ version: "actor_identity.v1" });
+  });
+
+  it("falls back to the caller-supplied actor for package.release when workload identity minting is unavailable", async () => {
+    setApiKey();
+    setInput("action", "package.release");
+    setInput("actor", "release-manager");
+    mockMintWorkloadIdentity.mockRejectedValueOnce(new Error("GitHub OIDC is unavailable"));
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    expect(mockMintWorkloadIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({ actionType: "package.release" }),
+      expect.objectContaining({ mask: expect.any(Function) }),
+    );
+    // Unlike the mandatory-change-control actions, a minting failure here
+    // does NOT fail the step closed — it falls back to today's behavior.
+    expect(mockEnforce).toHaveBeenCalled();
     const config = mockEnforce.mock.calls[0][0] as { actor: string; actorIdentity?: unknown };
     expect(config.actor).toBe("github:release-manager");
     expect(config.actorIdentity).toBeUndefined();
+    expect(
+      getConsoleLogs().some((line) =>
+        line.includes("::warning::") &&
+        line.includes("package.release") &&
+        line.includes("GitHub OIDC is unavailable")
+      ),
+    ).toBe(true);
   });
 
   it("sets permit-token, evaluation-id, proof-hash, risk-score outputs on allow", async () => {

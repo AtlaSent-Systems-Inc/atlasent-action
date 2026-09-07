@@ -762,6 +762,7 @@ async function emitEvidenceEvent(cfg, event, log = console) {
 // src/workloadIdentity.ts
 var import_node_crypto = require("node:crypto");
 var GITHUB_ACTIONS_OIDC_AUDIENCE = "atlasent:actor_identity.v1";
+var WORKLOAD_IDENTITY_REQUEST_TIMEOUT_MS = 3e4;
 var WorkloadIdentityError = class extends Error {
   constructor(message) {
     super(message);
@@ -809,7 +810,8 @@ async function requestGithubOidcToken(deps) {
       headers: {
         Authorization: `Bearer ${requestToken}`,
         Accept: "application/json"
-      }
+      },
+      signal: AbortSignal.timeout(WORKLOAD_IDENTITY_REQUEST_TIMEOUT_MS)
     });
   } catch (error) {
     throw new WorkloadIdentityError(
@@ -862,7 +864,8 @@ async function mintGithubActionsActorIdentity(args, deps = {}) {
         id_token: idToken,
         action_type: args.actionType,
         environment: args.environment
-      })
+      }),
+      signal: AbortSignal.timeout(WORKLOAD_IDENTITY_REQUEST_TIMEOUT_MS)
     });
   } catch (error) {
     throw new WorkloadIdentityError(

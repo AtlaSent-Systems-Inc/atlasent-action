@@ -1,6 +1,9 @@
 // AtlaSent Gate Action — GitHub Actions entry point.
 //
 // Routing (in priority order):
+//   any trajectory-* input set → fail closed immediately (unsupported —
+//                           see docs/trajectory-verify.md); checked before
+//                           every other mode below
 //   release-mode set      → POST-deploy candidate registration + verify
 //                           against atlasent-control-plane /v1/release/*
 //   vqp-snapshot-id set   → VQP re-derivation audit (hash check + optional
@@ -1493,7 +1496,41 @@ async function runVqpVerifyStep(): Promise<void> {
 // Main
 // ---------------------------------------------------------------------------
 
+// The five trajectory-verify inputs. No version of this action has ever
+// implemented the mode they describe — the runtime has no
+// /v1/trajectory-verify endpoint, and no code path here ever called it. A
+// workflow that still sets one of these would otherwise fall through
+// silently into whichever other mode `action`/apiKey happen to satisfy,
+// running an unrelated evaluation while the caller believes its trajectory
+// permit/step was verified (or, with no `action` set, hitting a misleading
+// "ATLASENT_API_KEY is required" error that has nothing to do with the
+// actual problem). See docs/trajectory-verify.md and AtlaSent API #2932.
+const LEGACY_TRAJECTORY_INPUTS = [
+  "trajectory-verify",
+  "trajectory-permit-id",
+  "trajectory-step-id",
+  "trajectory-step-name",
+  "trajectory-halt-on-deviation",
+] as const;
+
 export async function run(): Promise<void> {
+  // ── Legacy trajectory-verify input guard (fail closed) ──────────────────────
+  // Checked FIRST, before any other mode dispatch or API-key handling, so a
+  // workflow that still sets a trajectory input never silently runs a
+  // different mode instead.
+  const trajectoryInputsSet = LEGACY_TRAJECTORY_INPUTS.filter((name) => getInput(name) !== "");
+  if (trajectoryInputsSet.length > 0) {
+    setOutput("decision", "error");
+    setOutput("verified", "false");
+    setFailed(
+      `AtlaSent Gate: trajectory-verify mode is not supported — the runtime does not implement ` +
+        `/v1/trajectory-verify and no version of this action has ever called it. Remove ` +
+        `${trajectoryInputsSet.join(", ")} from this step's inputs. Use the evaluate-only + ` +
+        `verify-permit execution-boundary pattern instead — see docs/trajectory-verify.md.`,
+    );
+    return;
+  }
+
   // ── Release-mode path (post-deploy verification) ───────────────────────────
   // Runs against the control-plane, not the runtime — does NOT require
   // ATLASENT_API_KEY. Routed first so it can short-circuit before the other

@@ -682,8 +682,8 @@ also written.
 
 The repository also contains additional CI-oriented surfaces such as batch
 evaluation, policy sync, release-candidate verification, governance-agent
-findings, VQP re-derivation, trajectory verification, posture scan (above),
-and evidence-bundle output. Their machine-readable configuration is in
+findings, VQP re-derivation, posture scan (above), and evidence-bundle
+output. Their machine-readable configuration is in
 [`action.yml`](./action.yml).
 They do not change the core rule: a protected execution path should proceed only
 when its required authorization and verification checks have actually passed.

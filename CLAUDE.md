@@ -27,8 +27,9 @@ The action supports several mutually exclusive modes, checked in this priority o
 | **Governance agents** | `governance-agents:` set | Runs advisory governance-agent slugs and emits `governance-findings` / `governance-highest-severity` |
 | **Change Brief** | `change-brief: "true"` | Gathers this run's real GitHub/CI facts, calls `v1-change-brief`, and renders an evidence-bound `management_decision_brief.v1` projection. Source-read gaps are disclosed as `evidence_incomplete`; the projection remains advisory and never authorizes execution. |
 | **VQP verify** | `vqp-snapshot-id:` set | Re-derives a VQP snapshot and audits hash/verdict drift |
-| **Trajectory verify** | `trajectory-verify: "true"` | Calls `v1/trajectory-verify` to check the current CI step against an authorized trajectory |
 | **Posture scan** | `posture-scan: "true"` | Advisory report on the CALLING repo's own GitHub security posture (branch protection, CODEOWNERS, Dependabot, CodeQL, secret scanning, org 2FA), using only `GITHUB_TOKEN` + the checked-out tree. Calls no AtlaSent API, never gates, never fabricates a signal — see `src/postureScan.ts`'s header for exactly what is/isn't observable with default token permissions and why |
+
+> **`trajectory-verify` is not a mode — it never was.** No version of this action has ever implemented it: the runtime has no `/v1/trajectory-verify` endpoint, and no code path here ever called one. `action.yml` no longer declares its five inputs/four outputs. `run()` in `src/index.ts` fails closed, before any other mode dispatch, if a workflow still sets any of `trajectory-verify` / `trajectory-permit-id` / `trajectory-step-id` / `trajectory-step-name` / `trajectory-halt-on-deviation` (GitHub Actions still forwards an undeclared `with:` key as an `INPUT_*` env var, so removing the declaration alone would not have stopped a legacy caller from silently falling through into an unrelated mode). See `docs/trajectory-verify.md` and AtlaSent API issue #2932. `src/stateTransition.ts` is unrelated — it builds `current_state`/`proposed_state` payloads for ordinary evaluate calls, not a trajectory-verify implementation; an earlier version of this doc incorrectly named it as one.
 
 ## Project structure
 
@@ -44,7 +45,7 @@ src/                  TypeScript source
   governanceAgents.ts Governance-agent mode
   releaseCandidate.ts Release-candidate mode
   vqpVerify.ts        VQP re-derivation mode
-  stateTransition.ts  Trajectory-verify mode
+  stateTransition.ts  State-transition (current_state/proposed_state) builders for evaluate calls
   postureScan.ts      Posture-scan mode — advisory GitHub security-posture report
   evidenceBundle.ts   Post-deploy compliance evidence bundle
   stepSummary.ts      GitHub Actions job summary writer
@@ -90,7 +91,6 @@ Key action inputs (see `action.yml` for the full machine-readable input/output s
 | `posture-scan` | `"false"` | Set `"true"` to run posture-scan mode — advisory GitHub security-posture report, no AtlaSent API call, never gates |
 | `change-brief` | `"false"` | Set `"true"` to run change-brief mode instead of evaluate — gathers real GitHub/CI facts and calls `v1-change-brief` |
 | `release-mode` | — | Set `"register-and-verify"` for post-deploy release verification |
-| `trajectory-verify` | `"false"` | Set `"true"` to verify a trajectory step |
 
 > The table above is a curated subset. Two further input families in `action.yml` are not represented in the modes table: the `financial-governance` family (`financial-governance`, `financial-action-value`, `financial-action-currency`) and the `insights-*` family (`insights-org-id`, `insights-subject-id`, `insights-session-count`). See `action.yml` for the complete set.
 

@@ -1,110 +1,18 @@
-# Trajectory Verify Mode
+# Trajectory Verify Mode — Not Available
 
-The `trajectory-verify` input enables the AtlaSent Gate action to verify that CI execution remains on the authorized trajectory at each step. This is the GitHub Actions integration for the Deploy Gate pattern described in [AtlaSent Trajectory Authorization](https://docs.atlasent.io/trajectory).
+`trajectory-verify` is not a supported AtlaSent GitHub Action mode.
 
-## How It Works
+The public runtime does not implement `/v1/trajectory-verify`, so workflows must not rely on `trajectory-verify`, `trajectory-permit-id`, `trajectory-step-id`, `trajectory-step-name`, `trajectory-halt-on-deviation`, or the related trajectory outputs. Earlier documentation described this mode before a server-side implementation existed; that was incorrect.
 
-Instead of a single `evaluate` call at the start of a job, trajectory authorization covers the full execution path:
+## What to use instead
 
-```
-Evaluate (with proposed_trajectory) → AuthorizedTransitionSpec
-↓
-For each step:
-  Verify (permit_id + step_id) → on_trajectory: bool
-  If false: HALT
-  Execute step
-↓
-ComplianceComparisonArtifact (fidelity_score + trace)
-```
+For production changes, use the shipped authorization boundary:
 
-## Workflow Example
+1. Run the normal AtlaSent `action:` evaluation in `mode: evaluate-only` when you need a separate execution boundary.
+2. Pass the returned `permit-token` and `execution-hash` unchanged to a later `verify-permit: true` step immediately before the consequential operation. That later step must also repeat the **same** `action`, `environment`, and `target-id` values used at evaluate time — `runVerifyPermitStep()` requires `action` and re-presents the original `environment`/`target-id` bindings, so a verify step carrying only `verify-permit`, `permit-token`, and `execution-hash` will either fail immediately on the missing `action` input, or fail closed with a binding mismatch if a defaulted value (e.g. `environment`) resolves differently across jobs.
+3. Gate the protected operation on the verify step's `verified == 'true'` result.
+4. Use Change Brief for pre-execution preparation/evidence and the existing consequential-operation evidence path for execution/outcome tracking.
 
-```yaml
-jobs:
-  deploy:
-    steps:
-      # 1. Authorize the trajectory
-      #    action.yml has no dedicated proposed-trajectory/desired-state
-      #    inputs — pass them inside the generic `context` JSON blob, which
-      #    is forwarded verbatim to /v1-evaluate as part of `context`.
-      - uses: atlasent-systems-inc/atlasent-action@v1
-        id: authorize
-        with:
-          action: production.deploy
-          target-id: my-service
-          context: |
-            {
-              "proposed_trajectory": {"steps": [
-                {"step_id": "pre-flight",    "description": "Run tests and security scan"},
-                {"step_id": "build",         "description": "Build Docker image"},
-                {"step_id": "deploy-canary", "description": "Canary deploy (5%)"},
-                {"step_id": "deploy-full",   "description": "Full production deploy"}
-              ]},
-              "desired_state": {"description": "v1.2.3 deployed to production"}
-            }
-        env:
-          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
-          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+This preserves AtlaSent's actual invariant: authorization is bound to the exact consequential action and re-verified at the execution boundary. It does not create or imply a separate trajectory authorization engine.
 
-      # 2. Verify before each step
-      - uses: atlasent-systems-inc/atlasent-action@v1
-        with:
-          trajectory-verify: 'true'
-          trajectory-permit-id: ${{ steps.authorize.outputs.evaluation-id }}
-          trajectory-step-id: pre-flight
-          trajectory-step-name: 'Pre-flight checks'
-        env:
-          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
-          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
-
-      - run: npm test && npm run security-scan
-
-      - uses: atlasent-systems-inc/atlasent-action@v1
-        with:
-          trajectory-verify: 'true'
-          trajectory-permit-id: ${{ steps.authorize.outputs.evaluation-id }}
-          trajectory-step-id: build
-        env:
-          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
-          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
-
-      - run: docker build -t myapp:${{ github.sha }} .
-
-      # ... repeat for each step
-```
-
-## Inputs
-
-| Input | Required | Default | Description |
-|---|---|---|---|
-| `trajectory-verify` | No | `false` | Enable trajectory-verify mode |
-| `trajectory-permit-id` | Yes* | `''` | `evaluation-id` output from the authorize step |
-| `trajectory-step-id` | Yes* | `''` | Must match a `step_id` in the authorized trajectory |
-| `trajectory-step-name` | No | `''` | Human-readable name for job summary |
-| `trajectory-halt-on-deviation` | No | `true` | Fail the job on deviation (`false` = advisory) |
-
-*Required when `trajectory-verify: true`
-
-## Outputs
-
-| Output | Description |
-|---|---|
-| `trajectory-on-trajectory` | `true` / `false` |
-| `trajectory-deviation-type` | Type of deviation (empty when on trajectory) |
-| `trajectory-fidelity-score` | [0-1] fidelity at this point in execution |
-| `trajectory-compliance-artifact-id` | Artifact ID when trajectory completes |
-
-## Deviation Types
-
-| Type | Cause |
-|---|---|
-| `step_not_on_trajectory` | `step_id` not present in authorized trajectory |
-| `step_out_of_sequence` | Step executed out of the authorized order |
-| `required_step_skipped` | A required prior step was not verified |
-| `time_limit_exceeded` | Trajectory `max_duration_seconds` exceeded |
-| `trajectory_expired` | `AuthorizedTransitionSpec` TTL expired |
-| `constraint_violation` | A declared trajectory constraint was violated |
-
-## GxP / Compliance Use
-
-For 21 CFR Part 11 compliance, pair with `evidence-bundle: soc2_type_ii` on the authorize step and upload the `trajectory-compliance-artifact-id` to your QMS after execution. See [atlasent-gxp-starter](https://github.com/atlasent-systems-inc/atlasent-gxp-starter) for the 8-step migration trajectory pack.
+Existing workflows that still set trajectory inputs should remove them — `action.yml` no longer declares any of them, and `src/index.ts`'s `run()` now fails closed if one is still set, before dispatching to any other mode. Tracked under AtlaSent API issue #2932.

@@ -666,30 +666,45 @@ async function runVerifyPermitStep(apiKey: string, apiUrl: string): Promise<void
   const gh = getGitHubContext();
   const environment = resolveEnvironment(getInput("environment"), gh.ref, apiKey);
 
-  let actorResolution: ProtectedActorResolution;
-  try {
-    actorResolution = await resolveProtectedActor({
-      apiKey,
-      apiUrl,
-      actionType,
-      environment,
-      triggeringActor: actor,
-    });
-  } catch (error) {
-    setOutput("decision", "deny");
-    setOutput("verified", "false");
-    setOutput("verify-outcome", "actor_unverified");
-    setOutput("verify-error-code", "ACTOR_UNVERIFIED");
-    setFailed(
-      `Deploy blocked at execution boundary: ${
-        error instanceof WorkloadIdentityError || error instanceof Error
-          ? error.message
-          : String(error)
-      }`,
-    );
-    return;
+  // A prior evaluate-only step's resolved-actor output, passed through
+  // unchanged, is authoritative when present: it's the exact actor that step
+  // presented to the runtime, so re-resolving here (a second, independent
+  // OIDC + broker round trip) could disagree with it for an
+  // OPTIONAL_VERIFIED_ACTOR_ACTIONS type if minting is flaky between the two
+  // jobs, breaking an otherwise-good permit's actor binding. See
+  // resolveProtectedActor's doc comment and atlasent-action#166. Omitted by
+  // any caller that hasn't adopted it — falls back to independent resolution
+  // exactly as before.
+  const carriedActor = getInput("resolved-actor") || undefined;
+  let actorId: string;
+  if (carriedActor) {
+    actorId = carriedActor;
+  } else {
+    let actorResolution: ProtectedActorResolution;
+    try {
+      actorResolution = await resolveProtectedActor({
+        apiKey,
+        apiUrl,
+        actionType,
+        environment,
+        triggeringActor: actor,
+      });
+    } catch (error) {
+      setOutput("decision", "deny");
+      setOutput("verified", "false");
+      setOutput("verify-outcome", "actor_unverified");
+      setOutput("verify-error-code", "ACTOR_UNVERIFIED");
+      setFailed(
+        `Deploy blocked at execution boundary: ${
+          error instanceof WorkloadIdentityError || error instanceof Error
+            ? error.message
+            : String(error)
+        }`,
+      );
+      return;
+    }
+    actorId = actorResolution.actorId;
   }
-  const actorId = actorResolution.actorId;
 
   if (MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) && !runtimeExecutionHash) {
     setOutput("decision", "deny");
@@ -1736,6 +1751,11 @@ export async function run(): Promise<void> {
   }
   const actorId = actorResolution.actorId;
   const triggeringActorId = actorResolution.triggeringActorId;
+  // Carried forward by a later verify-permit step (via its own resolved-actor
+  // input) so a split evaluate/verify pair never independently re-resolves a
+  // possibly-different actor for an OPTIONAL_VERIFIED_ACTOR_ACTIONS type —
+  // see resolveProtectedActor's doc comment and atlasent-action#166.
+  setOutput("resolved-actor", actorId);
 
   info(
     `AtlaSent Gate: evaluating "${actionType}" for actor "${actorId}" in ${environment} environment` +

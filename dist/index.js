@@ -899,42 +899,67 @@ async function bindBatchWorkloadIdentities(items, cfg, deps) {
   for (const item of items) {
     const sanitized = { ...item };
     delete sanitized.actor_identity;
-    if (item.action !== PRODUCTION_DEPLOY_ACTION) {
-      bound.push(sanitized);
+    if (item.action === PRODUCTION_DEPLOY_ACTION) {
+      const environment = item.environment?.trim();
+      if (!environment) {
+        throw new WorkloadIdentityError(
+          "Every production.deploy batch evaluation requires its own non-empty `environment` binding"
+        );
+      }
+      const identity = await mint(
+        {
+          apiUrl: cfg.apiUrl,
+          apiKey: cfg.apiKey,
+          actionType: item.action,
+          environment
+        },
+        { mask: deps.mask }
+      );
+      const artifactRef = sanitized.execution_payload_hash;
+      delete sanitized.execution_payload_hash;
+      bound.push({
+        ...sanitized,
+        actor: identity.actorId,
+        environment,
+        actor_identity: identity.assertion,
+        change_plan: {
+          operation: "deploy",
+          revision: identity.source.sha,
+          ...artifactRef ? { artifact_ref: artifactRef } : {}
+        },
+        context: {
+          ...item.context ?? {},
+          triggering_actor: `github:${identity.source.actor}`
+        }
+      });
       continue;
     }
-    const environment = item.environment?.trim();
-    if (!environment) {
-      throw new WorkloadIdentityError(
-        "Every production.deploy batch evaluation requires its own non-empty `environment` binding"
-      );
-    }
-    const identity = await mint(
-      {
-        apiUrl: cfg.apiUrl,
-        apiKey: cfg.apiKey,
-        actionType: item.action,
-        environment
-      },
-      { mask: deps.mask }
-    );
-    const artifactRef = sanitized.execution_payload_hash;
-    delete sanitized.execution_payload_hash;
-    bound.push({
-      ...sanitized,
-      actor: identity.actorId,
-      environment,
-      actor_identity: identity.assertion,
-      change_plan: {
-        operation: "deploy",
-        revision: identity.source.sha,
-        ...artifactRef ? { artifact_ref: artifactRef } : {}
-      },
-      context: {
-        ...item.context ?? {},
-        triggering_actor: `github:${identity.source.actor}`
+    if (OPTIONAL_VERIFIED_ACTOR_ACTIONS.has(item.action)) {
+      try {
+        const identity = await mint(
+          {
+            apiUrl: cfg.apiUrl,
+            apiKey: cfg.apiKey,
+            actionType: item.action,
+            environment: item.environment?.trim() || "production"
+          },
+          { mask: deps.mask }
+        );
+        bound.push({
+          ...sanitized,
+          actor: identity.actorId,
+          actor_identity: identity.assertion,
+          context: {
+            ...item.context ?? {},
+            triggering_actor: `github:${identity.source.actor}`
+          }
+        });
+      } catch {
+        bound.push(sanitized);
       }
-    });
+      continue;
+    }
+    bound.push(sanitized);
   }
   return bound;
 }
@@ -3648,26 +3673,32 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
   const runtimeExecutionHash = getInput("execution-hash") || void 0;
   const gh = getGitHubContext();
   const environment = resolveEnvironment(getInput("environment"), gh.ref, apiKey);
-  let actorResolution;
-  try {
-    actorResolution = await resolveProtectedActor({
-      apiKey,
-      apiUrl,
-      actionType,
-      environment,
-      triggeringActor: actor
-    });
-  } catch (error) {
-    setOutput("decision", "deny");
-    setOutput("verified", "false");
-    setOutput("verify-outcome", "actor_unverified");
-    setOutput("verify-error-code", "ACTOR_UNVERIFIED");
-    setFailed(
-      `Deploy blocked at execution boundary: ${error instanceof WorkloadIdentityError || error instanceof Error ? error.message : String(error)}`
-    );
-    return;
+  const carriedActor = getInput("resolved-actor") || void 0;
+  let actorId;
+  if (carriedActor) {
+    actorId = carriedActor;
+  } else {
+    let actorResolution;
+    try {
+      actorResolution = await resolveProtectedActor({
+        apiKey,
+        apiUrl,
+        actionType,
+        environment,
+        triggeringActor: actor
+      });
+    } catch (error) {
+      setOutput("decision", "deny");
+      setOutput("verified", "false");
+      setOutput("verify-outcome", "actor_unverified");
+      setOutput("verify-error-code", "ACTOR_UNVERIFIED");
+      setFailed(
+        `Deploy blocked at execution boundary: ${error instanceof WorkloadIdentityError || error instanceof Error ? error.message : String(error)}`
+      );
+      return;
+    }
+    actorId = actorResolution.actorId;
   }
-  const actorId = actorResolution.actorId;
   if (MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) && !runtimeExecutionHash) {
     setOutput("decision", "deny");
     setOutput("verified", "false");
@@ -4453,6 +4484,7 @@ async function run() {
   }
   const actorId = actorResolution.actorId;
   const triggeringActorId = actorResolution.triggeringActorId;
+  setOutput("resolved-actor", actorId);
   info(
     `AtlaSent Gate: evaluating "${actionType}" for actor "${actorId}" in ${environment} environment` + (targetId ? ` (target=${targetId})` : "")
   );

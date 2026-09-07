@@ -34,6 +34,9 @@ inputs:
   permit-token:
     description: 'The permit token to re-verify (required in verify-permit mode). Typically the permit-token output of an earlier gate step, passed to the deploy step.'
     required: false
+  resolved-actor:
+    description: 'The resolved-actor output from the prior evaluate-only gate step, passed unchanged to a verify-permit step. Only meaningful for action types with opportunistic (non-mandatory) verified-actor minting, e.g. package.release — when set, verify-permit uses this actor directly instead of independently re-resolving one, so a transient mint success/failure in one job can never disagree with the other and break an otherwise-good permit''s actor binding. Safe to omit: verify-permit falls back to its own resolution exactly as before.'
+    required: false
   mode:
     description: |
       Single-eval execution model (ignored on batch / policy-sync / verify-permit / release / vqp / governance paths).
@@ -501,6 +504,9 @@ outputs:
   audit-hash:
     description: 'SHA-256 audit chain hash'
     value: ${{ steps.gate.outputs.audit-hash }}
+  resolved-actor:
+    description: 'The actor identity this evaluate step actually presented to the runtime (verified workload actor when minting succeeded, the caller-supplied actor otherwise). Pass unchanged as the resolved-actor input to a later verify-permit step for action types with opportunistic verified-actor minting (e.g. package.release), so the boundary step never independently re-resolves a possibly-different actor.'
+    value: ${{ steps.gate.outputs.resolved-actor }}
   evidence-receipt:
     description: |
       Signed per-decision authorization receipt (JSON). HMAC-SHA256 signed when

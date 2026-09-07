@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  COMMUNICATION_EXTERNAL_SEND_ACTION,
   GATE_PERMITTED_ACTIONS,
   INFRASTRUCTURE_CHANGE_ACTION,
   LEGACY_PRODUCTION_DEPLOY_ALIAS,
@@ -115,8 +116,17 @@ describe("canonicalAction", () => {
       expect(GATE_PERMITTED_ACTIONS.has(RECONCILIATION_CERTIFY_ACTION)).toBe(true);
     });
 
+    it("permits communication.external.send (ACT-0050, license-renewal-sweep)", () => {
+      // Added 2026-09-07 (atlasent-console#2147): found via a real scheduled
+      // run of atlasent-console's license-renewal-sweep.yml, which failed
+      // with "unsupported protected action" — the gate rejected the request
+      // before it ever reached the AtlaSent API, even though ACT-0050 is
+      // already provisioned as a real runtime-owning seeder in atlasent-api.
+      expect(GATE_PERMITTED_ACTIONS.has(COMMUNICATION_EXTERNAL_SEND_ACTION)).toBe(true);
+    });
+
     it("is a conservative explicit allow-list (not open to arbitrary types)", () => {
-      expect(GATE_PERMITTED_ACTIONS.size).toBe(10);
+      expect(GATE_PERMITTED_ACTIONS.size).toBe(11);
       // A well-formed but unlisted action is NOT gate-permitted, even though
       // its format is valid — the runtime policy is the authority, but the
       // gate's client-side guard stays explicit.
@@ -142,6 +152,10 @@ describe("canonicalAction", () => {
     it("does not include package.release or trust_root.publish (workload-identity-optional action types)", () => {
       expect(MANDATORY_CHANGE_CONTROL_ACTIONS.has(PACKAGE_RELEASE_ACTION)).toBe(false);
       expect(MANDATORY_CHANGE_CONTROL_ACTIONS.has(TRUST_ROOT_PUBLISH_ACTION)).toBe(false);
+    });
+
+    it("does not include communication.external.send (self-asserted actor, no change_plan)", () => {
+      expect(MANDATORY_CHANGE_CONTROL_ACTIONS.has(COMMUNICATION_EXTERNAL_SEND_ACTION)).toBe(false);
     });
 
     it("package.release is distinct from production.deploy", () => {

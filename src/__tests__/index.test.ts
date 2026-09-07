@@ -949,6 +949,34 @@ describe("verify-only execution boundary", () => {
     const config = mockReverifyPermit.mock.calls[0][0] as { actor: string };
     expect(config.actor).toBe("github:release-manager");
   });
+
+  it("SECURITY: ignores a caller-supplied resolved-actor input for a mandatory-change-control action and always mints independently", async () => {
+    setApiKey();
+    setInput("verify-permit", "true");
+    setInput("permit-token", "pt-unconsumed");
+    setInput("action", "production.deploy");
+    setInput("environment", "production");
+    setInput("execution-hash", "runtime-derived-hash");
+    setInput("actor", "human-dispatcher");
+    // A forged/stale resolved-actor input — must NOT be honored for a
+    // mandatory-change-control action type. Honoring it here would let a
+    // boundary job skip the mandatory OIDC mint + broker admission check
+    // entirely via a plain text input (Codex finding on #167).
+    setInput("resolved-actor", "github:attacker-supplied-identity");
+    mockReverifyPermit.mockResolvedValueOnce({ verified: true, outcome: "verified" });
+
+    await run();
+
+    // Independent resolution (mint) must still happen — the carried value
+    // is never consulted for a mandatory action type.
+    expect(mockMintWorkloadIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({ actionType: "production.deploy" }),
+      expect.objectContaining({ mask: expect.any(Function) }),
+    );
+    const config = mockReverifyPermit.mock.calls[0][0] as { actor: string };
+    expect(config.actor).toBe("github-actions:repo:123:workflow:deploy");
+    expect(config.actor).not.toBe("github:attacker-supplied-identity");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -667,15 +667,25 @@ async function runVerifyPermitStep(apiKey: string, apiUrl: string): Promise<void
   const environment = resolveEnvironment(getInput("environment"), gh.ref, apiKey);
 
   // A prior evaluate-only step's resolved-actor output, passed through
-  // unchanged, is authoritative when present: it's the exact actor that step
+  // unchanged, is authoritative when present for an
+  // OPTIONAL_VERIFIED_ACTOR_ACTIONS type: it's the exact actor that step
   // presented to the runtime, so re-resolving here (a second, independent
-  // OIDC + broker round trip) could disagree with it for an
-  // OPTIONAL_VERIFIED_ACTOR_ACTIONS type if minting is flaky between the two
-  // jobs, breaking an otherwise-good permit's actor binding. See
-  // resolveProtectedActor's doc comment and atlasent-action#166. Omitted by
-  // any caller that hasn't adopted it — falls back to independent resolution
-  // exactly as before.
-  const carriedActor = getInput("resolved-actor") || undefined;
+  // OIDC + broker round trip) could disagree with it if minting is flaky
+  // between the two jobs, breaking an otherwise-good permit's actor binding.
+  // See resolveProtectedActor's doc comment and atlasent-action#166.
+  //
+  // SECURITY: restricted to OPTIONAL_VERIFIED_ACTOR_ACTIONS only (Codex
+  // review on #167). For a MANDATORY_CHANGE_CONTROL_ACTIONS type (e.g.
+  // production.deploy), honoring a caller-supplied resolved-actor here
+  // would let a boundary job skip resolveProtectedActor()'s mandatory OIDC
+  // mint + broker admission check entirely — a plain text input, not a
+  // verified credential — defeating the exact fail-closed workload-identity
+  // requirement this repo treats as non-negotiable for those four types.
+  // Mandatory actions always re-resolve independently below, regardless of
+  // whether resolved-actor was supplied.
+  const carriedActor = OPTIONAL_VERIFIED_ACTOR_ACTIONS.has(actionType)
+    ? getInput("resolved-actor") || undefined
+    : undefined;
   let actorId: string;
   if (carriedActor) {
     actorId = carriedActor;

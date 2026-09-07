@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   GITHUB_ACTIONS_OIDC_AUDIENCE,
+  WORKLOAD_IDENTITY_REQUEST_TIMEOUT_MS,
   WorkloadIdentityError,
   apiKeyCredentialReference,
   mintGithubActionsActorIdentity,
@@ -38,10 +39,12 @@ function okFetch() {
       expect((init?.headers as Record<string, string>).Authorization).toBe(
         "Bearer request-secret",
       );
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
       return new Response(JSON.stringify({ value: "header.payload.signature" }));
     }
     expect(url).toBe("https://runtime.example/functions/v1/v1-idp-broker/mint/actor-identity");
     expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer ask_live_key");
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
     expect(JSON.parse(String(init?.body))).toEqual({
       provider: "github_actions",
       id_token: "header.payload.signature",
@@ -84,6 +87,25 @@ describe("mintGithubActionsActorIdentity", () => {
     });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(masked).toEqual(["request-secret", "header.payload.signature"]);
+  });
+
+  it("uses a bounded timeout for both workload-identity network requests", async () => {
+    expect(WORKLOAD_IDENTITY_REQUEST_TIMEOUT_MS).toBe(30_000);
+    const fetchImpl = okFetch();
+
+    await mintGithubActionsActorIdentity(
+      {
+        apiUrl: "https://runtime.example/functions/v1",
+        apiKey: "ask_live_key",
+        actionType: "production.deploy",
+        environment: "production",
+      },
+      { fetchImpl: fetchImpl as typeof fetch, env: ENV },
+    );
+
+    for (const [, init] of fetchImpl.mock.calls) {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+    }
   });
 
   it("fails closed with a permission hint when GitHub does not expose OIDC", async () => {

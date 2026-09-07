@@ -265,8 +265,8 @@ inputs:
       BEFORE a deploy is authorized. Mints no permit and authorizes nothing;
       a separate evaluate/verify step (the default `action:` mode) remains
       the actual authorization gate. Mutually exclusive with evaluate,
-      policy-sync, release-mode, governance-agents, vqp-snapshot-id, and
-      trajectory-verify. Requires GITHUB_TOKEN (for the diff/check-run reads)
+      policy-sync, release-mode, governance-agents, and vqp-snapshot-id.
+      Requires GITHUB_TOKEN (for the diff/check-run reads)
       in addition to ATLASENT_API_KEY.
     required: false
     default: 'false'
@@ -356,7 +356,7 @@ inputs:
   vqp-snapshot-id:
     description: |
       UUID of the VQP snapshot to re-derive and audit. Mutually exclusive with
-      evaluate, policy-sync, release-mode, governance-agents, and trajectory-verify.
+      evaluate, policy-sync, release-mode, and governance-agents.
     required: false
     default: ''
   vqp-supabase-url:
@@ -375,36 +375,6 @@ inputs:
     description: 'When "true" (default), fail the job if hash_match=false or verdict_changed=true.'
     required: false
     default: 'true'
-  # ── Trajectory Authorization ─────────────────────────────────────────────────────────────
-  trajectory-verify:
-    description: |
-      When "true", run in trajectory-verify mode: call POST /v1/trajectory-verify
-      at this CI step and fail if on_trajectory=false. Use as an intermediate step
-      before each critical execution unit in the authorized trajectory.
-      Requires trajectory-permit-id and trajectory-step-id from the upstream
-      evaluate step that returned an authorized_trajectory.
-      Mutually exclusive with policy-sync, governance-agents, release-mode, and vqp-snapshot-id.
-    required: false
-    default: 'false'
-  trajectory-permit-id:
-    description: 'Authorized transition spec ID from the upstream AtlaSent evaluate step (evaluation-id output). Required when trajectory-verify is "true".'
-    required: false
-    default: ''
-  trajectory-step-id:
-    description: 'Step ID within the trajectory being verified. Must match a step_id in the authorized_trajectory. Required when trajectory-verify is "true".'
-    required: false
-    default: ''
-  trajectory-step-name:
-    description: 'Human-readable step name written to the job summary and audit log. Optional.'
-    required: false
-    default: ''
-  trajectory-halt-on-deviation:
-    description: |
-      When "true" (default), fail the CI job immediately when on_trajectory=false.
-      Set to "false" to surface deviation outputs without failing — useful for
-      dry-run or advisory monitoring pipelines.
-    required: false
-    default: 'true'
   # ── Posture Scan ─────────────────────────────────────────────────────────────────────────
   posture-scan:
     description: |
@@ -418,8 +388,8 @@ inputs:
       (no_token | insufficient_permission | not_observable_by_repo_token |
       workspace_not_checked_out | not_applicable | check_failed) — never a
       guess, never a synthetic score. Mutually exclusive with evaluate,
-      policy-sync, evaluations, release-mode, governance-agents,
-      vqp-snapshot-id, and trajectory-verify.
+      policy-sync, evaluations, release-mode, governance-agents, and
+      vqp-snapshot-id.
     required: false
     default: 'false'
   posture-scan-token:
@@ -577,15 +547,6 @@ outputs:
     description: '"true" when the verdict flipped between the original snapshot and the AI rerun (vqp-verify mode only).'
   vqp-audit-id:
     description: 'Audit log entry ID written by v1-verify-vqp for this re-derivation run (vqp-verify mode only).'
-  # ── Trajectory Verify outputs ───────────────────────────────────────────────────────────
-  trajectory-on-trajectory:
-    description: '"true" when the current step is on the authorized trajectory; "false" on deviation (trajectory-verify mode only).'
-  trajectory-deviation-type:
-    description: 'Deviation type on deviation: step_not_on_trajectory | step_out_of_sequence | forbidden_state_reached | required_step_skipped | time_limit_exceeded | constraint_violation | trajectory_expired. Empty string when on trajectory (trajectory-verify mode only).'
-  trajectory-fidelity-score:
-    description: 'Fidelity score [0-1] representing how closely execution tracks the authorized trajectory so far (trajectory-verify mode only).'
-  trajectory-compliance-artifact-id:
-    description: 'Compliance comparison artifact ID produced when trajectory execution completes. Empty string mid-execution (trajectory-verify mode only).'
 runs:
   using: 'node24'
   main: 'dist/index.js'

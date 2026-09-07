@@ -212,6 +212,69 @@ function getExitCalls(): Array<number | string | null | undefined> {
 }
 
 // ---------------------------------------------------------------------------
+// 0. Legacy trajectory-verify inputs — fail closed before any mode dispatch
+// ---------------------------------------------------------------------------
+
+describe("legacy trajectory-verify inputs", () => {
+  const trajectoryInputs = [
+    "trajectory-verify",
+    "trajectory-permit-id",
+    "trajectory-step-id",
+    "trajectory-step-name",
+    "trajectory-halt-on-deviation",
+  ];
+
+  it.each(trajectoryInputs)("fails closed when %s is set, with no API key and no action set", async (name) => {
+    setInput(name, name === "trajectory-verify" ? "true" : "some-value");
+    // No ATLASENT_API_KEY, no action — proves the guard runs before getApiKey()
+    // and before any mode's own required-input checks.
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    expect(getExitCalls()).toContain(1);
+    expect(getConsoleLogs().some((l) => l.includes("trajectory-verify mode is not supported"))).toBe(
+      true,
+    );
+    expect(getConsoleLogs().some((l) => l.includes(name))).toBe(true);
+  });
+
+  it("fails closed even when release-mode is also set (guard runs first)", async () => {
+    setInput("trajectory-verify", "true");
+    setInput("release-mode", "register-and-verify");
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    expect(getExitCalls()).toContain(1);
+    expect(getConsoleLogs().some((l) => l.includes("trajectory-verify mode is not supported"))).toBe(
+      true,
+    );
+  });
+
+  it("fails closed even when a valid action and API key are also set, and never calls enforce/evaluate", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("trajectory-permit-id", "pt-legacy-123");
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+    expect(getExitCalls()).toContain(1);
+    expect(mockEnforce).not.toHaveBeenCalled();
+    expect(mockEvaluate).not.toHaveBeenCalled();
+    const outputs = readOutputs(outputFile);
+    expect(outputs["decision"]).toBe("error");
+    expect(outputs["verified"]).toBe("false");
+  });
+
+  it("does not fail when no trajectory input is set (ordinary evaluate path unaffected)", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mockEnforce).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 1. Missing required inputs
 // ---------------------------------------------------------------------------
 

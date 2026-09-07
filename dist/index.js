@@ -4259,7 +4259,23 @@ async function runVqpVerifyStep() {
     `AtlaSent VQP verify: integrity confirmed for snapshot ${snapshotId}` + (rerun ? " \u2014 no score drift" : "")
   );
 }
+var LEGACY_TRAJECTORY_INPUTS = [
+  "trajectory-verify",
+  "trajectory-permit-id",
+  "trajectory-step-id",
+  "trajectory-step-name",
+  "trajectory-halt-on-deviation"
+];
 async function run() {
+  const trajectoryInputsSet = LEGACY_TRAJECTORY_INPUTS.filter((name) => getInput(name) !== "");
+  if (trajectoryInputsSet.length > 0) {
+    setOutput("decision", "error");
+    setOutput("verified", "false");
+    setFailed(
+      `AtlaSent Gate: trajectory-verify mode is not supported \u2014 the runtime does not implement /v1/trajectory-verify and no version of this action has ever called it. Remove ${trajectoryInputsSet.join(", ")} from this step's inputs. Use the evaluate-only + verify-permit execution-boundary pattern instead \u2014 see docs/trajectory-verify.md.`
+    );
+    return;
+  }
   if (getInput("release-mode") === "register-and-verify") {
     await runReleaseModeStep();
     return;

@@ -82,6 +82,7 @@ import {
   mintGithubApprovalArtifacts,
 } from "./githubApprovalMint";
 import { renderPostureStepSummary, runPostureScan } from "./postureScan";
+import { runInsightsEvaluate } from "./insights";
 
 function getApiKey(): string {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -2615,6 +2616,11 @@ export async function run(): Promise<void> {
   // Only fires when the gate passed (decision=allow + verified=true).
   // Gracefully degrades on 402 (enterprise only) or network errors.
   await runPostDeployEvidenceBundleStep(apiKey, apiUrl, orgId, actorId);
+
+  // ── Behavior insights campaign evaluation (optional) ─────────────────────
+  // Only fires when the gate passed (decision=allow + verified=true), per
+  // the insights-org-id input's own documented contract in action.yml.
+  await runInsightsStep(apiKey, apiUrl, actorId);
 }
 
 // ---------------------------------------------------------------------------
@@ -2680,6 +2686,58 @@ async function runPostDeployEvidenceBundleStep(
   if (result.sha256) {
     info(`AtlaSent evidence-bundle: bundle_sha256=${result.sha256}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Behavior insights campaign evaluation step
+// ---------------------------------------------------------------------------
+
+/**
+ * When `insights-org-id` is set, fire a best-effort behavior-insights
+ * campaign evaluate call for the acting subject after a successful
+ * authorization. Never blocks or reverses the (already-granted) gate
+ * decision — `runInsightsEvaluate` itself swallows every failure mode
+ * (403 flag-not-enabled, non-2xx, network error) and returns null, and this
+ * wrapper always sets both outputs so a downstream step can reference them
+ * unconditionally, matching `runPostDeployEvidenceBundleStep`'s contract.
+ */
+async function runInsightsStep(
+  apiKey: string,
+  apiUrl: string,
+  actorId: string,
+): Promise<void> {
+  const orgId = getInput("insights-org-id");
+
+  const setEmptyInsightsOutputs = (): void => {
+    setOutput("insights-fired", JSON.stringify([]));
+    setOutput("insights-skipped", JSON.stringify([]));
+  };
+
+  if (!orgId) {
+    setEmptyInsightsOutputs();
+    return;
+  }
+
+  const subjectId = getInput("insights-subject-id") || actorId;
+  const rawSessionCount = getInput("insights-session-count");
+  let sessionCount: number | undefined;
+  if (rawSessionCount) {
+    const parsed = parseInt(rawSessionCount, 10);
+    sessionCount = Number.isNaN(parsed) ? undefined : parsed;
+  }
+
+  const result = await runInsightsEvaluate(
+    { apiKey, apiUrl, orgId, subjectId, sessionCount },
+    { info, warning },
+  );
+
+  if (!result) {
+    setEmptyInsightsOutputs();
+    return;
+  }
+
+  setOutput("insights-fired", JSON.stringify(result.fired));
+  setOutput("insights-skipped", JSON.stringify(result.skipped));
 }
 
 if (require.main === module) {

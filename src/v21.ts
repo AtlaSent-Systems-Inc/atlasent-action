@@ -31,6 +31,13 @@ import {
 
 export interface RunOutput {
   decisions: Decision[];
+  /**
+   * True when at least one decision was deny/hold/escalate, OR an "allow"
+   * decision's permit did not verify (`verified !== true`). Gate on THIS,
+   * not on scanning `decisions` for `decision === "allow"` alone — an
+   * unverified allow is authorized nothing, per this repo's "gate on
+   * verified, not decision" rule.
+   */
   failed: boolean;
   batchId: string;
 }
@@ -300,8 +307,26 @@ export async function runV21(
     apiUrl: inputs.apiUrl,
   });
 
+  // Fail-closed per this repo's own #1 rule (CLAUDE.md: "Gate on verified,
+  // not decision"): a decision of "allow" whose permit did NOT verify
+  // (verified !== true — replay_blocked, mismatch, expired, or any other
+  // non-success outcome) must count as a failed batch item exactly like a
+  // deny/hold/escalate would. Before this fix, `failed` only looked at
+  // `d.decision`, so an allow-but-unverified item (e.g. artifact/context
+  // mismatch caught by evaluateMany()'s own per-item verifyPermit() call)
+  // silently reported `failed: false` — the run() caller in src/index.ts
+  // happens to catch this via its own separate `allVerified` check today,
+  // but that made this exported field's name a lie for any other/future
+  // caller, and it also skipped the Slack/PR-comment "blocked" notification
+  // that deny/hold/escalate correctly receive (see index.ts's `if
+  // (result.failed)` branch) — an operator got no alert for a batch item
+  // that was, in effect, denied at the execution boundary.
   const failed = decisions.some(
-    (d) => d.decision === "deny" || d.decision === "hold" || d.decision === "escalate",
+    (d) =>
+      d.decision === "deny" ||
+      d.decision === "hold" ||
+      d.decision === "escalate" ||
+      (d.decision === "allow" && d.verified !== true),
   );
 
   return { decisions, failed, batchId: batch.batchId };

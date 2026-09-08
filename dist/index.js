@@ -1071,7 +1071,7 @@ async function runV21(env, flags, deps = {}) {
     apiUrl: inputs.apiUrl
   });
   const failed = decisions.some(
-    (d) => d.decision === "deny" || d.decision === "hold" || d.decision === "escalate"
+    (d) => d.decision === "deny" || d.decision === "hold" || d.decision === "escalate" || d.decision === "allow" && d.verified !== true
   );
   return { decisions, failed, batchId: batch.batchId };
 }
@@ -4467,9 +4467,9 @@ async function run() {
         const slackWebhook = getInput("slack-webhook");
         const prCommentEnabled = getInput("pr-comment-on-deny").toLowerCase() !== "false";
         const blockedDecisions = result.decisions.filter(
-          (d2) => d2.decision === "deny" || d2.decision === "hold" || d2.decision === "escalate"
+          (d2) => d2.decision === "deny" || d2.decision === "hold" || d2.decision === "escalate" || d2.decision === "allow" && d2.verified !== true
         );
-        const worstDecision = blockedDecisions.some((d2) => d2.decision === "deny") ? "deny" : blockedDecisions.some((d2) => d2.decision === "escalate") ? "escalate" : "hold";
+        const worstDecision = blockedDecisions.some((d2) => d2.decision === "deny") ? "deny" : blockedDecisions.some((d2) => d2.decision === "escalate") ? "escalate" : blockedDecisions.some((d2) => d2.decision === "hold") ? "hold" : "verification_failed";
         const batchActor = getInput("actor") || "unknown";
         const batchEnv = resolveEnvironment(getInput("environment"), gh2.ref, apiKey);
         const reasonSummary = `${blockedDecisions.length} of ${result.decisions.length} evaluation(s) blocked (${worstDecision})`;
@@ -4499,7 +4499,7 @@ async function run() {
         }
       }
       setFailed(
-        `AtlaSent Gate: one or more evaluations were not allowed (deny/hold/escalate). See 'decisions' output for details.`
+        `AtlaSent Gate: one or more evaluations were not allowed (deny/hold/escalate) or had an allow decision that failed permit verification. See 'decisions' output for details.`
       );
       return;
     }

@@ -7,6 +7,7 @@ import * as path from "node:path";
 // intercepted. EnforceError must still be the real class so instanceof checks
 // in run() work correctly.
 vi.mock("../evidenceClient", () => ({ emitEvidenceEvent: vi.fn(async () => {}) }));
+vi.mock("../insights", () => ({ runInsightsEvaluate: vi.fn(async () => null) }));
 
 vi.mock("@atlasent/enforce", async (importOriginal) => {
   const original = await importOriginal<typeof import("@atlasent/enforce")>();
@@ -46,6 +47,7 @@ import {
 import type { Decision } from "@atlasent/enforce";
 import { resolveApprovals } from "../approvals";
 import { mintGithubActionsActorIdentity } from "../workloadIdentity";
+import { runInsightsEvaluate } from "../insights";
 
 // Import run() after mocking to ensure the mock is in place.
 import { run } from "../index";
@@ -59,6 +61,7 @@ const mockResolveApprovals = resolveApprovals as unknown as ReturnType<typeof vi
 const mockMintWorkloadIdentity = mintGithubActionsActorIdentity as unknown as ReturnType<
   typeof vi.fn
 >;
+const mockRunInsightsEvaluate = runInsightsEvaluate as unknown as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -142,6 +145,8 @@ beforeEach(() => {
   mockReverifyPermit.mockReset();
   mockWaitForApproval.mockReset();
   mockMintWorkloadIdentity.mockReset();
+  mockRunInsightsEvaluate.mockReset();
+  mockRunInsightsEvaluate.mockResolvedValue(null);
   mockMintWorkloadIdentity.mockResolvedValue({
     actorId: "github-actions:repo:123:workflow:deploy",
     assertion: {
@@ -1380,5 +1385,128 @@ describe("GitHub-approval-artifact minting wiring", () => {
     ) => Promise<Record<string, unknown> | undefined>;
     await expect(callback(HINT, undefined)).resolves.toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Behavior insights campaign evaluation (insights-org-id) — post-success step
+// ---------------------------------------------------------------------------
+//
+// action.yml documents insights-org-id as: "When set, the action runs a
+// campaign evaluate call after a successful authorization (best-effort:
+// never blocks or reverses the gate decision)." Prior to this fix nothing in
+// run() ever read insights-org-id/insights-subject-id/insights-session-count
+// or called runInsightsEvaluate — the declared inputs and insights-fired /
+// insights-skipped outputs were silently inert.
+
+describe("behavior insights (insights-org-id)", () => {
+  it("does not call runInsightsEvaluate and sets empty JSON-array outputs when insights-org-id is unset", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    expect(mockRunInsightsEvaluate).not.toHaveBeenCalled();
+    const outputs = readOutputs(outputFile);
+    expect(outputs["insights-fired"]).toBe("[]");
+    expect(outputs["insights-skipped"]).toBe("[]");
+  });
+
+  it("does not fire on a denied evaluation (only runs after a successful/verified gate)", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("insights-org-id", "org-abc");
+    const denyDecision = makeDecision({ decision: "deny", denyReason: "policy violation" });
+    mockEnforce.mockRejectedValueOnce(
+      new EnforceError("Denied: policy violation", "verify", denyDecision),
+    );
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    expect(mockRunInsightsEvaluate).not.toHaveBeenCalled();
+  });
+
+  it("calls runInsightsEvaluate with orgId, apiKey/apiUrl, and the resolved actor as the default subjectId on a successful gate", async () => {
+    setApiKey("ask_live_insights");
+    setInput("action", "production.deploy");
+    setInput("insights-org-id", "org-abc");
+    setInput("insights-session-count", "12");
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    expect(mockRunInsightsEvaluate).toHaveBeenCalledTimes(1);
+    const [config] = mockRunInsightsEvaluate.mock.calls[0];
+    expect(config.orgId).toBe("org-abc");
+    expect(config.apiKey).toBe("ask_live_insights");
+    // production.deploy uses the runtime-minted GitHub OIDC workload actor
+    // (see mockMintWorkloadIdentity's default in beforeEach), not the raw
+    // `actor` input — the same actorId used for the evidence-bundle and
+    // financial-governance advisory steps in this same success path.
+    expect(config.subjectId).toBe("github-actions:repo:123:workflow:deploy");
+    expect(config.sessionCount).toBe(12);
+  });
+
+  it("prefers insights-subject-id over the resolved actor when both are set", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("insights-org-id", "org-abc");
+    setInput("insights-subject-id", "user-42");
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    const [config] = mockRunInsightsEvaluate.mock.calls[0];
+    expect(config.subjectId).toBe("user-42");
+  });
+
+  it("omits sessionCount when insights-session-count is not a valid integer", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("insights-org-id", "org-abc");
+    setInput("insights-session-count", "not-a-number");
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+
+    await run();
+
+    const [config] = mockRunInsightsEvaluate.mock.calls[0];
+    expect(config.sessionCount).toBeUndefined();
+  });
+
+  it("writes insights-fired/insights-skipped outputs from the returned result", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("insights-org-id", "org-abc");
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+    mockRunInsightsEvaluate.mockResolvedValueOnce({
+      subjectId: "tester",
+      fired: [{ campaignId: "camp-1", name: "Streak reminder", delivery: {} }],
+      skipped: [{ campaignId: "camp-2", name: "Cooldown", reason: "cooldown_active" }],
+    });
+
+    await run();
+
+    const outputs = readOutputs(outputFile);
+    expect(JSON.parse(outputs["insights-fired"])).toEqual([
+      { campaignId: "camp-1", name: "Streak reminder", delivery: {} },
+    ]);
+    expect(JSON.parse(outputs["insights-skipped"])).toEqual([
+      { campaignId: "camp-2", name: "Cooldown", reason: "cooldown_active" },
+    ]);
+  });
+
+  it("sets empty JSON-array outputs when runInsightsEvaluate returns null (advisory failure)", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("insights-org-id", "org-abc");
+    mockEnforce.mockResolvedValueOnce(makeAllowResult());
+    mockRunInsightsEvaluate.mockResolvedValueOnce(null);
+
+    await run();
+
+    const outputs = readOutputs(outputFile);
+    expect(outputs["insights-fired"]).toBe("[]");
+    expect(outputs["insights-skipped"]).toBe("[]");
   });
 });

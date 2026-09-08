@@ -3324,6 +3324,48 @@ function renderPostureStepSummary(result) {
   return lines.join("\n") + "\n";
 }
 
+// src/insights.ts
+async function runInsightsEvaluate(cfg, log = console) {
+  try {
+    const res = await fetch(
+      `${cfg.apiUrl}/v1/orgs/${cfg.orgId}/insights/evaluate`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${cfg.apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          subjectId: cfg.subjectId,
+          sessionCount: cfg.sessionCount,
+          patternScores: cfg.patternScores,
+          events: cfg.events
+        }),
+        signal: AbortSignal.timeout(1e4)
+      }
+    );
+    if (res.status === 403) {
+      log.info("AtlaSent insights: feature flag not enabled, skipping");
+      return null;
+    }
+    if (!res.ok) {
+      log.warning(`AtlaSent insights evaluate returned ${res.status} (advisory)`);
+      return null;
+    }
+    const result = await res.json();
+    if (result.fired.length > 0) {
+      log.info(
+        `AtlaSent insights: ${result.fired.length} campaign(s) fired for subject "${cfg.subjectId}": ` + result.fired.map((f) => f.name).join(", ")
+      );
+    }
+    return result;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warning(`AtlaSent insights evaluate failed (advisory): ${msg}`);
+    return null;
+  }
+}
+
 // src/index.ts
 function getApiKey() {
   const apiKey = (process.env["ATLASENT_API_KEY"] ?? "").trim();
@@ -5067,6 +5109,7 @@ async function run() {
   }
   emitFinancialGovernanceAdvisory(actionType, actorId, orgId);
   await runPostDeployEvidenceBundleStep(apiKey, apiUrl, orgId, actorId);
+  await runInsightsStep(apiKey, apiUrl, actorId);
 }
 async function runPostDeployEvidenceBundleStep(apiKey, apiUrl, orgId, actorId) {
   const bundleInput = getInput("evidence-bundle").toLowerCase();
@@ -5107,6 +5150,34 @@ async function runPostDeployEvidenceBundleStep(apiKey, apiUrl, orgId, actorId) {
   if (result.sha256) {
     info(`AtlaSent evidence-bundle: bundle_sha256=${result.sha256}`);
   }
+}
+async function runInsightsStep(apiKey, apiUrl, actorId) {
+  const orgId = getInput("insights-org-id");
+  const setEmptyInsightsOutputs = () => {
+    setOutput("insights-fired", JSON.stringify([]));
+    setOutput("insights-skipped", JSON.stringify([]));
+  };
+  if (!orgId) {
+    setEmptyInsightsOutputs();
+    return;
+  }
+  const subjectId = getInput("insights-subject-id") || actorId;
+  const rawSessionCount = getInput("insights-session-count");
+  let sessionCount;
+  if (rawSessionCount) {
+    const parsed = parseInt(rawSessionCount, 10);
+    sessionCount = Number.isNaN(parsed) ? void 0 : parsed;
+  }
+  const result = await runInsightsEvaluate(
+    { apiKey, apiUrl, orgId, subjectId, sessionCount },
+    { info, warning }
+  );
+  if (!result) {
+    setEmptyInsightsOutputs();
+    return;
+  }
+  setOutput("insights-fired", JSON.stringify(result.fired));
+  setOutput("insights-skipped", JSON.stringify(result.skipped));
 }
 if (require.main === module) {
   run().catch((err) => {

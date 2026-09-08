@@ -317,6 +317,43 @@ it("failed=true when non-allow even if failOnDeny=false", async () => {
   expect(out.failed).toBe(true);
 });
 
+// Regression: an "allow" decision whose permit failed verification
+// (verified !== true — e.g. replay_blocked, artifact/context mismatch)
+// must count as failed exactly like a deny/hold/escalate. Before this fix,
+// `failed` only inspected `d.decision`, so a batch item that was
+// authorized nothing (unverified allow) silently reported `failed: false`.
+// This is exercised directly against runV21()'s own `failed` computation —
+// `evaluateMany` is mocked here, so this is independent of whatever
+// evaluateMany's own verifyPermit wiring does internally.
+it("failed=true when an allow decision's permit did not verify (verified: false)", async () => {
+  mockEvaluateMany.mockResolvedValueOnce({
+    decisions: [
+      {
+        id: "ev-1",
+        decision: "allow",
+        evaluatedAt: "2026-04-30T00:00:00Z",
+        permitToken: "pt-1",
+        verified: false,
+        verifyOutcome: "replay_blocked",
+      },
+    ],
+    batchId: "b1",
+  });
+  const out = await runV21(BASE_ENV, FLAGS);
+  expect(out.failed).toBe(true);
+});
+
+it("failed=true when an allow decision has verified undefined (not explicitly true)", async () => {
+  mockEvaluateMany.mockResolvedValueOnce({
+    decisions: [
+      { id: "ev-1", decision: "allow", evaluatedAt: "2026-04-30T00:00:00Z", permitToken: "pt-1" },
+    ],
+    batchId: "b1",
+  });
+  const out = await runV21(BASE_ENV, FLAGS);
+  expect(out.failed).toBe(true);
+});
+
 // ── wait-for-id path ──────────────────────────────────────────────────────────
 
 it("calls waitForTerminalDecision when waitForId matches a hold decision", async () => {

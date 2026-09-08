@@ -1697,14 +1697,25 @@ export async function run(): Promise<void> {
         const slackWebhook = getInput("slack-webhook");
         const prCommentEnabled = getInput("pr-comment-on-deny").toLowerCase() !== "false";
 
+        // Includes both decision-level blocks (deny/hold/escalate) and an
+        // "allow" whose permit failed verification (verified !== true) —
+        // the latter is authorized nothing, per "gate on verified, not
+        // decision", and must get the same operator-facing notification a
+        // deny/hold/escalate does rather than passing silently.
         const blockedDecisions = result.decisions.filter(
-          (d) => d.decision === "deny" || d.decision === "hold" || d.decision === "escalate",
+          (d) =>
+            d.decision === "deny" ||
+            d.decision === "hold" ||
+            d.decision === "escalate" ||
+            (d.decision === "allow" && d.verified !== true),
         );
         const worstDecision: string = blockedDecisions.some((d) => d.decision === "deny")
           ? "deny"
           : blockedDecisions.some((d) => d.decision === "escalate")
             ? "escalate"
-            : "hold";
+            : blockedDecisions.some((d) => d.decision === "hold")
+              ? "hold"
+              : "verification_failed";
         const batchActor = getInput("actor") || "unknown";
         const batchEnv = resolveEnvironment(getInput("environment"), gh.ref, apiKey);
         const reasonSummary = `${blockedDecisions.length} of ${result.decisions.length} evaluation(s) blocked (${worstDecision})`;
@@ -1736,10 +1747,16 @@ export async function run(): Promise<void> {
       }
 
       setFailed(
-        `AtlaSent Gate: one or more evaluations were not allowed (deny/hold/escalate). See 'decisions' output for details.`,
+        `AtlaSent Gate: one or more evaluations were not allowed (deny/hold/escalate) or ` +
+          `had an allow decision that failed permit verification. See 'decisions' output for details.`,
       );
       return;
     }
+    // Belt-and-braces: `result.failed` (above) now already covers this exact
+    // condition (an allow decision with verified !== true), so this branch
+    // should be unreachable in practice — kept as a defense-in-depth
+    // fail-closed backstop in case `result.failed`'s computation ever drifts
+    // from `allVerified` again.
     if (!allVerified) {
       setFailed(
         `AtlaSent Gate: one or more allow decisions failed permit verification. Deploy blocked.`,

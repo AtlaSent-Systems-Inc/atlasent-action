@@ -1746,6 +1746,15 @@ async function callPostDeployEvidenceBundle(args, log, timeoutMs = 3e4) {
   }
 }
 
+// src/executionPayloadHash.ts
+function normalizeExecutionPayloadHash(digest) {
+  if (!digest)
+    return digest;
+  const colonIndex = digest.indexOf(":");
+  const stripped = colonIndex === -1 ? digest : digest.slice(colonIndex + 1);
+  return /^[0-9a-f]{64}$/i.test(stripped) ? stripped.toLowerCase() : digest;
+}
+
 // src/vqpVerify.ts
 async function runVqpVerify(inputs, fetchFn = globalThis.fetch) {
   const base = inputs.supabaseUrl.replace(/\/$/, "");
@@ -3758,7 +3767,7 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
     );
     return;
   }
-  const verificationPayloadHash = MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) ? runtimeExecutionHash : artifactDigest;
+  const verificationPayloadHash = MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) ? runtimeExecutionHash : normalizeExecutionPayloadHash(artifactDigest);
   maskValue(permitToken);
   const config = {
     apiKey,
@@ -4616,7 +4625,7 @@ async function run() {
     );
     return;
   }
-  const directExecutionPayloadHash = MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) ? void 0 : artifactDigest;
+  const directExecutionPayloadHash = MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) ? void 0 : normalizeExecutionPayloadHash(artifactDigest);
   let evidenceProfile;
   const evidenceProfileRaw = getInput("evidence-profile") || void 0;
   if (evidenceProfileRaw) {

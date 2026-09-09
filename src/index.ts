@@ -61,6 +61,7 @@ import {
   assertValidActionType,
   normalizeProtectedAction,
 } from "./canonicalAction";
+import { normalizeExecutionPayloadHash } from "./executionPayloadHash";
 import { runVqpVerify } from "./vqpVerify";
 import { resolveApprovals, type ApprovalEvidence } from "./approvals";
 import { buildGateStepSummary, type GateOutcome } from "./stepSummary";
@@ -733,8 +734,15 @@ async function runVerifyPermitStep(apiKey: string, apiUrl: string): Promise<void
     return;
   }
 
+  // Non-mandatory-change-control types (e.g. package.release) forward
+  // artifact-digest directly as the payload hash the runtime binds into the
+  // permit — normalize a common OCI-form digest (sha256:<hex>) to the bare
+  // hex the server requires, or every such call deterministically fails
+  // PAYLOAD_MISMATCH at this boundary re-verify. See executionPayloadHash.ts.
   const verificationPayloadHash =
-    MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) ? runtimeExecutionHash : artifactDigest;
+    MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType)
+      ? runtimeExecutionHash
+      : normalizeExecutionPayloadHash(artifactDigest);
 
   maskValue(permitToken);
 
@@ -1942,8 +1950,15 @@ export async function run(): Promise<void> {
   // Mandatory production-change controls reject caller-supplied raw hashes.
   // The runtime derives the execution hash from this verified revision plus
   // the optional artifact identity and echoes that opaque binding for verify.
+  // For every other action type (e.g. package.release), artifact-digest IS
+  // the raw payload hash the runtime binds — normalize a common OCI-form
+  // digest (sha256:<hex>) to the bare hex the server requires, or the
+  // binding is silently never set and boundary verify deterministically
+  // fails PAYLOAD_MISMATCH. See executionPayloadHash.ts.
   const directExecutionPayloadHash =
-    MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType) ? undefined : artifactDigest;
+    MANDATORY_CHANGE_CONTROL_ACTIONS.has(actionType)
+      ? undefined
+      : normalizeExecutionPayloadHash(artifactDigest);
 
   // Typed solo-operator compensating-control evidence for a NON-production.deploy
   // action type — the same JSON a prior `solo-operator-attest: true` step in

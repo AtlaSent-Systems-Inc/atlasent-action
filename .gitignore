@@ -1,2 +1,6 @@
 node_modules/
 packages/*/node_modules/
+
+# Claude Code session/tooling state (e.g. isolated git worktrees created for
+# background agents) — not repository content, never intended to be committed.
+.claude/

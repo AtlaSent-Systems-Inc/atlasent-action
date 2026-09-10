@@ -99,6 +99,38 @@ jobs:
       #      after issue 1 is resolved, check whether these two migrations
       #      have actually reached the production runtime project — that is
       #      now the remaining gap, not an open decision.
+      #
+      #   1 and 2 above are now SUPERSEDED by direct evidence, not just
+      #   theorized as fixed: the real v1.6.0 release attempt (run
+      #   34530024051, 2026-09-10) got past both — no 401, and actor
+      #   resolution fell back correctly to `github:bettyc925` (with a
+      #   logged warning that the workload-identity mint itself 403'd on
+      #   `idp_broker:mint`, a separate, lower-priority gap — the fallback
+      #   is the documented, working path per issue 2's own migration).
+      #
+      #   3. NEW, OPEN as of 2026-09-10 (run 34530024051, actor
+      #      `github:bettyc925`, environment `prod`, context exactly as
+      #      sent below). The gate reached real policy evaluation and
+      #      denied: `AtlaSent: PR #174 has 0 approving reviews` followed
+      #      by `Authorization DENIED: No template condition matched`. PR
+      #      #174 is simply the most recently merged PR on `main` at tag
+      #      time — a tag push has no PR of its own for the approvals
+      #      reader to inspect, so it fell back to that and found none.
+      #      This reads as a template-shape mismatch specific to a
+      #      **tag-push** release (as opposed to whatever context shape the
+      #      org's `package.release` bundle actually has an allow path
+      #      for) — the same failure class `atlasent-control-plane`'s
+      #      CLAUDE.md documents fixing several times for its own publish
+      #      gates by adding `context.event_name`/`context.workflow` fields
+      #      the seeded templates matched on. Do NOT speculatively add
+      #      those fields here without first reading the org's real
+      #      `package.release` bundle/template rows (Supabase access
+      #      required) — this comment block's own standing rule is not to
+      #      "fix" a gate failure by reshaping the context without knowing
+      #      what the policy actually checks, and this run's fallback
+      #      warning about `idp_broker:mint` should be resolved or ruled
+      #      out as unrelated in the same pass. Full job log:
+      #      https://github.com/AtlaSent-Systems-Inc/atlasent-action/actions/runs/34530024051/job/103048215470
       - name: AtlaSent release gate
         if: ${{ github.event.inputs.bootstrap != 'true' }}
         uses: ./

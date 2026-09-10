@@ -338,6 +338,20 @@ gh workflow run release.yml -f ref=v1.x.y -f bootstrap=true
 
 Required secrets: `ATLASENT_API_KEY`, `ATLASENT_BASE_URL`.
 
+> **Release gate currently denies on a real (non-bootstrap) tag push
+> (confirmed 2026-09-10, run 34530024051 — see `release.yml`'s own "KNOWN
+> OPEN ISSUES" comment, item 3, for the full trace).** `dist/index.js`
+> verification and actor resolution both succeeded; the gate reached real
+> policy evaluation and denied with `Authorization DENIED: No template
+> condition matched`, after an approvals check against PR #174 (0
+> approving reviews — a tag push has no PR of its own to check). Reads as
+> a template-shape gap for tag-push releases specifically. Needs
+> investigation against the org's real `package.release` bundle (Supabase
+> access) before any fix — do not guess at the context shape. Until
+> resolved, a real release requires the same `bootstrap=true` gate-skip
+> path used for the original v1.3.0 bootstrap (manual `workflow_dispatch`,
+> not a plain tag push).
+
 ## Branch convention
 
 Use `claude/<topic>` for all work in this repo.

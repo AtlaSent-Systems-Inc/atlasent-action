@@ -45,6 +45,15 @@ git push origin v1.4.0   # release.yml runs on the tag push, gate active
 
 The workflow creates the `v1.4.0` Release and advances `v1` automatically.
 
+> **An automated Claude Code session cannot do this step itself (confirmed
+> 2026-09-10, not assumed).** Tag pushes and ref deletions get an HTTP 403
+> from this environment's git credential, while ordinary branch pushes to
+> the same repo succeed immediately before and after — isolated by testing
+> a branch push/delete against the same remote in the same session. A
+> session can prepare everything up to the tag (build, verify `dist/index.js`
+> is current, confirm CI is green on the target commit) and hand back the
+> exact `git tag`/`git push` commands, but a human has to run them.
+
 ## Correcting `v1` out of band
 
 Use the [`Move v1 floating tag`](.github/workflows/create-v1-tag.yml) workflow

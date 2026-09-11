@@ -469,6 +469,46 @@ The protected step must not execute when:
 A governance control that silently bypasses itself when its authority source is
 unreachable would create false assurance; this action therefore fails closed.
 
+## Outbound notifications
+
+Set `slack-webhook` and/or `teams-webhook` to get an informational,
+outbound-only notification whenever the gate returns `deny`, `hold`, or
+`escalate` (including a batch evaluation where any item is blocked, or an
+`allow` whose permit failed verification). Neither is interactive — no
+approval buttons — and both are best-effort: a webhook failure or non-200
+response is logged as a `::warning::` and never blocks or alters the gate
+decision.
+
+| Input | Purpose |
+|---|---|
+| `slack-webhook` | Slack Incoming Webhook URL. Posts a Block Kit message. |
+| `teams-webhook` | Microsoft Teams Incoming Webhook URL. Posts a MessageCard notification. |
+
+```yaml
+      - name: AtlaSent gate
+        uses: AtlaSent-Systems-Inc/atlasent-action@v1
+        env:
+          ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
+          ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
+        with:
+          action: production.deploy
+          target-id: api-service
+          environment: live
+          slack-webhook: ${{ secrets.SLACK_DEPLOY_WEBHOOK }}
+          teams-webhook: ${{ secrets.TEAMS_DEPLOY_WEBHOOK }}
+```
+
+Both notifications carry the same substantive information: decision, action
+type, actor, environment, the deny/hold reason, and a link to the workflow
+run (plus the evaluation ID and a truncated audit hash when available). For
+in-flow interactive approvals rather than a one-way notification, use the
+AtlaSent Slack Approval Bot (configured in the AtlaSent console) instead.
+
+`pr-comment-on-deny` (default `"true"`) is a separate, non-webhook
+notification: it posts a comment directly on the triggering pull request
+when the gate blocks and a PR number is detected. It fires independently of
+either webhook input.
+
 ## Change Brief mode
 
 Before a production change is authorized, a reviewer often wants to see what

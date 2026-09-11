@@ -222,23 +222,42 @@ async function postCommitStatus(args: {
 }
 
 // ---------------------------------------------------------------------------
+// Shared notification context — used by notifySlack, notifyTeams, and
+// buildGateDenyComment so the "what happened" vocabulary (label) stays in
+// one place across all three outbound-notification surfaces.
+// ---------------------------------------------------------------------------
+
+interface NotificationOpts {
+  decision: string;
+  action: string;
+  actor: string;
+  environment: string;
+  reason: string;
+  runUrl: string;
+  evaluationId?: string;
+  auditHash?: string;
+}
+
+/** Human-readable decision label shared by Slack, Teams, and PR-comment notifications. */
+function decisionLabel(decision: string): string {
+  switch (decision) {
+    case "deny":
+      return "DENIED";
+    case "hold":
+      return "ON HOLD";
+    case "escalate":
+      return "ESCALATED";
+    default:
+      return "BLOCKED";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Outbound Slack notification — informational, not interactive.
 // Fires on deny / hold / escalate when the slack-webhook input is set.
 // Best-effort: never blocks or alters the gate decision.
 // ---------------------------------------------------------------------------
-async function notifySlack(
-  webhookUrl: string,
-  opts: {
-    decision: string;
-    action: string;
-    actor: string;
-    environment: string;
-    reason: string;
-    runUrl: string;
-    evaluationId?: string;
-    auditHash?: string;
-  },
-): Promise<void> {
+async function notifySlack(webhookUrl: string, opts: NotificationOpts): Promise<void> {
   const emoji =
     opts.decision === "deny"
       ? ":no_entry:"
@@ -247,14 +266,7 @@ async function notifySlack(
         : opts.decision === "escalate"
           ? ":rotating_light:"
           : ":warning:";
-  const label =
-    opts.decision === "deny"
-      ? "DENIED"
-      : opts.decision === "hold"
-        ? "ON HOLD"
-        : opts.decision === "escalate"
-          ? "ESCALATED"
-          : "BLOCKED";
+  const label = decisionLabel(opts.decision);
 
   const fields: { type: "mrkdwn"; text: string }[] = [
     { type: "mrkdwn", text: `*Actor:*\n${opts.actor}` },
@@ -317,6 +329,78 @@ async function notifySlack(
 }
 
 // ---------------------------------------------------------------------------
+// Outbound Microsoft Teams notification — informational, not interactive.
+// Fires on deny / hold / escalate when the teams-webhook input is set.
+// Best-effort: never blocks or alters the gate decision.
+//
+// Uses the legacy Office 365 Connector "MessageCard" schema (still the
+// format accepted by a Teams channel's Incoming Webhook connector) rather
+// than an Adaptive Card, since it needs no card-schema library and maps
+// naturally onto the same title/section/facts/action shape notifySlack
+// already builds.
+// ---------------------------------------------------------------------------
+async function notifyTeams(webhookUrl: string, opts: NotificationOpts): Promise<void> {
+  const themeColor =
+    opts.decision === "deny"
+      ? "D9534F" // red
+      : opts.decision === "hold"
+        ? "F0AD4E" // amber
+        : opts.decision === "escalate"
+          ? "D9534F" // red
+          : "808080"; // grey
+  const label = decisionLabel(opts.decision);
+
+  const facts: { name: string; value: string }[] = [
+    { name: "Actor", value: opts.actor },
+    { name: "Environment", value: opts.environment },
+  ];
+  if (opts.evaluationId) {
+    facts.push({ name: "Evaluation ID", value: opts.evaluationId });
+  }
+  if (opts.auditHash) {
+    facts.push({ name: "Audit hash", value: `${opts.auditHash.slice(0, 16)}…` });
+  }
+
+  const payload = {
+    "@type": "MessageCard",
+    "@context": "http://schema.org/extensions",
+    themeColor,
+    summary: `AtlaSent Deploy Gate ${label}: ${opts.action} (${opts.environment})`,
+    sections: [
+      {
+        activityTitle: `AtlaSent: Deploy ${label}`,
+        text: `**Action:** \`${opts.action}\`\n\n**Reason:** ${opts.reason}`,
+        facts,
+      },
+    ],
+    potentialAction: [
+      {
+        "@type": "OpenUri",
+        name: "View Run",
+        targets: [{ os: "default", uri: opts.runUrl }],
+      },
+    ],
+  };
+
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      warning(`AtlaSent: Teams notification failed (${res.status}) — advisory, non-blocking`);
+    }
+  } catch (err) {
+    warning(
+      `AtlaSent: Teams notification error (advisory, non-blocking): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // PR comment — posted on deny / hold / escalate when a PR number is detected
 // and pr-comment-on-deny is not "false".
 // Best-effort: never blocks or alters the gate decision.
@@ -339,14 +423,7 @@ function buildGateDenyComment(opts: {
         : opts.decision === "escalate"
           ? "🚨"
           : "❌";
-  const label =
-    opts.decision === "deny"
-      ? "DENIED"
-      : opts.decision === "hold"
-        ? "ON HOLD"
-        : opts.decision === "escalate"
-          ? "ESCALATED"
-          : "BLOCKED";
+  const label = decisionLabel(opts.decision);
 
   const lines = [
     `## ${icon} AtlaSent Deploy Gate — ${label}`,
@@ -1703,6 +1780,7 @@ export async function run(): Promise<void> {
         const gh = getGitHubContext();
         const runUrl = `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`;
         const slackWebhook = getInput("slack-webhook");
+        const teamsWebhook = getInput("teams-webhook");
         const prCommentEnabled = getInput("pr-comment-on-deny").toLowerCase() !== "false";
 
         // Includes both decision-level blocks (deny/hold/escalate) and an
@@ -1730,6 +1808,16 @@ export async function run(): Promise<void> {
 
         if (slackWebhook) {
           await notifySlack(slackWebhook, {
+            decision: worstDecision,
+            action: "batch evaluation",
+            actor: batchActor,
+            environment: batchEnv,
+            reason: reasonSummary,
+            runUrl,
+          });
+        }
+        if (teamsWebhook) {
+          await notifyTeams(teamsWebhook, {
             decision: worstDecision,
             action: "batch evaluation",
             actor: batchActor,
@@ -2142,9 +2230,10 @@ export async function run(): Promise<void> {
 
       emitFinancialGovernanceAdvisory(actionType, actorId, orgId);
 
-      // ── Outbound Slack notification + PR comment (best-effort, advisory) ──
+      // ── Outbound Slack/Teams notification + PR comment (best-effort, advisory) ──
       {
         const slackWebhook = getInput("slack-webhook");
+        const teamsWebhook = getInput("teams-webhook");
         const runUrl = `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`;
         const decisionStr = err.decision?.decision ?? "error";
         const isActionable =
@@ -2161,6 +2250,19 @@ export async function run(): Promise<void> {
 
         if (slackWebhook && isActionable) {
           await notifySlack(slackWebhook, {
+            decision: decisionStr,
+            action: actionType,
+            actor: actorId,
+            environment,
+            reason,
+            runUrl,
+            evaluationId: err.decision?.evaluationId,
+            auditHash: err.decision?.auditHash,
+          });
+        }
+
+        if (teamsWebhook && isActionable) {
+          await notifyTeams(teamsWebhook, {
             decision: decisionStr,
             action: actionType,
             actor: actorId,

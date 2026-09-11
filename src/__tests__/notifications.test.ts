@@ -621,6 +621,263 @@ describe("notifySlack", () => {
 });
 
 // =============================================================================
+// 2b. notifyTeams — best-effort fetch wrapper (mirrors notifySlack above)
+// =============================================================================
+
+describe("notifyTeams", () => {
+  async function runWithTeams(opts: {
+    decision?: string;
+    denyReason?: string;
+    holdReason?: string;
+    evaluationId?: string;
+    auditHash?: string;
+    webhookUrl?: string;
+  } = {}): Promise<{ calls: Array<[string, RequestInit]> }> {
+    const {
+      decision = "deny",
+      denyReason = "policy breach",
+      holdReason,
+      evaluationId = "ev-1",
+      auditHash,
+      webhookUrl = "https://outlook.office.com/webhook/test-webhook",
+    } = opts;
+
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("teams-webhook", webhookUrl);
+    // No PR context so postPRComment is skipped
+    process.env["GITHUB_REPOSITORY"] = "myorg/myrepo";
+    process.env["GITHUB_RUN_ID"] = "1234";
+    process.env["GITHUB_SERVER_URL"] = "https://github.com";
+    // No GITHUB_REF with PR pattern so pr_number is undefined
+
+    const decisionObj = makeDecision({
+      decision: decision as Decision["decision"],
+      denyReason,
+      holdReason,
+      evaluationId,
+      auditHash,
+    });
+
+    mockEnforce.mockRejectedValueOnce(
+      new EnforceError("blocked", "verify", decisionObj),
+    );
+
+    // commit status call + teams call
+    fetchMock.mockResolvedValue(okResp());
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    const teamsCalls = fetchMock.mock.calls.filter(
+      ([url]) => url === webhookUrl,
+    ) as Array<[string, RequestInit]>;
+
+    return { calls: teamsCalls };
+  }
+
+  it("posts to the webhook URL", async () => {
+    const { calls } = await runWithTeams({
+      webhookUrl: "https://outlook.office.com/webhook/test-webhook",
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toBe("https://outlook.office.com/webhook/test-webhook");
+  });
+
+  it("sends POST with application/json content type", async () => {
+    const { calls } = await runWithTeams();
+    const init = calls[0][1];
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
+  });
+
+  it("sends a MessageCard payload with red theme and DENIED label for deny", async () => {
+    const { calls } = await runWithTeams({ decision: "deny" });
+    const payload = JSON.parse(calls[0][1].body as string);
+    expect(payload["@type"]).toBe("MessageCard");
+    expect(payload.themeColor).toBe("D9534F");
+    expect(payload.summary).toContain("DENIED");
+    expect(payload.sections[0].activityTitle).toContain("DENIED");
+  });
+
+  it("uses amber theme and ON HOLD label for hold", async () => {
+    const { calls } = await runWithTeams({ decision: "hold", holdReason: "waiting" });
+    const payload = JSON.parse(calls[0][1].body as string);
+    expect(payload.themeColor).toBe("F0AD4E");
+    expect(payload.summary).toContain("ON HOLD");
+  });
+
+  it("uses red theme and ESCALATED label for escalate", async () => {
+    const { calls } = await runWithTeams({ decision: "escalate" });
+    const payload = JSON.parse(calls[0][1].body as string);
+    expect(payload.summary).toContain("ESCALATED");
+    expect(payload.sections[0].activityTitle).toContain("ESCALATED");
+  });
+
+  it("includes evaluationId fact when present", async () => {
+    const { calls } = await runWithTeams({ evaluationId: "ev-unique-42" });
+    const payload = JSON.parse(calls[0][1].body as string);
+    const facts = payload.sections[0].facts as Array<{ name: string; value: string }>;
+    const evalFact = facts.find((f) => f.value.includes("ev-unique-42"));
+    expect(evalFact).toBeDefined();
+    expect(evalFact?.name).toBe("Evaluation ID");
+  });
+
+  it("omits evaluationId fact when absent", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("teams-webhook", "https://outlook.office.com/webhook/test-webhook");
+    process.env["GITHUB_REPOSITORY"] = "myorg/myrepo";
+    process.env["GITHUB_RUN_ID"] = "1234";
+    process.env["GITHUB_SERVER_URL"] = "https://github.com";
+
+    const decisionObj: Decision = { decision: "deny", denyReason: "no eval id" } as Decision;
+    mockEnforce.mockRejectedValueOnce(
+      new EnforceError("blocked", "verify", decisionObj),
+    );
+    fetchMock.mockResolvedValue(okResp());
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    const teamsCalls = fetchMock.mock.calls.filter(
+      ([url]) => url === "https://outlook.office.com/webhook/test-webhook",
+    );
+    expect(teamsCalls).toHaveLength(1);
+    const payload = JSON.parse(teamsCalls[0][1].body as string);
+    const facts = payload.sections[0].facts as Array<{ name: string; value: string }>;
+    expect(facts.find((f) => f.name === "Evaluation ID")).toBeUndefined();
+  });
+
+  it("includes truncated auditHash fact when present", async () => {
+    const { calls } = await runWithTeams({
+      auditHash: "deadbeef12345678deadbeef12345678",
+    });
+    const payload = JSON.parse(calls[0][1].body as string);
+    const facts = payload.sections[0].facts as Array<{ name: string; value: string }>;
+    const hashFact = facts.find((f) => f.name === "Audit hash");
+    expect(hashFact).toBeDefined();
+    expect(hashFact?.value).toContain("deadbeef");
+    expect(hashFact?.value).toContain("…");
+  });
+
+  it("omits auditHash fact when absent", async () => {
+    const { calls } = await runWithTeams({ auditHash: undefined });
+    const payload = JSON.parse(calls[0][1].body as string);
+    const facts = payload.sections[0].facts as Array<{ name: string; value: string }>;
+    expect(facts.find((f) => f.name === "Audit hash")).toBeUndefined();
+  });
+
+  it("includes a 'View Run' OpenUri action with the run URL", async () => {
+    const { calls } = await runWithTeams();
+    const payload = JSON.parse(calls[0][1].body as string);
+    const action = payload.potentialAction[0];
+    expect(action["@type"]).toBe("OpenUri");
+    expect(action.name).toBe("View Run");
+    expect(action.targets[0].uri).toContain("actions/runs/1234");
+  });
+
+  it("swallows Teams non-200 response and emits a warning (does not throw)", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("teams-webhook", "https://outlook.office.com/webhook/failing-webhook");
+    process.env["GITHUB_TOKEN"] = "tok";
+    process.env["GITHUB_REPOSITORY"] = "myorg/myrepo";
+    process.env["GITHUB_SHA"] = "abc123";
+    process.env["GITHUB_RUN_ID"] = "1234";
+    process.env["GITHUB_SERVER_URL"] = "https://github.com";
+
+    const decisionObj = makeDecision({ decision: "deny" });
+    mockEnforce.mockRejectedValueOnce(
+      new EnforceError("blocked", "verify", decisionObj),
+    );
+
+    // commit status → OK, Teams → 500
+    fetchMock
+      .mockResolvedValueOnce(okResp()) // commit status
+      .mockResolvedValueOnce(errResp(500, "server error")); // Teams
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    const warningLogs = getConsoleLogs().filter((l) => l.includes("::warning::"));
+    expect(warningLogs.some((l) => l.toLowerCase().includes("teams"))).toBe(true);
+  });
+
+  it("swallows Teams network errors (does not throw)", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("teams-webhook", "https://outlook.office.com/webhook/network-error-webhook");
+    process.env["GITHUB_TOKEN"] = "tok";
+    process.env["GITHUB_REPOSITORY"] = "myorg/myrepo";
+    process.env["GITHUB_SHA"] = "abc123";
+    process.env["GITHUB_RUN_ID"] = "1234";
+    process.env["GITHUB_SERVER_URL"] = "https://github.com";
+
+    const decisionObj = makeDecision({ decision: "deny" });
+    mockEnforce.mockRejectedValueOnce(
+      new EnforceError("blocked", "verify", decisionObj),
+    );
+
+    fetchMock
+      .mockResolvedValueOnce(okResp()) // commit status
+      .mockRejectedValueOnce(new Error("ECONNREFUSED")); // Teams network error
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    const warningLogs = getConsoleLogs().filter((l) => l.includes("::warning::"));
+    expect(warningLogs.some((l) => l.toLowerCase().includes("teams"))).toBe(true);
+  });
+
+  it("does NOT call Teams when teams-webhook input is empty", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("teams-webhook", ""); // explicitly empty
+    process.env["GITHUB_REPOSITORY"] = "myorg/myrepo";
+    process.env["GITHUB_RUN_ID"] = "1234";
+    process.env["GITHUB_SERVER_URL"] = "https://github.com";
+
+    const decisionObj = makeDecision({ decision: "deny" });
+    mockEnforce.mockRejectedValueOnce(
+      new EnforceError("blocked", "verify", decisionObj),
+    );
+
+    fetchMock.mockResolvedValue(okResp());
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    // Only the commit status call should have gone out — no Teams
+    const allUrls = fetchMock.mock.calls.map(([url]) => url);
+    expect(allUrls.every((u) => u.includes("statuses"))).toBe(true);
+  });
+
+  it("fires both Slack and Teams independently when both webhooks are set", async () => {
+    setApiKey();
+    setInput("action", "production.deploy");
+    setInput("slack-webhook", "https://hooks.slack.com/both-test");
+    setInput("teams-webhook", "https://outlook.office.com/webhook/both-test");
+    process.env["GITHUB_REPOSITORY"] = "myorg/myrepo";
+    process.env["GITHUB_RUN_ID"] = "1234";
+    process.env["GITHUB_SERVER_URL"] = "https://github.com";
+
+    const decisionObj = makeDecision({ decision: "deny" });
+    mockEnforce.mockRejectedValueOnce(
+      new EnforceError("blocked", "verify", decisionObj),
+    );
+
+    fetchMock.mockResolvedValue(okResp());
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    const slackCalls = fetchMock.mock.calls.filter(
+      ([url]) => url === "https://hooks.slack.com/both-test",
+    );
+    const teamsCalls = fetchMock.mock.calls.filter(
+      ([url]) => url === "https://outlook.office.com/webhook/both-test",
+    );
+    expect(slackCalls).toHaveLength(1);
+    expect(teamsCalls).toHaveLength(1);
+  });
+});
+
+// =============================================================================
 // 3. postPRComment — best-effort fetch wrapper
 // =============================================================================
 
@@ -816,6 +1073,7 @@ describe("postPRComment", () => {
 describe("batch-deny integration (v2.1 path)", () => {
   function setupBatchEnv(opts: {
     slackWebhook?: string;
+    teamsWebhook?: string;
     prCommentEnabled?: boolean;
     prNumber?: string;
     token?: string;
@@ -823,6 +1081,7 @@ describe("batch-deny integration (v2.1 path)", () => {
   } = {}) {
     const {
       slackWebhook = "https://hooks.slack.com/batch-webhook",
+      teamsWebhook,
       prCommentEnabled = true,
       prNumber = "77",
       token = "gh-batch-token",
@@ -835,6 +1094,7 @@ describe("batch-deny integration (v2.1 path)", () => {
       JSON.stringify([{ action: "production.deploy", actor: "alice" }]),
     );
     if (slackWebhook) setInput("slack-webhook", slackWebhook);
+    if (teamsWebhook) setInput("teams-webhook", teamsWebhook);
     if (!prCommentEnabled) setInput("pr-comment-on-deny", "false");
 
     setupGitHubPrContext({ prNumber, token, repo });
@@ -860,6 +1120,32 @@ describe("batch-deny integration (v2.1 path)", () => {
     expect(slackCalls).toHaveLength(1);
     const payload = JSON.parse(slackCalls[0][1].body as string);
     expect(payload.text).toContain("DENIED");
+  });
+
+  it("calls notifyTeams when result.failed=true and teams-webhook is set", async () => {
+    setupBatchEnv({
+      prNumber: undefined as unknown as string,
+      slackWebhook: "",
+      teamsWebhook: "https://outlook.office.com/webhook/batch-webhook",
+    }); // no PR so no PR comment call
+    process.env["GITHUB_REF"] = "refs/heads/main"; // non-PR ref
+
+    mockRunV21.mockResolvedValueOnce(
+      makeV21Result({
+        decisions: [{ id: "ev-1", decision: "deny", reasons: [], verified: false, verifyOutcome: "" }],
+      }),
+    );
+
+    fetchMock.mockResolvedValue(okResp());
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    const teamsCalls = fetchMock.mock.calls.filter(
+      ([url]) => url === "https://outlook.office.com/webhook/batch-webhook",
+    );
+    expect(teamsCalls).toHaveLength(1);
+    const payload = JSON.parse(teamsCalls[0][1].body as string);
+    expect(payload.summary).toContain("DENIED");
   });
 
   it("calls postPRComment when result.failed=true and PR context is set", async () => {
@@ -954,6 +1240,27 @@ describe("batch-deny integration (v2.1 path)", () => {
     expect(nonPrCalls).toHaveLength(0);
   });
 
+  it("skips Teams when teams-webhook is unset in batch deny path", async () => {
+    setupBatchEnv({ slackWebhook: "", prNumber: "77" }); // teamsWebhook left unset
+
+    mockRunV21.mockResolvedValueOnce(
+      makeV21Result({
+        decisions: [{ id: "ev-1", decision: "deny", reasons: [], verified: false, verifyOutcome: "" }],
+      }),
+    );
+
+    fetchMock.mockResolvedValue(okResp());
+
+    await expect(run()).rejects.toBeInstanceOf(ProcessExitError);
+
+    // Verify no Teams (or Slack) call happened — only PR comment / commit status
+    const nonPrCalls = fetchMock.mock.calls.filter(
+      ([url]) =>
+        !url.includes("/issues/") && !url.includes("/comments") && !url.includes("/statuses/"),
+    );
+    expect(nonPrCalls).toHaveLength(0);
+  });
+
   it("skips PR comment when pr-comment-on-deny=false in batch deny path", async () => {
     setupBatchEnv({ prCommentEnabled: false, prNumber: "77" });
 
@@ -1010,8 +1317,8 @@ describe("batch-deny integration (v2.1 path)", () => {
     expect(errorLogs.some((l) => l.includes("evaluations were not allowed"))).toBe(true);
   });
 
-  it("does NOT call notifySlack or postPRComment when result.failed=false", async () => {
-    setupBatchEnv({ prNumber: "77" });
+  it("does NOT call notifySlack, notifyTeams, or postPRComment when result.failed=false", async () => {
+    setupBatchEnv({ prNumber: "77", teamsWebhook: "https://outlook.office.com/webhook/batch-webhook" });
 
     mockRunV21.mockResolvedValueOnce({
       batchId: "batch-ok",
@@ -1031,6 +1338,12 @@ describe("batch-deny integration (v2.1 path)", () => {
       ([url]) => url === "https://hooks.slack.com/batch-webhook",
     );
     expect(slackCalls).toHaveLength(0);
+
+    // No Teams call
+    const teamsCalls = fetchMock.mock.calls.filter(
+      ([url]) => url === "https://outlook.office.com/webhook/batch-webhook",
+    );
+    expect(teamsCalls).toHaveLength(0);
 
     // No PR comment call
     const prCommentCall = fetchMock.mock.calls.find(

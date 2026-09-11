@@ -247,6 +247,16 @@ inputs:
       alter the gate decision.
     required: false
     default: ''
+  teams-webhook:
+    description: |
+      Microsoft Teams Incoming Webhook URL. When set, the action posts an
+      informational MessageCard notification to this URL whenever the deploy
+      gate returns deny, hold, or escalate. This is outbound notification
+      only — no interactive approval buttons.
+      Best-effort: webhook failures are logged as warnings and never block or
+      alter the gate decision.
+    required: false
+    default: ''
   pr-comment-on-deny:
     description: |
       When "true" (default), post a comment to the pull request when the gate

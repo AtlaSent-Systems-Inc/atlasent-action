@@ -3458,9 +3458,21 @@ async function postCommitStatus(args) {
     );
   }
 }
+function decisionLabel(decision) {
+  switch (decision) {
+    case "deny":
+      return "DENIED";
+    case "hold":
+      return "ON HOLD";
+    case "escalate":
+      return "ESCALATED";
+    default:
+      return "BLOCKED";
+  }
+}
 async function notifySlack(webhookUrl, opts) {
   const emoji = opts.decision === "deny" ? ":no_entry:" : opts.decision === "hold" ? ":hourglass_flowing_sand:" : opts.decision === "escalate" ? ":rotating_light:" : ":warning:";
-  const label = opts.decision === "deny" ? "DENIED" : opts.decision === "hold" ? "ON HOLD" : opts.decision === "escalate" ? "ESCALATED" : "BLOCKED";
+  const label = decisionLabel(opts.decision);
   const fields = [
     { type: "mrkdwn", text: `*Actor:*
 ${opts.actor}` },
@@ -3521,9 +3533,59 @@ ${opts.evaluationId}` });
     );
   }
 }
+async function notifyTeams(webhookUrl, opts) {
+  const themeColor = opts.decision === "deny" ? "D9534F" : opts.decision === "hold" ? "F0AD4E" : opts.decision === "escalate" ? "D9534F" : "808080";
+  const label = decisionLabel(opts.decision);
+  const facts = [
+    { name: "Actor", value: opts.actor },
+    { name: "Environment", value: opts.environment }
+  ];
+  if (opts.evaluationId) {
+    facts.push({ name: "Evaluation ID", value: opts.evaluationId });
+  }
+  if (opts.auditHash) {
+    facts.push({ name: "Audit hash", value: `${opts.auditHash.slice(0, 16)}\u2026` });
+  }
+  const payload = {
+    "@type": "MessageCard",
+    "@context": "http://schema.org/extensions",
+    themeColor,
+    summary: `AtlaSent Deploy Gate ${label}: ${opts.action} (${opts.environment})`,
+    sections: [
+      {
+        activityTitle: `AtlaSent: Deploy ${label}`,
+        text: `**Action:** \`${opts.action}\`
+
+**Reason:** ${opts.reason}`,
+        facts
+      }
+    ],
+    potentialAction: [
+      {
+        "@type": "OpenUri",
+        name: "View Run",
+        targets: [{ os: "default", uri: opts.runUrl }]
+      }
+    ]
+  };
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      warning(`AtlaSent: Teams notification failed (${res.status}) \u2014 advisory, non-blocking`);
+    }
+  } catch (err) {
+    warning(
+      `AtlaSent: Teams notification error (advisory, non-blocking): ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
 function buildGateDenyComment(opts) {
   const icon = opts.decision === "deny" ? "\u{1F534}" : opts.decision === "hold" ? "\u{1F7E1}" : opts.decision === "escalate" ? "\u{1F6A8}" : "\u274C";
-  const label = opts.decision === "deny" ? "DENIED" : opts.decision === "hold" ? "ON HOLD" : opts.decision === "escalate" ? "ESCALATED" : "BLOCKED";
+  const label = decisionLabel(opts.decision);
   const lines = [
     `## ${icon} AtlaSent Deploy Gate \u2014 ${label}`,
     "",
@@ -4474,6 +4536,7 @@ async function run() {
         const gh2 = getGitHubContext();
         const runUrl = `${gh2.server_url}/${gh2.repository}/actions/runs/${gh2.run_id}`;
         const slackWebhook = getInput("slack-webhook");
+        const teamsWebhook = getInput("teams-webhook");
         const prCommentEnabled = getInput("pr-comment-on-deny").toLowerCase() !== "false";
         const blockedDecisions = result.decisions.filter(
           (d2) => d2.decision === "deny" || d2.decision === "hold" || d2.decision === "escalate" || d2.decision === "allow" && d2.verified !== true
@@ -4484,6 +4547,16 @@ async function run() {
         const reasonSummary = `${blockedDecisions.length} of ${result.decisions.length} evaluation(s) blocked (${worstDecision})`;
         if (slackWebhook) {
           await notifySlack(slackWebhook, {
+            decision: worstDecision,
+            action: "batch evaluation",
+            actor: batchActor,
+            environment: batchEnv,
+            reason: reasonSummary,
+            runUrl
+          });
+        }
+        if (teamsWebhook) {
+          await notifyTeams(teamsWebhook, {
             decision: worstDecision,
             action: "batch evaluation",
             actor: batchActor,
@@ -4760,12 +4833,25 @@ async function run() {
       emitFinancialGovernanceAdvisory(actionType, actorId, orgId);
       {
         const slackWebhook = getInput("slack-webhook");
+        const teamsWebhook = getInput("teams-webhook");
         const runUrl = `${gh.server_url}/${gh.repository}/actions/runs/${gh.run_id}`;
         const decisionStr = err.decision?.decision ?? "error";
         const isActionable = decisionStr === "deny" || decisionStr === "hold" || decisionStr === "escalate";
         const reason = decisionStr === "deny" ? err.decision?.denyReason ?? "no reason provided" : decisionStr === "hold" ? err.decision?.holdReason ?? "awaiting approval" : decisionStr === "escalate" ? "escalated \u2014 manual review required" : err.message.slice(0, 200);
         if (slackWebhook && isActionable) {
           await notifySlack(slackWebhook, {
+            decision: decisionStr,
+            action: actionType,
+            actor: actorId,
+            environment,
+            reason,
+            runUrl,
+            evaluationId: err.decision?.evaluationId,
+            auditHash: err.decision?.auditHash
+          });
+        }
+        if (teamsWebhook && isActionable) {
+          await notifyTeams(teamsWebhook, {
             decision: decisionStr,
             action: actionType,
             actor: actorId,

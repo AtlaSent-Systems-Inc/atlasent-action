@@ -1,0 +1,45 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/azure-devops-extension-tools/master/vss-extension-schema.json",
+  "manifestVersion": 1,
+  "id": "atlasent-gate",
+  "name": "AtlaSent Gate",
+  "version": "1.0.0",
+  "publisher": "REPLACE_WITH_PUBLISHER_ID",
+  "// publisher": "Publishing to the Azure DevOps Marketplace requires a real Microsoft Partner Center publisher account (https://marketplace.visualstudio.com/manage/createpublisher). Creating that account is a business/account step outside the scope of this task — replace this placeholder with the real publisher id once one exists. Do NOT attempt `tfx extension publish` against this placeholder.",
+  "description": "Enforce a real-time AtlaSent authorization gate (evaluate -> verify -> permit, fail-closed) before a deployment or other critical Azure Pipelines step runs.",
+  "categories": ["Azure Pipelines"],
+  "tags": ["authorization", "security", "deployment gate", "compliance", "audit"],
+  "public": false,
+  "icons": {
+    "default": "images/icon.png"
+  },
+  "targets": [
+    {
+      "id": "Microsoft.VisualStudio.Services"
+    }
+  ],
+  "contributions": [
+    {
+      "id": "atlasent-gate-task",
+      "type": "ms.vss-distributed-task.task",
+      "targets": ["ms.vss-distributed-task.tasks"],
+      "properties": {
+        "name": "AtlaSentGate"
+      }
+    }
+  ],
+  "files": [
+    {
+      "path": "AtlaSentGate"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "uri": "https://github.com/AtlaSent-Systems-Inc/atlasent-action"
+  },
+  "content": {
+    "details": {
+      "path": "README.md"
+    }
+  }
+}

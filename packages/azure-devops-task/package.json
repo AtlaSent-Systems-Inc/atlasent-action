@@ -1,0 +1,28 @@
+{
+  "name": "@atlasent/azure-devops-task",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AtlaSent authorization gate for Azure DevOps Pipelines (AtlaSentGate custom task) — evaluate/verify/permit, fail-closed, mirroring atlasent-action's single-eval GitHub Action path",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AtlaSent-Systems-Inc/atlasent-action.git",
+    "directory": "packages/azure-devops-task"
+  },
+  "homepage": "https://github.com/AtlaSent-Systems-Inc/atlasent-action/tree/main/packages/azure-devops-task#readme",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=AtlaSentGate/dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@atlasent/enforce": "^2.0.0",
+    "azure-pipelines-task-lib": "^5.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.20.2",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  },
+  "license": "Apache-2.0"
+}

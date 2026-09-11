@@ -1,0 +1,159 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Microsoft/azure-pipelines-task-lib/master/tasks.schema.json",
+  "id": "5daffd2d-c61f-48d5-841d-8064b27b7e7a",
+  "name": "AtlaSentGate",
+  "friendlyName": "AtlaSent Gate",
+  "description": "Enforce a real-time AtlaSent authorization gate before a deployment or other critical pipeline step runs (evaluate -> verify -> permit, fail-closed)",
+  "helpMarkDown": "See https://github.com/AtlaSent-Systems-Inc/atlasent-action/tree/main/packages/azure-devops-task for the full input/output reference and pipeline examples. Requires the ATLASENT_API_KEY secret and (optionally) ATLASENT_BASE_URL to be set as environment variables on this task step.",
+  "category": "Utility",
+  "author": "AtlaSent Systems, Inc.",
+  "version": {
+    "Major": 1,
+    "Minor": 0,
+    "Patch": 0
+  },
+  "instanceNameFormat": "AtlaSent Gate: $(action)",
+  "icons": {
+    "default": "icon.png"
+  },
+  "inputs": [
+    {
+      "name": "action",
+      "type": "string",
+      "label": "Protected action type",
+      "required": true,
+      "helpMarkDown": "The protected action being evaluated (e.g. production.deploy, package.release). Must be a well-known AtlaSent action type — the AtlaSent runtime policy is the authority on whether it is allowed. Also required in verifyPermit mode, so the boundary re-verification presents the same action type the permit was issued for."
+    },
+    {
+      "name": "mode",
+      "type": "pickList",
+      "label": "Mode",
+      "required": false,
+      "defaultValue": "enforce",
+      "options": {
+        "enforce": "enforce (evaluate + verify + consume in one step)",
+        "evaluate-only": "evaluate-only (issue a permit without consuming it)"
+      },
+      "helpMarkDown": "'enforce' (default) performs evaluate -> verify -> verify-permit in this task step. 'evaluate-only' issues a permit WITHOUT verifying/consuming it, for a later task step (verifyPermit: true) to re-verify immediately before the protected step actually runs — the stronger execution-boundary pattern. Ignored when verifyPermit is 'true'.",
+      "visibleRule": "verifyPermit = false"
+    },
+    {
+      "name": "verifyPermit",
+      "type": "boolean",
+      "label": "Verify permit (execution boundary)",
+      "required": false,
+      "defaultValue": "false",
+      "helpMarkDown": "When true, this task step does NOT call evaluate at all — it re-verifies (and consumes) an already-issued permit token immediately before a protected step, independent of the step that issued it. Requires permitToken, and the same action/actor/environment/targetId the permit was issued for."
+    },
+    {
+      "name": "permitToken",
+      "type": "string",
+      "label": "Permit token to verify",
+      "required": false,
+      "helpMarkDown": "Required when verifyPermit is 'true': the permitToken output from an earlier mode: evaluate-only task step.",
+      "visibleRule": "verifyPermit = true"
+    },
+    {
+      "name": "actor",
+      "type": "string",
+      "label": "Actor",
+      "required": false,
+      "helpMarkDown": "Triggering identity. Defaults to Build.RequestedFor (or Release.RequestedFor on a classic release pipeline) when left blank, then falls back to 'unknown'."
+    },
+    {
+      "name": "targetId",
+      "type": "string",
+      "label": "Target ID",
+      "required": false,
+      "helpMarkDown": "Target resource identifier (service name, artifact id, etc.). Re-presented at a later verify-permit boundary if you split evaluate and verify across stages."
+    },
+    {
+      "name": "environment",
+      "type": "string",
+      "label": "Environment",
+      "required": false,
+      "helpMarkDown": "Deployment environment passed to the evaluator. When left blank, it is inferred from the ATLASENT_API_KEY prefix (ask_test_/ask_live_) or, failing that, from Build.SourceBranch (main/master => live, otherwise test)."
+    },
+    {
+      "name": "context",
+      "type": "multiLine",
+      "label": "Context (JSON)",
+      "required": false,
+      "defaultValue": "",
+      "helpMarkDown": "Optional JSON object of additional context passed to the evaluator (e.g. {\"service\": \"api\"})."
+    },
+    {
+      "name": "approvalsFrom",
+      "type": "pickList",
+      "label": "Approvals from",
+      "required": false,
+      "defaultValue": "none",
+      "options": {
+        "none": "none",
+        "pr-reviews": "pr-reviews (not yet implemented for Azure DevOps)"
+      },
+      "helpMarkDown": "Source for context.approvals. 'pr-reviews' is not yet implemented for Azure DevOps Pipelines in this v1 task (Azure Repos pull request reviews are not auto-derived) — it is accepted for forward compatibility with the GitHub Action's input surface but is treated as 'none' with a logged warning. Pass context.approvals explicitly if your policy requires an approval count."
+    },
+    {
+      "name": "waitForApproval",
+      "type": "boolean",
+      "label": "Wait for approval",
+      "required": false,
+      "defaultValue": "false",
+      "helpMarkDown": "When true, a hold/escalate decision pauses and polls for a human resolution (bounded by maxWaitMinutes) instead of failing the step immediately."
+    },
+    {
+      "name": "maxWaitMinutes",
+      "type": "string",
+      "label": "Max wait minutes",
+      "required": false,
+      "defaultValue": "30",
+      "helpMarkDown": "Bound on waitForApproval's poll window, in minutes. Exceeding it fails closed."
+    },
+    {
+      "name": "apiUrl",
+      "type": "string",
+      "label": "AtlaSent API URL override",
+      "required": false,
+      "helpMarkDown": "Overrides the ATLASENT_BASE_URL environment variable, e.g. https://<project-ref>.supabase.co/functions/v1. Usually left blank in favor of the environment variable."
+    }
+  ],
+  "execution": {
+    "Node20_1": {
+      "target": "dist/index.js"
+    },
+    "Node16": {
+      "target": "dist/index.js"
+    }
+  },
+  "outputVariables": [
+    {
+      "name": "decision",
+      "description": "The evaluation decision: allow / deny / hold / escalate."
+    },
+    {
+      "name": "verified",
+      "description": "\"true\" only when decision=allow AND the permit was verified. Gate on this, not decision."
+    },
+    {
+      "name": "permitToken",
+      "description": "The permit token (already consumed by verify-permit) — audit reference only."
+    },
+    {
+      "name": "proofHash",
+      "description": "The cryptographic proof hash."
+    },
+    {
+      "name": "riskScore",
+      "description": "Numeric risk score 0-100; empty string when not assessed."
+    },
+    {
+      "name": "evaluationId",
+      "description": "Unique evaluation ID for the audit trail."
+    },
+    {
+      "name": "waitedForApproval",
+      "description": "\"true\" when a hold/escalate decision was paused and waited on for a human resolution."
+    }
+  ]
+}

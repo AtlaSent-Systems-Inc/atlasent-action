@@ -96,6 +96,20 @@ Action obtains an independent GitHub OIDC token and runtime-minted assertion
 for each such item. Mixed batches retain their supplied actors for
 non-production actions. Any caller-supplied `actor_identity` is discarded.
 
+## Azure DevOps Pipelines
+
+This repo also publishes a real Azure Pipelines custom task,
+[`AtlaSentGate`](./packages/azure-devops-task/), for teams running CI/CD on
+Azure DevOps instead of GitHub Actions. It enforces the same evaluate →
+verify → permit contract described in this README, is fully tested, and
+supports the same pause-and-resume and execution-boundary (evaluate-only +
+verify-permit) patterns as the GitHub Action's single-eval path. See
+[`packages/azure-devops-task/README.md`](./packages/azure-devops-task/README.md)
+for setup, the full input/output reference, and pipeline examples. It is a
+new integration (single-eval mode only for this first release) — batch
+evaluation, policy sync, and the other modes documented above remain
+GitHub-Action-only for now.
+
 ## Customer integration starters
 
 - [Salesforce change gate](./examples/salesforce-change-gate/) — a customer-owned, sandbox-first workflow that combines GitHub approvals, Gearset validation evidence, an artifact-bound AtlaSent permit, Salesforce CLI execution, independent observation, and AtlaSent execution closeout. It does not require access to any private AtlaSent source repository.

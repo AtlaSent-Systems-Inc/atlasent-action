@@ -1,5 +1,16 @@
 # Azure DevOps Entra workload gate (draft)
 
+> **A real, tested, installable Azure DevOps Pipelines task now exists at
+> [`packages/azure-devops-task/`](../../packages/azure-devops-task/)** — the
+> `AtlaSentGate` custom task, using a plain API-key credential (the same
+> model the GitHub Action itself uses), not the Entra-workload-identity
+> shape this draft explores. If you just want a working AtlaSent gate for an
+> Azure DevOps pipeline today, start there instead. This draft remains as
+> design material for a possible future Entra-workload-identity
+> authentication path and is intentionally still non-functional (see below)
+> — it is not superseded so much as scoped to a different, harder problem
+> that the real task above does not yet attempt.
+
 This no-deploy starter obtains an app-only Microsoft Entra access token from an
 Azure DevOps workload-identity-federated Azure Resource Manager service
 connection, asks AtlaSent to mint a claim-minimized `actor_identity.v1`, and

@@ -36,3 +36,28 @@ jobs:
           fi
 
       - run: npm test
+
+      # ── Azure DevOps Pipelines extension (packages/azure-devops-task) ────────
+      # Separate typecheck/build from the root ones above (its own tsconfig,
+      # its own esbuild bundle target) — mirrors the precedent already set for
+      # @atlasent/enforce and @atlasent/action in publish-packages.yml, but on
+      # every PR/push rather than only on a publish tag, since this package's
+      # build output (AtlaSentGate/dist/index.js) is a committed runtime
+      # artifact an Azure Pipelines agent runs directly, same "commit the
+      # runtime artifact" contract as the GitHub Action's own dist/index.js.
+      - run: npm run typecheck -w @atlasent/azure-devops-task
+
+      - run: npm run build -w @atlasent/azure-devops-task
+
+      - name: Verify AtlaSentGate/dist/index.js is up to date
+        run: |
+          if ! git diff --quiet -- packages/azure-devops-task/AtlaSentGate/dist/index.js; then
+            echo "::error::packages/azure-devops-task/AtlaSentGate/dist/index.js is out of date. Run 'npm run build -w @atlasent/azure-devops-task' and commit it."
+            git --no-pager diff --stat -- packages/azure-devops-task/AtlaSentGate/dist/index.js
+            exit 1
+          fi
+
+      # npm test above (vitest, run from the repo root) already picks up
+      # packages/azure-devops-task/src/__tests__/**, same as it already does
+      # for packages/enforce and packages/action — no separate test step
+      # needed here.

@@ -25,14 +25,13 @@ protected step may run
 
 ## Release status
 
-The security fix that prevents caller-supplied context from overriding verified
-GitHub-derived facts is on `main` at commit
-`01cfce7461c3ebff736ca3396deb2467cf2829a1`. Until the next signed `v1` release
-moves the floating tag, external workflows should pin that reviewed commit SHA
-rather than relying on the older `@v1` tag.
+**v1.6.0 is published.** The floating `v1` tag points to the reviewed v1.6.0
+release commit, which includes the security fix preventing caller-supplied
+context from overriding verified GitHub-derived facts.
 
-After the signed release is published and `@v1` moves, the normal floating-major
-form is `AtlaSent-Systems-Inc/atlasent-action@v1`.
+Use `AtlaSent-Systems-Inc/atlasent-action@v1` for the normal floating-major
+form. Organizations that require an immutable dependency pin can use
+`AtlaSent-Systems-Inc/atlasent-action@eaf6e17c50340f97a5a1cec53d9aea9b64c2a6f1`.
 
 ## Quick start
 
@@ -47,7 +46,7 @@ jobs:
     steps:
       - name: Authorization gate
         id: gate
-        uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
+        uses: AtlaSent-Systems-Inc/atlasent-action@v1
         env:
           ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
           ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
@@ -162,7 +161,7 @@ Provide `GITHUB_TOKEN` when the policy depends on review evidence:
 ```yaml
 - name: Authorization gate
   id: gate
-  uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
+  uses: AtlaSent-Systems-Inc/atlasent-action@v1
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
     ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
@@ -213,7 +212,7 @@ and always see the original deny.
 ```yaml
 - name: Authorization gate
   id: gate
-  uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
+  uses: AtlaSent-Systems-Inc/atlasent-action@v1
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
     ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
@@ -279,7 +278,7 @@ jobs:
       execution_hash: ${{ steps.gate.outputs.execution-hash }}
     steps:
       - id: gate
-        uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
+        uses: AtlaSent-Systems-Inc/atlasent-action@v1
         env:
           ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
           ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
@@ -313,7 +312,7 @@ jobs:
           fi
 
       - id: verify
-        uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
+        uses: AtlaSent-Systems-Inc/atlasent-action@v1
         env:
           ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
           ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}
@@ -341,7 +340,7 @@ The same execution contract can gate a provisioned clinical action:
 ```yaml
 - name: Clinical unblinding gate
   id: gate
-  uses: AtlaSent-Systems-Inc/atlasent-action@01cfce7461c3ebff736ca3396deb2467cf2829a1
+  uses: AtlaSent-Systems-Inc/atlasent-action@v1
   env:
     ATLASENT_API_KEY: ${{ secrets.ATLASENT_API_KEY }}
     ATLASENT_BASE_URL: ${{ secrets.ATLASENT_BASE_URL }}

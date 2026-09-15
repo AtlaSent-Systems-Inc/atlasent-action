@@ -356,6 +356,8 @@ async function postVerify(config, permitToken, decision) {
     return {
         verified: ok === true,
         outcome: raw.outcome,
+        auditHash: raw.audit_entry_hash,
+        verifyAuditHash: raw.verify_audit_hash,
         verifyErrorCode: raw.verify_error_code,
         mismatchFields: Array.isArray(raw.mismatch_fields) ? raw.mismatch_fields : undefined,
     };

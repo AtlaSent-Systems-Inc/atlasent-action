@@ -482,8 +482,11 @@ outputs:
     description: 'Decision snapshot (JSON)'
     value: ${{ steps.gate.outputs.snapshot }}
   audit-hash:
-    description: 'SHA-256 audit chain hash'
+    description: 'SHA-256 signed-decision audit hash. In verify-permit mode this is echoed by the runtime for the permit being consumed.'
     value: ${{ steps.gate.outputs.audit-hash }}
+  verify-audit-hash:
+    description: 'SHA-256 hash of the permit-verification audit event. Set in verify-permit mode when returned by the runtime.'
+    value: ${{ steps.gate.outputs.verify-audit-hash }}
   resolved-actor:
     description: 'The actor identity this evaluate step actually presented to the runtime (verified workload actor when minting succeeded, the caller-supplied actor otherwise). Pass unchanged as the resolved-actor input to a later verify-permit step for action types with opportunistic verified-actor minting (e.g. package.release), so the boundary step never independently re-resolves a possibly-different actor.'
     value: ${{ steps.gate.outputs.resolved-actor }}

@@ -52,10 +52,17 @@ describe("execution-boundary verification (B3/B4)", () => {
 
   // ── reads the runtime `valid` field (not the legacy `verified`) ────────────
   it("treats runtime {valid:true} as verified", async () => {
-    resp(200, { valid: true, outcome: "verified" });
+    resp(200, {
+      valid: true,
+      outcome: "verified",
+      audit_entry_hash: "decision-audit-hash",
+      verify_audit_hash: "verification-audit-hash",
+    });
     const r = await reverifyPermit(CONFIG, "pt-1");
     expect(r.verified).toBe(true);
     expect(r.outcome).toBe("verified");
+    expect(r.auditHash).toBe("decision-audit-hash");
+    expect(r.verifyAuditHash).toBe("verification-audit-hash");
   });
 
   it("still accepts the legacy {verified:true} field", async () => {

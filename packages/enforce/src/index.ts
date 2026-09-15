@@ -200,6 +200,10 @@ export interface Decision {
 export interface VerifyPermitResult {
   verified: boolean;
   outcome?: string;
+  /** Signed decision audit hash echoed by the runtime after permit verification. */
+  auditHash?: string;
+  /** Hash of the verification audit event emitted while consuming the permit. */
+  verifyAuditHash?: string;
   /** Precise runtime wire code (e.g. PAYLOAD_MISMATCH, PERMIT_EXPIRED). */
   verifyErrorCode?: string;
   /** Fields that diverged between the presented context and the bound permit. */
@@ -552,6 +556,8 @@ interface RawVerify {
   outcome?: string;
   verify_error_code?: string;
   mismatch_fields?: string[];
+  audit_entry_hash?: string;
+  verify_audit_hash?: string;
 }
 
 /**
@@ -630,6 +636,8 @@ async function postVerify(
   return {
     verified: ok === true,
     outcome: raw.outcome,
+    auditHash: raw.audit_entry_hash,
+    verifyAuditHash: raw.verify_audit_hash,
     verifyErrorCode: raw.verify_error_code,
     mismatchFields: Array.isArray(raw.mismatch_fields) ? raw.mismatch_fields : undefined,
   };

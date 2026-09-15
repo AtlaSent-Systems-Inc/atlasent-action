@@ -193,6 +193,10 @@ export interface Decision {
 export interface VerifyPermitResult {
     verified: boolean;
     outcome?: string;
+    /** Signed decision audit hash echoed by the runtime after permit verification. */
+    auditHash?: string;
+    /** Hash of the verification audit event emitted while consuming the permit. */
+    verifyAuditHash?: string;
     /** Precise runtime wire code (e.g. PAYLOAD_MISMATCH, PERMIT_EXPIRED). */
     verifyErrorCode?: string;
     /** Fields that diverged between the presented context and the bound permit. */

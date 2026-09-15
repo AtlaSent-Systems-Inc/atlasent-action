@@ -963,7 +963,12 @@ describe("verify-only execution boundary", () => {
     setInput("environment", "production");
     setInput("artifact-digest", "sha256:raw-artifact");
     setInput("execution-hash", "runtime-derived-hash");
-    mockReverifyPermit.mockResolvedValueOnce({ verified: true, outcome: "verified" });
+    mockReverifyPermit.mockResolvedValueOnce({
+      verified: true,
+      outcome: "verified",
+      auditHash: "decision-audit-hash",
+      verifyAuditHash: "verification-audit-hash",
+    });
 
     await run();
 
@@ -977,6 +982,8 @@ describe("verify-only execution boundary", () => {
       decision: "allow",
       verified: "true",
       "verify-outcome": "verified",
+      "audit-hash": "decision-audit-hash",
+      "verify-audit-hash": "verification-audit-hash",
     });
   });
 

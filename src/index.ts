@@ -852,6 +852,8 @@ async function runVerifyPermitStep(apiKey: string, apiUrl: string): Promise<void
     setOutput("verify-outcome", r.outcome ?? "verified");
     setOutput("verify-error-code", "");
     setOutput("permit-token", permitToken);
+    setOutput("audit-hash", r.auditHash ?? "");
+    setOutput("verify-audit-hash", r.verifyAuditHash ?? "");
     info(
       `Permit re-verified at the execution boundary (outcome=${r.outcome ?? "verified"}). Deployment may proceed.`,
     );

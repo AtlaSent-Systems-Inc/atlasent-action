@@ -347,6 +347,8 @@ var require_dist = __commonJS({
       return {
         verified: ok === true,
         outcome: raw.outcome,
+        auditHash: raw.audit_entry_hash,
+        verifyAuditHash: raw.verify_audit_hash,
         verifyErrorCode: raw.verify_error_code,
         mismatchFields: Array.isArray(raw.mismatch_fields) ? raw.mismatch_fields : void 0
       };
@@ -3857,6 +3859,8 @@ async function runVerifyPermitStep(apiKey, apiUrl) {
     setOutput("verify-outcome", r.outcome ?? "verified");
     setOutput("verify-error-code", "");
     setOutput("permit-token", permitToken);
+    setOutput("audit-hash", r.auditHash ?? "");
+    setOutput("verify-audit-hash", r.verifyAuditHash ?? "");
     info(
       `Permit re-verified at the execution boundary (outcome=${r.outcome ?? "verified"}). Deployment may proceed.`
     );

@@ -85,8 +85,8 @@ jobs:
       #      2026-11-11" — a ~3-month window from the 2026-08-10 decision,
       #      not a permanent grant), and `20260853000000_seed_package_
       #      release_atlasent_action_gate.sql` activated the resulting
-      #      template D for this repo's confirmed real org
-      #      (`1a67b4ca-70d5-4e0b-bebf-0aca6cca21e7`). Both migrations are
+      #      template D for this repo's confirmed real org (id omitted —
+      #      this is a PUBLIC repo; see atlasent-internal). Both migrations are
       #      merged to atlasent-api's `main` and confirmed applied on
       #      **staging** (verified directly against a `deploy-staging.yml`
       #      run's migration-list output, not inferred from the migration

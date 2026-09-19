@@ -21,8 +21,8 @@ re-targets all three from `artifact.release` to `package.release`, with a
 live production query as evidence: `artifact.release` has exactly one row in
 runtime prod (`org_id: null`, the unprovisioned Canon template, zero active
 `constraint_bundles`) — no org has ever provisioned it. `package.release` is
-live today with active bundles in 5 orgs, one of which
-(`923a3b8d-cdaa-4fc7-885f-8d8b11232ca4`) already gates real release workflows
+live today with active bundles in 5 orgs, one of which (the AtlaSent release
+org — id omitted, this is a PUBLIC repo) already gates real release workflows
 for this repo, `atlasent-verify`, and `atlasent-sdk`, and is `role-only` with
 `required_assertion_classes` empty — no `supply_chain` assertion needed.
 `atlasent-action`'s own `release.yml` already dogfoods this exact
